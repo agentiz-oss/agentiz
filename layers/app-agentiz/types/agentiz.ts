@@ -36,6 +36,23 @@ export type AgentRunJobStatus =
   | 'released'
   | 'dead';
 
+/**
+ * Lifecycle of a worker identity. A worker is useless until an admin approves it: `pending` and
+ * `disabled` workers authenticate successfully but receive no jobs, `revoked` ones fail auth.
+ */
+export type AgentWorkerStatus = 'pending' | 'active' | 'disabled' | 'revoked';
+
+/** `local` is the in-process queue drainer, `external` is a self-enrolled remote worker. */
+export type AgentWorkerKind = 'local' | 'external';
+
+export interface AgentWorkerCapabilities {
+  /** Executor kinds the worker can run, e.g. ["openhands"]. Informational for now. */
+  executors?: string[];
+  /** How many jobs the worker is willing to run in parallel. Informational for now. */
+  maxConcurrency?: number;
+  [key: string]: unknown;
+}
+
 /** What happens to the run when a stage fails. */
 export type StageFailurePolicy = 'stop' | 'continue';
 

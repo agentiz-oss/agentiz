@@ -10,7 +10,7 @@ import { createSequelize } from "./config/sequelize.js";
 process.env.SECRET ??= "secret";
 // Apps started on boot. Everything else found in appsPaths is loaded but stays stopped.
 // Mount order is derived from appDependencies, not from this list.
-process.env.INIT_APPS_TO_ENABLE ??= "app-adminizer;app-mcp;app-agentiz";
+process.env.INIT_APPS_TO_ENABLE ??= "app-adminizer;app-mcp;app-agentiz;app-agentiz-gitlab-integration";
 // For local SQLite development, prefer migrations and disable alter-sync.
 // This avoids unstable Sequelize alter behavior on SQLite.
 if (!process.env.DATABASE_URL) {

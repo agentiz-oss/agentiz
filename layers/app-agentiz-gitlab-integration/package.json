@@ -1,0 +1,12 @@
+{
+  "name": "@agentiz/app-agentiz-gitlab-integration",
+  "appId": "app-agentiz-gitlab-integration",
+  "appName": "App Agentiz GitLab Integration",
+  "version": "1.0.0",
+  "description": "GitLab OAuth integration for Agentiz: authorizes against a GitLab OAuth application, syncs the repositories reachable with that token and links many of them (across many GitLab instances) to a single Agentiz project.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-adminizer": "*",
+    "app-agentiz": "*"
+  }
+}

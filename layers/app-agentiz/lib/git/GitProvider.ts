@@ -2,6 +2,12 @@ import type { AgentProjectRepoConfig, GitProviderType } from '../../types/agenti
 
 export interface GitCredentials {
   token: string;
+  /**
+   * How the token is presented to the platform. Personal access tokens use the platform's own
+   * header (`PRIVATE-TOKEN` on GitLab), OAuth access tokens must be sent as `Authorization: Bearer`.
+   * Defaults to the platform's token header when omitted.
+   */
+  authScheme?: 'token' | 'bearer';
 }
 
 /** Task shape normalized from whatever the concrete platform returns (GitHub issue, GitLab issue, ...). */

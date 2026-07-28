@@ -33,6 +33,20 @@ interface AgentRun {
   createdAt?: string;
 }
 
+interface AgentWorker {
+  id: string;
+  name: string;
+  instanceId: string;
+  kind: string;
+  status: string;
+  tokenPrefix?: string | null;
+  version?: string | null;
+  hostname?: string | null;
+  lastSeenAt?: string | null;
+  claimedJobsCount?: number;
+  allowedProjectIds?: string[] | null;
+}
+
 const API_URL = `${(window as any).routePrefix ?? "/dashboard"}/agentiz`;
 
 const STATUS_COLORS: Record<string, string> = {
@@ -45,7 +59,10 @@ const STATUS_COLORS: Record<string, string> = {
   failed: "bg-red-100 text-red-700",
   cancelled: "bg-slate-100 text-slate-500",
   ignored: "bg-slate-100 text-slate-500",
-  pending: "bg-slate-100 text-slate-700",
+  pending: "bg-amber-100 text-amber-700",
+  active: "bg-emerald-100 text-emerald-700",
+  disabled: "bg-slate-100 text-slate-500",
+  revoked: "bg-red-100 text-red-700",
 };
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
@@ -60,6 +77,10 @@ const AgentizHome: React.FC = () => {
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
+  const [workers, setWorkers] = useState<AgentWorker[]>([]);
+  const [autoApprove, setAutoApprove] = useState(false);
+  /** A rotated token is returned by the server exactly once — keep it on screen until dismissed. */
+  const [issuedToken, setIssuedToken] = useState<{ workerName: string; token: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,9 +118,39 @@ const AgentizHome: React.FC = () => {
     }
   }, []);
 
+  const fetchWorkers = useCallback(async () => {
+    try {
+      const res = await axios.get(API_URL, { params: { _method: "getWorkers" } });
+      setWorkers(res.data?.data ?? []);
+      setAutoApprove(Boolean(res.data?.meta?.autoApprove));
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось загрузить воркеров");
+    }
+  }, []);
+
+  const workerAction = useCallback(
+    async (method: string, worker: AgentWorker, extra: Record<string, unknown> = {}) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await axios.post(API_URL, { _method: method, workerId: worker.id, ...extra });
+        if (method === "rotateWorkerToken" && res.data?.data?.token) {
+          setIssuedToken({ workerName: worker.name, token: res.data.data.token });
+        }
+        await fetchWorkers();
+      } catch (e: any) {
+        setError(e?.response?.data?.message ?? "Действие над воркером не удалось");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [fetchWorkers],
+  );
+
   useEffect(() => {
     fetchProjects();
-  }, [fetchProjects]);
+    fetchWorkers();
+  }, [fetchProjects, fetchWorkers]);
 
   useEffect(() => {
     fetchTasks(selectedProjectId);
@@ -190,6 +241,123 @@ const AgentizHome: React.FC = () => {
             </span>
           </div>
         )}
+      </div>
+
+      <div className="rounded-lg border p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Воркеры</h2>
+          <span className="text-xs text-muted-foreground">
+            {autoApprove
+              ? "AGENTIZ_WORKER_AUTO_APPROVE=true — новые воркеры активируются сами"
+              : "Новые воркеры ждут подтверждения администратора"}
+          </span>
+        </div>
+
+        {issuedToken && (
+          <div className="mb-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+            <div className="font-medium text-amber-900">
+              Новый токен для «{issuedToken.workerName}» — показывается один раз
+            </div>
+            <code className="mt-1 block break-all rounded bg-white px-2 py-1 text-xs">{issuedToken.token}</code>
+            <button onClick={() => setIssuedToken(null)} className="mt-2 rounded border px-2 py-1 text-xs">
+              Я скопировал
+            </button>
+          </div>
+        )}
+
+        {workers.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Воркеров нет. Внешний воркер регистрируется сам: POST /api/agentiz/worker/v1/register с enrollment-токеном.
+          </p>
+        )}
+        <ul className="space-y-2">
+          {workers.map((worker) => (
+            <li key={worker.id} className="rounded border p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={worker.status} />
+                <span className="font-medium">{worker.name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {worker.kind} · {worker.instanceId}
+                  {worker.version ? ` · v${worker.version}` : ""}
+                  {worker.tokenPrefix ? ` · ${worker.tokenPrefix}…` : " · без токена"}
+                </span>
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Последняя активность: {worker.lastSeenAt ?? "никогда"} · взято job: {worker.claimedJobsCount ?? 0} ·
+                проекты:{" "}
+                {worker.allowedProjectIds?.length
+                  ? worker.allowedProjectIds
+                      .map((id) => projects.find((p) => p.id === id)?.name ?? id)
+                      .join(", ")
+                  : "все"}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {worker.status !== "active" && worker.status !== "revoked" && (
+                  <button
+                    onClick={() => workerAction("approveWorker", worker)}
+                    disabled={busy}
+                    className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                  >
+                    Подтвердить
+                  </button>
+                )}
+                {worker.status === "active" && (
+                  <button
+                    onClick={() => workerAction("disableWorker", worker, { reason: "disabled from admin panel" })}
+                    disabled={busy}
+                    className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                  >
+                    Отключить
+                  </button>
+                )}
+                {worker.status !== "revoked" && worker.kind !== "local" && (
+                  <>
+                    <button
+                      onClick={() => workerAction("rotateWorkerToken", worker)}
+                      disabled={busy}
+                      className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                    >
+                      Перевыпустить токен
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`Отозвать доступ воркера «${worker.name}»? Токен перестанет работать.`)) {
+                          workerAction("revokeWorker", worker, { reason: "revoked from admin panel" });
+                        }
+                      }}
+                      disabled={busy}
+                      className="rounded border border-red-300 px-2 py-1 text-xs font-medium text-red-700 disabled:opacity-50"
+                    >
+                      Отозвать
+                    </button>
+                  </>
+                )}
+                <select
+                  value=""
+                  disabled={busy}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (!value) return;
+                    const next =
+                      value === "__all__"
+                        ? []
+                        : Array.from(new Set([...(worker.allowedProjectIds ?? []), value]));
+                    workerAction("setWorkerProjects", worker, { allowedProjectIds: next });
+                  }}
+                  className="rounded border px-2 py-1 text-xs"
+                >
+                  <option value="">Доступ к проектам…</option>
+                  <option value="__all__">Все проекты</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      + {project.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </li>
+          ))}
+        </ul>
       </div>
 
       <div className="rounded-lg border p-4">

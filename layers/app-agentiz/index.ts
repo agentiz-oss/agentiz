@@ -1,4 +1,4 @@
-import { AbstractApp, AppManager, Collection } from '@nodeknit/app-manager';
+import { AbstractApp, AppManager, Collection, CollectionHandler } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
 import { AdminizerRouteMiddleware, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
 import cron, { type ScheduledTask } from 'node-cron';
@@ -13,18 +13,33 @@ import { AgentRunLog } from './models/AgentRunLog';
 import { AgentRunJob } from './models/AgentRunJob';
 import { AgentRunEventDedup } from './models/AgentRunEventDedup';
 import { AgentRunResultDedup } from './models/AgentRunResultDedup';
+import { AgentWorker } from './models/AgentWorker';
 import { AgentPipelineService } from './services/AgentPipelineService';
 import { AgentWorkerApiService, WorkerApiError } from './services/AgentWorkerApiService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
+import { AgentWorkerRegistryService, WorkerRegistryError } from './services/AgentWorkerRegistryService';
 import { GitSyncService } from './services/GitSyncService';
 import { assertValidSpec, PipelineSpecError } from './services/PipelineSpecResolver';
-import { createGitProvider } from './lib/git';
-import { maskProjectForUI, restoreMaskedSecrets } from './lib/secrets';
+import { createGitProvider, githubProviderAdapter } from './lib/git';
+import type { GitProviderAdapter } from './lib/git';
+import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
+import { maskProjectForUI, maskWorkerForUI, restoreMaskedSecrets } from './lib/secrets';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
 
 /** Sync cadence for every active project. Per-project pollIntervalSec is honoured inside the tick. */
 const SYNC_CRON = process.env.AGENTIZ_SYNC_CRON ?? '*/10 * * * *';
+
+/** Worker API errors carry their own HTTP status; anything else is a 500 without internals. */
+function workerErrorResponse(res: any, error: unknown) {
+    if (error instanceof WorkerApiError) {
+        return res.status(error.status).json({ message: error.message });
+    }
+    if (error instanceof WorkerRegistryError) {
+        return res.status(error.status).json({ message: error.message, code: error.code });
+    }
+    return res.status(500).json({ message: error instanceof Error ? error.message : String(error) });
+}
 
 export class AppAgentiz extends AbstractApp {
     appId: string = 'app-agentiz';
@@ -47,10 +62,21 @@ export class AppAgentiz extends AbstractApp {
         AgentRunJob,
         AgentRunEventDedup,
         AgentRunResultDedup,
+        AgentWorker,
     ];
 
     @Collection
     mcpTools: IMcpTool[] = agentizMcpTools;
+
+    /**
+     * Git hosting adapters. app-agentiz owns the collection and the abstraction, every concrete
+     * platform is contributed by a layer — GitHub below, GitLab by app-agentiz-gitlab-integration.
+     */
+    @CollectionHandler('gitProviders')
+    gitProvidersHandler = new GitProviderCollectionHandler();
+
+    @Collection
+    gitProviders: GitProviderAdapter[] = [githubProviderAdapter];
 
     @Collection
     adminizerMiddlewares: AdminizerRouteMiddleware[] = [
@@ -85,6 +111,14 @@ export class AppAgentiz extends AbstractApp {
                         limit: 100,
                     });
                     return res.json({ data: runs.map((run) => run.toJSON()) });
+                }
+
+                if (method === 'getWorkers') {
+                    const workers = await AgentWorkerRegistryService.list();
+                    return res.json({
+                        data: workers.map(maskWorkerForUI),
+                        meta: { autoApprove: AgentWorkerRegistryService.isAutoApproveEnabled() },
+                    });
                 }
 
                 if (method === 'getRunDetails') {
@@ -170,6 +204,41 @@ export class AppAgentiz extends AbstractApp {
                         return res.json({ data: run.toJSON() });
                     }
 
+                    if (method === 'approveWorker' || method === 'disableWorker' || method === 'revokeWorker'
+                        || method === 'rotateWorkerToken' || method === 'setWorkerProjects') {
+                        const workerId = String(req.body?.workerId ?? '');
+                        if (!workerId) return res.status(400).json({ message: 'workerId is required' });
+                        const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
+                        const projectIds = Array.isArray(req.body?.allowedProjectIds)
+                            ? req.body.allowedProjectIds.map((id: unknown) => String(id))
+                            : undefined;
+                        try {
+                            if (method === 'approveWorker') {
+                                const actor = (req as any).session?.UserAP?.login ?? (req as any).user?.login ?? 'admin';
+                                const worker = await AgentWorkerRegistryService.approve(workerId, String(actor), projectIds);
+                                return res.json({ data: maskWorkerForUI(worker) });
+                            }
+                            if (method === 'disableWorker') {
+                                return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.disable(workerId, reason)) });
+                            }
+                            if (method === 'revokeWorker') {
+                                return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.revoke(workerId, reason)) });
+                            }
+                            if (method === 'setWorkerProjects') {
+                                const worker = await AgentWorkerRegistryService.setAllowedProjects(workerId, projectIds ?? null);
+                                return res.json({ data: maskWorkerForUI(worker) });
+                            }
+                            // The rotated token is returned exactly once: it is stored only as a hash.
+                            const rotated = await AgentWorkerRegistryService.rotateToken(workerId);
+                            return res.json({ data: { worker: maskWorkerForUI(rotated.worker), token: rotated.token } });
+                        } catch (error) {
+                            if (error instanceof WorkerRegistryError) {
+                                return res.status(error.status).json({ message: error.message, code: error.code });
+                            }
+                            throw error;
+                        }
+                    }
+
                     if (method === 'validateSpec') {
                         try {
                             assertValidSpec(req.body?.spec);
@@ -195,6 +264,18 @@ export class AppAgentiz extends AbstractApp {
                 if (req.path.endsWith('/healthz') || req.path.endsWith('/readyz')) {
                     return res.json({ ok: true, workerApiEnabled: AgentWorkerApiService.isEnabled() });
                 }
+                // A freshly enrolled worker polls /me until an administrator approves it.
+                if (req.path.endsWith('/me')) {
+                    try {
+                        const worker = await AgentWorkerRegistryService.authenticate(
+                            req.header('authorization'),
+                            req.ip,
+                        );
+                        return res.json(AgentWorkerRegistryService.describe(worker));
+                    } catch (error) {
+                        return workerErrorResponse(res, error);
+                    }
+                }
                 return next();
             },
         },
@@ -207,39 +288,43 @@ export class AppAgentiz extends AbstractApp {
                     const baseIndex = req.path.indexOf(base);
                     const relativePath = baseIndex >= 0 ? req.path.slice(baseIndex + base.length) || '/' : req.path;
                     const auth = req.header('authorization') ?? '';
+                    const ip = req.ip ?? null;
+
+                    // Enrollment: the only endpoint that accepts the shared enrollment token, and
+                    // the only one that ever returns a personal worker token (once).
+                    if (relativePath === '/register') {
+                        return res.json(await AgentWorkerRegistryService.register(req.body, auth, ip));
+                    }
 
                     if (relativePath === '/claims') {
-                        const claim = await AgentWorkerApiService.claim(req.body, auth);
+                        const claim = await AgentWorkerApiService.claim(req.body, auth, ip);
                         if (!claim) return res.status(204).send();
                         return res.json(claim);
                     }
 
                     const heartbeat = relativePath.match(/^\/jobs\/([^/]+)\/heartbeat$/);
                     if (heartbeat) {
-                        return res.json(await AgentWorkerApiService.heartbeat(heartbeat[1], req.body, auth));
+                        return res.json(await AgentWorkerApiService.heartbeat(heartbeat[1], req.body, auth, ip));
                     }
 
                     const events = relativePath.match(/^\/jobs\/([^/]+)\/events:batch$/);
                     if (events) {
-                        return res.json(await AgentWorkerApiService.recordEvents(events[1], req.body, auth));
+                        return res.json(await AgentWorkerApiService.recordEvents(events[1], req.body, auth, ip));
                     }
 
                     const result = relativePath.match(/^\/jobs\/([^/]+)\/result$/);
                     if (result) {
-                        return res.json(await AgentWorkerApiService.applyResult(result[1], req.body, auth));
+                        return res.json(await AgentWorkerApiService.applyResult(result[1], req.body, auth, ip));
                     }
 
                     const release = relativePath.match(/^\/jobs\/([^/]+)\/release$/);
                     if (release) {
-                        return res.json(await AgentWorkerApiService.release(release[1], req.body, auth));
+                        return res.json(await AgentWorkerApiService.release(release[1], req.body, auth, ip));
                     }
 
                     return next();
                 } catch (error) {
-                    if (error instanceof WorkerApiError) {
-                        return res.status(error.status).json({ message: error.message });
-                    }
-                    return res.status(500).json({ message: error instanceof Error ? error.message : String(error) });
+                    return workerErrorResponse(res, error);
                 }
             },
         },
@@ -263,6 +348,7 @@ export class AppAgentiz extends AbstractApp {
             generateAdminizerModelConfig(AgentStageExecution),
             generateAdminizerModelConfig(AgentRunLog),
             generateAdminizerModelConfig(AgentRunJob),
+            generateAdminizerModelConfig(AgentWorker),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 

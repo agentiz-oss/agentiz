@@ -6,7 +6,13 @@ import path from 'path';
 export default defineConfig({
   build: {
     outDir: 'dist/modules', emptyOutDir: true, cssCodeSplit: true,
-    lib: { entry: { AgentizHome: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizHome.tsx') }, formats: ['es'] },
+    lib: {
+      entry: {
+        AgentizHome: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizHome.tsx'),
+        AgentizGitlab: path.resolve(__dirname, 'layers/app-agentiz-gitlab-integration/adminizer/modules/AgentizGitlab.tsx'),
+      },
+      formats: ['es'],
+    },
     rollupOptions: { external: ['react', 'react-dom', '@inertiajs/react', 'lucide-react'], output: { entryFileNames: '[name].js' } },
   },
   plugins: [react({ jsxRuntime: 'classic' }), viteExternalsPlugin({

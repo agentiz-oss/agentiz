@@ -11,6 +11,8 @@ import { AgentTask } from '../models/AgentTask';
 import type { AgentRunLogLevel, AgentTaskStatus } from '../types/agentiz';
 import type { FileChange } from '../lib/git';
 import { AgentPipelineService } from './AgentPipelineService';
+import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
+import type { AgentWorker } from '../models/AgentWorker';
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_LEASE_MS = 60_000;
@@ -28,7 +30,6 @@ type WorkerEvent = {
 
 type WorkerResult = {
   schemaVersion: number;
-  workerId: string;
   attempt: number;
   leaseToken: string;
   resultId: string;
@@ -74,30 +75,35 @@ export class AgentWorkerApiService {
     return process.env.AGENTIZ_WORKER_API_ENABLED === 'true';
   }
 
-  static assertEnabledAndAuthorized(authHeader: string): void {
+  /**
+   * Every job endpoint runs as a registered, approved worker: there is no shared token any more,
+   * the bearer is a personal token issued by AgentWorkerRegistryService.
+   */
+  static async authorize(authHeader: string | undefined, ip?: string | null): Promise<AgentWorker> {
     if (!this.isEnabled()) throw new WorkerApiError(503, 'Agentiz Worker API is disabled');
-    const token = process.env.AGENTIZ_WORKER_TOKEN;
-    if (!token) throw new WorkerApiError(503, 'AGENTIZ_WORKER_TOKEN is not configured');
-    if (authHeader !== `Bearer ${token}`) throw new WorkerApiError(401, 'Invalid worker token');
+    return AgentWorkerRegistryService.authenticateActive(authHeader, ip);
   }
 
-  static async claim(body: unknown, authHeader: string): Promise<Record<string, unknown> | null> {
-    this.assertEnabledAndAuthorized(authHeader);
+  static async claim(body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown> | null> {
+    const worker = await this.authorize(authHeader, ip);
     const payload = objectBody(body);
     if (payload.schemaVersion !== SCHEMA_VERSION) throw new WorkerApiError(400, 'Unsupported schemaVersion');
-    const workerId = typeof payload.workerId === 'string' && payload.workerId ? payload.workerId : null;
-    if (!workerId) throw new WorkerApiError(400, 'workerId is required');
 
     const sequelize = AgentRunJob.sequelize;
     if (!sequelize) throw new WorkerApiError(500, 'Sequelize is not initialized');
+    const workerId = worker.id;
     const leaseToken = randomUUID();
     const lockedUntil = datePlus(DEFAULT_LEASE_MS);
+    // The allowlist is enforced in the claim query itself: a worker cannot even see a snapshot of
+    // a project it was not granted.
+    const allowedProjectIds = worker.allowedProjectIds?.length ? worker.allowedProjectIds : null;
 
     const job = await sequelize.transaction(async (transaction) => {
       const candidate = await AgentRunJob.findOne({
         where: {
           status: 'queued',
           availableAt: { [Op.lte]: new Date() },
+          ...(allowedProjectIds ? { projectId: { [Op.in]: allowedProjectIds } } : {}),
         },
         order: [['priority', 'ASC'], ['createdAt', 'ASC']],
         transaction,
@@ -117,12 +123,18 @@ export class AgentWorkerApiService {
     });
 
     if (!job) return null;
+    await AgentWorkerRegistryService.noteClaim(worker);
     await this.markRunStarted(job);
-    await AgentPipelineService.log(job.runId, null, 'info', `Worker job claimed by ${workerId}`, { jobId: job.id, attempt: job.attempt });
+    await AgentPipelineService.log(job.runId, null, 'info', `Worker job claimed by ${worker.name}`, {
+      jobId: job.id,
+      attempt: job.attempt,
+      workerId,
+    });
     return {
       schemaVersion: SCHEMA_VERSION,
       jobId: job.id,
       runId: job.runId,
+      workerId,
       attempt: job.attempt,
       leaseToken,
       leaseExpiresAt: lockedUntil.toISOString(),
@@ -131,10 +143,10 @@ export class AgentWorkerApiService {
     };
   }
 
-  static async heartbeat(jobId: string, body: unknown, authHeader: string): Promise<Record<string, unknown>> {
-    this.assertEnabledAndAuthorized(authHeader);
+  static async heartbeat(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
     const payload = objectBody(body);
-    const job = await this.requireLeasedJob(jobId, payload);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
     const lockedUntil = datePlus(DEFAULT_LEASE_MS);
     await job.update({ status: 'running', lockedUntil });
     return {
@@ -145,10 +157,10 @@ export class AgentWorkerApiService {
     };
   }
 
-  static async recordEvents(jobId: string, body: unknown, authHeader: string): Promise<Record<string, unknown>> {
-    this.assertEnabledAndAuthorized(authHeader);
+  static async recordEvents(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
     const payload = objectBody(body);
-    const job = await this.requireLeasedJob(jobId, payload);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
     const events = Array.isArray(payload.events) ? payload.events as WorkerEvent[] : [];
     let accepted = 0;
     let lastAcceptedSequence = 0;
@@ -167,10 +179,10 @@ export class AgentWorkerApiService {
     return { schemaVersion: SCHEMA_VERSION, accepted, lastAcceptedSequence };
   }
 
-  static async applyResult(jobId: string, body: unknown, authHeader: string): Promise<Record<string, unknown>> {
-    this.assertEnabledAndAuthorized(authHeader);
+  static async applyResult(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
     const payload = objectBody(body) as WorkerResult;
-    const job = await this.requireLeasedJob(jobId, payload);
+    const job = await this.requireLeasedJob(jobId, payload as unknown as Record<string, unknown>, worker);
     if (!payload.resultId) throw new WorkerApiError(400, 'resultId is required');
     const [dedup, created] = await AgentRunResultDedup.findOrCreate({
       where: { jobId: job.id, attempt: job.attempt, resultId: payload.resultId },
@@ -228,10 +240,10 @@ export class AgentWorkerApiService {
     return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: (await AgentRun.findByPk(job.runId))?.status ?? null };
   }
 
-  static async release(jobId: string, body: unknown, authHeader: string): Promise<Record<string, unknown>> {
-    this.assertEnabledAndAuthorized(authHeader);
+  static async release(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
     const payload = objectBody(body);
-    const job = await this.requireLeasedJob(jobId, payload);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
     const message = typeof payload.errorMessage === 'string' ? payload.errorMessage : null;
     await job.update({
       status: 'released',
@@ -245,15 +257,15 @@ export class AgentWorkerApiService {
     return { schemaVersion: SCHEMA_VERSION, released: true, retryAt: job.availableAt };
   }
 
-  private static async requireLeasedJob(jobId: string, payload: Record<string, unknown>): Promise<AgentRunJob> {
+  private static async requireLeasedJob(jobId: string, payload: Record<string, unknown>, worker: AgentWorker): Promise<AgentRunJob> {
     if (payload.schemaVersion !== SCHEMA_VERSION) throw new WorkerApiError(400, 'Unsupported schemaVersion');
-    const workerId = typeof payload.workerId === 'string' && payload.workerId ? payload.workerId : null;
     const leaseToken = typeof payload.leaseToken === 'string' && payload.leaseToken ? payload.leaseToken : null;
     const attempt = typeof payload.attempt === 'number' ? payload.attempt : null;
-    if (!workerId || !leaseToken || !attempt) throw new WorkerApiError(400, 'workerId, attempt and leaseToken are required');
+    if (!leaseToken || !attempt) throw new WorkerApiError(400, 'attempt and leaseToken are required');
     const job = await AgentRunJob.findByPk(jobId);
     if (!job) throw new WorkerApiError(404, 'Job not found');
-    if (job.workerId !== workerId || job.attempt !== attempt || job.leaseTokenHash !== hashToken(leaseToken)) {
+    // The worker id comes from the authenticated identity, never from the request body.
+    if (job.workerId !== worker.id || job.attempt !== attempt || job.leaseTokenHash !== hashToken(leaseToken)) {
       throw new WorkerApiError(409, 'Lease does not belong to this worker');
     }
     if (job.lockedUntil && job.lockedUntil.getTime() < Date.now()) {

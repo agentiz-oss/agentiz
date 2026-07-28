@@ -1,6 +1,6 @@
 import { AgentProject } from '../models/AgentProject';
 import { AgentTask } from '../models/AgentTask';
-import { createGitProvider } from '../lib/git';
+import { createGitProvider, createGitProviderForTask } from '../lib/git';
 import type { NormalizedExternalTask } from '../lib/git';
 
 export interface SyncResult {
@@ -10,6 +10,15 @@ export interface SyncResult {
   updated: number;
   errors: string[];
 }
+
+/**
+ * Extra task sources attached to a project by another layer (e.g. the GitLab integrations layer,
+ * which mirrors issues from every repository linked to the project). Their counters are merged
+ * into the SyncResult so one "sync" action covers everything wired to the project.
+ */
+export type ProjectSyncContributor = (project: AgentProject) => Promise<Omit<SyncResult, 'projectId'>>;
+
+const syncContributors = new Map<string, ProjectSyncContributor>();
 
 /** Once our pipeline owns a task, the tracker's own state must not overwrite our lifecycle. */
 const LOCALLY_OWNED_STATUSES = new Set(['queued', 'running', 'waiting_review']);
@@ -23,11 +32,32 @@ const LOCALLY_OWNED_STATUSES = new Set(['queued', 'running', 'waiting_review']);
  * upstream is marked `ignored` so it stops being picked up.
  */
 export class GitSyncService {
+  static registerSyncContributor(appId: string, contributor: ProjectSyncContributor): void {
+    syncContributors.set(appId, contributor);
+  }
+
+  static unregisterSyncContributor(appId: string): void {
+    syncContributors.delete(appId);
+  }
+
+  /** True when the project carries its own repo credentials; false when it only has integrations. */
+  private static hasOwnRepo(project: AgentProject): boolean {
+    return Boolean(project.secrets?.token && project.repoConfig?.owner && project.repoConfig?.repo);
+  }
+
   static async syncProject(projectId: string): Promise<SyncResult> {
     const project = await AgentProject.findByPk(projectId);
     if (!project) throw new Error(`AgentProject ${projectId} not found`);
 
     const result: SyncResult = { projectId, fetched: 0, created: 0, updated: 0, errors: [] };
+
+    // A project may own no repository at all and get every task from linked integrations.
+    if (!this.hasOwnRepo(project)) {
+      await this.runContributors(project, result);
+      await project.update({ lastSyncedAt: new Date() });
+      return result;
+    }
+
     const provider = createGitProvider(project);
 
     let external: NormalizedExternalTask[];
@@ -40,6 +70,7 @@ export class GitSyncService {
       const message = error instanceof Error ? error.message : String(error);
       result.errors.push(message);
       console.error(`[AppAgentiz] sync failed for project ${project.slug}: ${message}`);
+      await this.runContributors(project, result);
       return result;
     }
 
@@ -90,11 +121,28 @@ export class GitSyncService {
       }
     }
 
+    await this.runContributors(project, result);
+
     await project.update({ lastSyncedAt: new Date() });
     console.log(
       `[AppAgentiz] synced project ${project.slug}: fetched=${result.fetched} created=${result.created} updated=${result.updated} errors=${result.errors.length}`,
     );
     return result;
+  }
+
+  private static async runContributors(project: AgentProject, result: SyncResult): Promise<void> {
+    for (const [appId, contributor] of syncContributors) {
+      try {
+        const partial = await contributor(project);
+        result.fetched += partial.fetched;
+        result.created += partial.created;
+        result.updated += partial.updated;
+        result.errors.push(...partial.errors);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        result.errors.push(`${appId}: ${message}`);
+      }
+    }
   }
 
   static async syncAllActiveProjects(): Promise<SyncResult[]> {
@@ -121,7 +169,7 @@ export class GitSyncService {
     const project = await AgentProject.findByPk(task.projectId);
     if (!project) throw new Error(`AgentProject ${task.projectId} not found`);
 
-    const provider = createGitProvider(project);
+    const provider = await createGitProviderForTask(task, project);
     await provider.updateTaskStatus(task.externalId, task.status);
   }
 }

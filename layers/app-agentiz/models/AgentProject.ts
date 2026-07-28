@@ -39,20 +39,20 @@ export class AgentProject extends Model<InferAttributes<AgentProject>, InferCrea
     title: 'Repo Provider',
     type: 'select',
     isIn: { github: 'GitHub', gitlab: 'GitLab' },
-    required: true,
+    tooltip: 'Optional: leave empty when every repository comes from an integration',
     views: { list: true, add: true, edit: true },
   })
-  @Column({ type: DataType.STRING, allowNull: false })
-  declare repoProvider: GitProviderType;
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare repoProvider: GitProviderType | null;
 
   @AdminizerField({
     title: 'Repo Config',
     type: 'jsoneditor',
-    tooltip: '{ owner, repo, baseUrl?, defaultBranch? } - passed to the abstract GitProvider',
+    tooltip: '{ owner, repo, baseUrl?, defaultBranch? } - passed to the abstract GitProvider. Optional when repositories are attached through integrations.',
     views: { list: false, add: true, edit: true },
   })
-  @Column({ type: DataType.JSONB, allowNull: false })
-  declare repoConfig: AgentProjectRepoConfig;
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare repoConfig: AgentProjectRepoConfig | null;
 
   @AdminizerField({
     title: 'Tracker Config',

@@ -20,6 +20,18 @@ export function maskProjectForUI(project: any): any {
   return copy;
 }
 
+/**
+ * Worker rows carry the hash of a personal token. The hash is not a secret an admin needs, and
+ * exposing it turns a read-only UI leak into an offline attack surface, so it never leaves the
+ * server — the visible prefix is enough to identify a token.
+ */
+export function maskWorkerForUI(worker: any): any {
+  const raw = typeof worker?.toJSON === 'function' ? worker.toJSON() : worker;
+  const copy = JSON.parse(JSON.stringify(raw ?? {}));
+  delete copy.tokenHash;
+  return copy;
+}
+
 export function restoreMaskedSecrets(newSecrets: any, oldSecrets: any): any {
   const merged = JSON.parse(JSON.stringify(newSecrets ?? {}));
   for (const key of SECRET_KEYS) {

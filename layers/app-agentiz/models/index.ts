@@ -8,3 +8,4 @@ export { AgentRunLog } from './AgentRunLog';
 export { AgentRunJob } from './AgentRunJob';
 export { AgentRunEventDedup } from './AgentRunEventDedup';
 export { AgentRunResultDedup } from './AgentRunResultDedup';
+export { AgentWorker } from './AgentWorker';

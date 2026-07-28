@@ -5,7 +5,7 @@ import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
-import { createGitProvider } from '../lib/git';
+import { createGitProviderForTask, resolveTaskRepository } from '../lib/git';
 import type { FileChange } from '../lib/git';
 import { assertValidSpec, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
@@ -214,7 +214,8 @@ export class AgentPipelineService {
       return;
     }
 
-    const provider = createGitProvider(project);
+    // Resolved per task: with integrations a project can span several repositories.
+    const provider = await createGitProviderForTask(task, project);
 
     if (action.type === 'comment_only') {
       const body = `Agentiz run \`${run.id}\` finished.\n\n${summary}`;
@@ -236,7 +237,7 @@ export class AgentPipelineService {
 
     const commit = await provider.commitChanges({
       branch,
-      baseBranch: project.repoConfig.defaultBranch,
+      baseBranch: project.repoConfig?.defaultBranch,
       message,
       changes,
     });
@@ -245,7 +246,7 @@ export class AgentPipelineService {
 
     const pr = await provider.openPullRequest({
       branch,
-      baseBranch: project.repoConfig.defaultBranch,
+      baseBranch: project.repoConfig?.defaultBranch,
       title: renderTemplate(action.pullRequestTitleTemplate ?? 'agentiz: {{title}}', templateValues),
       body: `Automated by agentiz run \`${run.id}\` for task #${task.externalId}.\n\n${summary}`,
     });
@@ -347,19 +348,21 @@ export class AgentWorkerJobBuilder {
       };
     }));
 
-    const baseHost = project.repoConfig.baseUrl
-      ? project.repoConfig.baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
-      : project.repoProvider === 'gitlab' ? 'gitlab.com' : 'github.com';
-    const cloneUrl = `https://${baseHost}/${project.repoConfig.owner}/${project.repoConfig.repo}.git`;
+    // The task may come from a linked integration repository rather than the project's own repo.
+    const repository = await resolveTaskRepository(task, project);
+    const baseHost = repository.baseUrl
+      ? repository.baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+      : repository.provider === 'gitlab' ? 'gitlab.com' : 'github.com';
+    const cloneUrl = `https://${baseHost}/${repository.owner}/${repository.repo}.git`;
     return {
       schemaVersion: 1,
       runId: run.id,
       repository: {
-        provider: project.repoProvider,
+        provider: repository.provider,
         cloneUrl,
-        owner: project.repoConfig.owner,
-        repo: project.repoConfig.repo,
-        baseRef: project.repoConfig.defaultBranch ?? 'main',
+        owner: repository.owner,
+        repo: repository.repo,
+        baseRef: repository.defaultBranch ?? 'main',
       },
       task: {
         id: task.id,

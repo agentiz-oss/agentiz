@@ -1,15 +1,19 @@
 import { Op } from 'sequelize';
 import { AgentRun } from '../models/AgentRun';
 import { AgentRunJob } from '../models/AgentRunJob';
+import type { AgentWorker } from '../models/AgentWorker';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentWorkerApiService } from './AgentWorkerApiService';
+import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
 
 const POLL_INTERVAL_MS = Number(process.env.AGENTIZ_LOCAL_WORKER_POLL_MS ?? 3000);
-const LOCAL_WORKER_ID = process.env.AGENTIZ_LOCAL_WORKER_ID ?? `agentiz-local-${process.pid}`;
+/** Stable instance id so a restart reuses the same AgentWorker row instead of piling up records. */
+const LOCAL_INSTANCE_ID = process.env.AGENTIZ_LOCAL_WORKER_ID ?? 'agentiz-local';
 
 export class AgentWorkerQueueService {
   private static timer: NodeJS.Timeout | null = null;
   private static running = false;
+  private static worker: AgentWorker | null = null;
 
   static isEnabled(): boolean {
     if (process.env.AGENTIZ_LOCAL_WORKER_ENABLED === 'true') return true;
@@ -31,7 +35,7 @@ export class AgentWorkerQueueService {
     void this.drainOnce().catch((error) => {
       console.error('[AgentizWorkerQueue] initial drain failed:', error);
     });
-    console.log(`[AgentizWorkerQueue] local worker enabled as ${LOCAL_WORKER_ID}`);
+    console.log(`[AgentizWorkerQueue] local worker enabled as ${LOCAL_INSTANCE_ID}`);
   }
 
   static stop(): void {
@@ -45,22 +49,38 @@ export class AgentWorkerQueueService {
     if (this.running) return;
     this.running = true;
     try {
-      const job = await this.claimLocalJob();
+      const worker = await this.identity();
+      // The in-process worker obeys the same gate as remote ones: disable it in the admin panel
+      // and it stops receiving jobs.
+      if (worker.status !== 'active') return;
+      const job = await this.claimLocalJob(worker);
       if (!job) return;
-      await this.executeLocalJob(job);
+      await this.executeLocalJob(worker, job);
     } finally {
       this.running = false;
     }
   }
 
-  private static async claimLocalJob(): Promise<AgentRunJob | null> {
+  /** The local worker is a registered AgentWorker too, so the admin list shows every executor. */
+  private static async identity(): Promise<AgentWorker> {
+    if (!this.worker) {
+      this.worker = await AgentWorkerRegistryService.ensureLocalWorker(LOCAL_INSTANCE_ID, `Local worker (${LOCAL_INSTANCE_ID})`);
+    } else {
+      await this.worker.reload();
+    }
+    return this.worker;
+  }
+
+  private static async claimLocalJob(worker: AgentWorker): Promise<AgentRunJob | null> {
     const sequelize = AgentRunJob.sequelize;
     if (!sequelize) throw new Error('Sequelize is not initialized');
+    const allowedProjectIds = worker.allowedProjectIds?.length ? worker.allowedProjectIds : null;
     return sequelize.transaction(async (transaction) => {
       const job = await AgentRunJob.findOne({
         where: {
           status: 'queued',
           availableAt: { [Op.lte]: new Date() },
+          ...(allowedProjectIds ? { projectId: { [Op.in]: allowedProjectIds } } : {}),
         },
         order: [['priority', 'ASC'], ['createdAt', 'ASC']],
         transaction,
@@ -70,7 +90,7 @@ export class AgentWorkerQueueService {
       if (!job) return null;
       await job.update({
         status: 'running',
-        workerId: LOCAL_WORKER_ID,
+        workerId: worker.id,
         attempt: job.attempt + 1,
         lockedUntil: new Date(Date.now() + 60 * 60 * 1000),
         lastError: null,
@@ -79,9 +99,10 @@ export class AgentWorkerQueueService {
     });
   }
 
-  private static async executeLocalJob(job: AgentRunJob): Promise<void> {
+  private static async executeLocalJob(worker: AgentWorker, job: AgentRunJob): Promise<void> {
+    await AgentWorkerRegistryService.noteClaim(worker);
     await AgentPipelineService.log(job.runId, null, 'info', `Local worker picked job ${job.id}`, {
-      workerId: LOCAL_WORKER_ID,
+      workerId: worker.id,
       attempt: job.attempt,
     });
     try {

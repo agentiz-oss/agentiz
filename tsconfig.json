@@ -38,6 +38,8 @@
     "seeds/**/*.ts",
     "layers/app-agentiz/**/*.ts",
     "layers/app-agentiz/**/*.tsx",
+    "layers/app-agentiz-gitlab-integration/**/*.ts",
+    "layers/app-agentiz-gitlab-integration/**/*.tsx",
     "vite.config.ts"
   ]
 }

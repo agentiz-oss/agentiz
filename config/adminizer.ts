@@ -39,6 +39,14 @@ export const adminizerConfig: AdminizerConfig = {
                 icon: 'smart_toy',
                 section: 'Agentiz',
             },
+            {
+                id: 'agentiz-gitlab',
+                title: 'GitLab-интеграции',
+                link: '/dashboard/agentiz-gitlab',
+                type: 'self',
+                icon: 'hub',
+                section: 'Agentiz',
+            },
         ],
     },
 }

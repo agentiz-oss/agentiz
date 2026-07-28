@@ -1,12 +1,13 @@
-import { GitProvider } from './GitProvider';
+import { GitProvider } from '../../app-agentiz/lib/git';
 import type {
   CommitChangesParams,
   CommitResult,
+  GitProviderAdapter,
   ListTasksParams,
   NormalizedExternalTask,
   OpenPullRequestParams,
   PullRequestResult,
-} from './GitProvider';
+} from '../../app-agentiz/lib/git';
 
 const DEFAULT_API_BASE = 'https://gitlab.com';
 
@@ -21,6 +22,10 @@ interface GitLabIssue {
 
 /**
  * GitLab implementation of the abstract GitProvider (REST v4).
+ *
+ * Lives in this layer, not in app-agentiz: the core knows only the abstract GitProvider and gets
+ * concrete platforms through the `gitProviders` app-manager collection (see gitlabProviderAdapter
+ * at the bottom of this file).
  *
  * Notable shape differences the abstraction hides from callers:
  *  - the project is addressed by a URL-encoded "owner/repo" path, not two separate segments;
@@ -39,11 +44,18 @@ export class GitLabProvider extends GitProvider {
     return encodeURIComponent(`${this.repo.owner}/${this.repo.repo}`);
   }
 
-  private async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  /** OAuth access tokens are only accepted as Bearer; personal access tokens use PRIVATE-TOKEN. */
+  private get authHeaders(): Record<string, string> {
+    return this.credentials.authScheme === 'bearer'
+      ? { Authorization: `Bearer ${this.credentials.token}` }
+      : { 'PRIVATE-TOKEN': this.credentials.token };
+  }
+
+  protected async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${this.apiBase}${path}`, {
       method,
       headers: {
-        'PRIVATE-TOKEN': this.credentials.token,
+        ...this.authHeaders,
         Accept: 'application/json',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
@@ -171,3 +183,13 @@ export class GitLabProvider extends GitProvider {
     return { url: mr.web_url, number: mr.iid };
   }
 }
+
+/**
+ * What this layer contributes to the `gitProviders` collection: as long as the layer is mounted,
+ * projects with `repoProvider: 'gitlab'` are served by this class; unmounting it takes GitLab
+ * support out of app-agentiz with it.
+ */
+export const gitlabProviderAdapter: GitProviderAdapter = {
+  type: 'gitlab',
+  create: (repo, credentials) => new GitLabProvider('gitlab', repo, credentials),
+};
