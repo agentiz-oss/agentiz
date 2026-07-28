@@ -1,0 +1,12 @@
+{
+  "name": "@agentiz/app-agentiz",
+  "appId": "app-agentiz",
+  "appName": "App Agentiz",
+  "version": "1.0.0",
+  "description": "Agentic pipeline runner: syncs tasks from external trackers (GitHub/GitLab issues), runs a per-project sequence of agent roles (investigate -> decide -> fix -> commit) and pushes the result back to the repository.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-adminizer": "*",
+    "app-mcp": "*"
+  }
+}

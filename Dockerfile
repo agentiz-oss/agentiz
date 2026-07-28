@@ -1,0 +1,64 @@
+ARG NODE_ENV=production
+ARG GITHUB_NPM_TOKEN
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+
+# Stage 1: Install dependencies from registry (no local_modules)
+FROM node:20-alpine AS deps
+WORKDIR /app
+
+ARG GITHUB_NPM_TOKEN
+
+RUN corepack enable && corepack prepare yarn@4.14.1 --activate
+COPY package.json ./
+# patches referenced from package.json > resolutions, must be in place before install
+COPY .yarn/patches ./.yarn/patches
+RUN set -eu; \
+    printf 'nodeLinker: node-modules\n' > .yarnrc.yml; \
+    printf 'npmScopes:\n  nodeknit:\n    npmRegistryServer: "https://npm.pkg.github.com"\n    npmAlwaysAuth: true\n' >> .yarnrc.yml; \
+    if [ -n "${GITHUB_NPM_TOKEN:-}" ]; then \
+        printf 'npmRegistries:\n  "https://npm.pkg.github.com":\n    npmAuthToken: "%s"\n' "$GITHUB_NPM_TOKEN" >> .yarnrc.yml; \
+    fi; \
+    sed -r -i 's#"(@nodeknit/[^"]+)":\s*"file:\./local_modules/[^"]+"#"\1": "commit"#g' package.json; \
+    yarn workspaces focus
+
+# Stage 2: Build the application
+FROM deps AS builder
+WORKDIR /app
+ENV NODE_ENV=${NODE_ENV}
+COPY . .
+COPY --from=deps /app/package.json ./package.json
+COPY --from=deps /app/.yarnrc.yml ./.yarnrc.yml
+
+# Build adminizer UI modules consumed from /dashboard/modules/*
+RUN npm run build:vite \
+    && test -f /app/dist/modules/AgentizHome.js
+
+
+# Stage 3: Only prod modules
+FROM deps AS focus_production
+WORKDIR /app
+RUN set -eu; \
+    yarn workspaces focus --all --production; \
+    test -d /app/node_modules
+
+# Stage 4: Final runtime image
+FROM node:20-alpine AS release
+WORKDIR /app
+
+RUN apk add --no-cache python3
+RUN npm install -g tsx pm2
+
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV NODE_ENV=${NODE_ENV}
+ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_TIME=${BUILD_TIME}
+
+COPY --from=builder /app .
+COPY --from=focus_production /app/node_modules ./node_modules
+
+RUN chmod +x /app/bootstrap.sh
+
+EXPOSE 17280
+CMD ["/bin/sh", "/app/bootstrap.sh"]

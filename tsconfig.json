@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "target": "ESNext",
+    "jsx": "react-jsx",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "sourceMap": false,
+    "declaration": true,
+    "removeComments": false,
+    "skipLibCheck": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "baseUrl": ".",
+    "alwaysStrict": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "lib": ["dom", "esnext"],
+    "paths": {
+      "@/components/ui/*": ["./node_modules/adminizer/ui/components/ui/*"]
+    }
+  },
+  "ts-node": {
+    "esm": true,
+    "experimentalSpecifierResolution": "node"
+  },
+  "lib": ["esnext"],
+  "exclude": [
+    "node_modules",
+    "src",
+    "cloud-panel/**",
+    "adminizer/**"
+  ],
+  "include": [
+    "index.ts",
+    "config/**/*.ts",
+    "devtools/environments.ts",
+    "seeds/**/*.ts",
+    "layers/app-agentiz/**/*.ts",
+    "layers/app-agentiz/**/*.tsx",
+    "vite.config.ts"
+  ]
+}

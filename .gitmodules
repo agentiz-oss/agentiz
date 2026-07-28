@@ -1,0 +1,20 @@
+# This file is automatically created by git when adding submodules
+# Example entry:
+# [submodule "local_modules/app-adminizer"]
+#     path = local_modules/app-adminizer
+#     url = git@github.com:nodeknit/app-adminizer.git
+[submodule "local_modules/app-adminizer"]
+	path = local_modules/app-adminizer
+	url = git@github.com:nodeknit/app-adminizer.git
+[submodule "local_modules/app-manager"]
+	path = local_modules/app-manager
+	url = git@github.com:nodeknit/app-manager.git
+[submodule "local_modules/app-graphql"]
+	path = local_modules/app-graphql
+	url = git@github.com:nodeknit/app-graphql.git
+[submodule "local_modules/app-telegram-bot"]
+	path = local_modules/app-telegram-bot
+	url = git@github.com:nodeknit/app-telegram-bot.git
+[submodule "local_modules/app-mcp"]
+	path = local_modules/app-mcp
+	url = git@github.com:nodeknit/app-mcp.git

@@ -1,0 +1,23 @@
+--- a/lib/model/adapter/sequelize.js
++++ b/lib/model/adapter/sequelize.js
+@@ -10,6 +10,11 @@
+         sqlType.includes("text")) {
+         return "string";
+     }
++    // postgres renders DATE as "TIMESTAMP WITH TIME ZONE", sqlite as "DATETIME"
++    if (sqlType.includes("date") ||
++        sqlType.includes("timestamp") ||
++        sqlType.includes("time"))
++        return "string";
+     // tinyint(1) is used by MySQL/MariaDB for BOOLEAN
+     if (sqlType.includes("bool") || sqlType === "tinyint(1)")
+         return "boolean";
+@@ -17,8 +22,6 @@
+         return "number";
+     if (sqlType.includes("json"))
+         return "json";
+-    if (sqlType.includes("date"))
+-        return "string";
+     return "ref";
+ }
+ export function mapSequelizeToAdminizerAttributes(model) {

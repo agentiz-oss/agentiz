@@ -1,0 +1,12 @@
+### Отправка POST запроса на /event
+POST http://localhost:3000/event
+Content-Type: application/json
+
+{
+  "type": "user-click",
+  "timestamp": "2025-04-16T12:00:00Z",
+  "data": {
+    "buttonId": "submit-1",
+    "userId": 123
+  }
+}

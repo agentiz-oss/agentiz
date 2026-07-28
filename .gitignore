@@ -1,0 +1,72 @@
+# ── Зависимости и сборка ─────────────────────────────────────────────
+node_modules
+dist
+local_modules/**/dist
+coverage
+*.tsbuildinfo
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+webapp/vite.config.ts.timestamp-*
+
+# ── Секреты и локальные конфиги ──────────────────────────────────────
+# .env матчится на любой глубине, .env.example остаётся в репозитории
+.env
+.env.local
+*.env.local
+.env.*.local
+deploy/.env.local
+memoryoss.toml
+.claude/
+.vscode/
+
+# ── Данные, логи, временное ──────────────────────────────────────────
+data/*
+!data/.gitkeep
+logs/
+*.log
+.tmp
+temp
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+deploy/data/
+deploy/pgdata/
+deploy/worker-output
+codex.patch
+
+# ── Артефакты отладки: скриншоты, прогоны Playwright ─────────────────
+*.png
+.playwright-mcp
+playwright-report
+test-results
+.fastembed_cache
+
+# ── Симлинки на соседние проекты (валидны только на машине разработчика) ──
+/adminizer
+/restoapp
+/cbs-
+/docs
+/mybox2iiko
+/apps
+.codex
+
+# ── Внутренние рабочие заметки (не для публичного репозитория) ───────
+.ai-notes/
+.ai-notes4/
+
+# ── Локальные песочницы ──────────────────────────────────────────────
+adminizer-for-docs
+app-example
+gql-for-example
+dev-cluster/
+storage-bus/
+
+# ── ОС и редакторы ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*~

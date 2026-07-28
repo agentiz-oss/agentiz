@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-agentiz}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASS:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-agentiz}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      # Для перезапуска сервера внутри контейнера выполняй pm2 restart
+      context: ../
+      dockerfile: Dockerfile.dev
+    env_file:
+      - .env.local
+    ports:
+      - "17280:17280"
+    volumes:
+      - ../:/app
+      - ./data:/app/data
+      - ./worker-output:/app/worker-output
+    environment:
+      WORKER_OUTPUT_DIR: /app/worker-output
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    # Образ агентного воркера; собирается отдельно, тег задаётся в .env.local
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required, set it in deploy/.env.local}
+    env_file:
+      - .env.local
+    environment:
+      MODE: worker
+      WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required, set it in deploy/.env.local}
+      QUEUE_SERVER_URL: ${WORKER_QUEUE_SERVER_URL:-http://server:17280}
+      WORKER_ID: ${WORKER_ID:-dev}
+      POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-3000}
+      DRY_RUN: "false"
+      OUTPUT_DIR: /app/worker-output
+    volumes:
+      - ./worker-output:/app/worker-output
+    depends_on:
+      postgres:
+        condition: service_healthy
+      server:
+        condition: service_started
+    restart: unless-stopped

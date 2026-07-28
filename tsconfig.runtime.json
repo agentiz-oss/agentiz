@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "index.ts",
+    "config/**/*.ts",
+    "devtools/environments.ts",
+    "seeds/**/*.ts",
+    "layers/app-agentiz/**/*.ts",
+    "layers/app-agentiz/**/*.tsx",
+    "local_modules/**/*.ts"
+  ]
+}

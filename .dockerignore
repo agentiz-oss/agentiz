@@ -1,0 +1,12 @@
+.gitlab-ci.yml
+deploy/pgdata
+.git
+.tmp
+.playwright-mcp
+node_modules
+**/node_modules
+npm-debug.log*
+yarn-error.log*
+*.png
+worker-output
+deploy/worker-output

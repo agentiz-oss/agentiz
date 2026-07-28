@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentiz.local/schemas/app-agentiz/pipeline-spec.schema.json",
+  "title": "Agentiz Pipeline Spec",
+  "description": "Stored in PipelineSpec.spec. Declares which agent roles run for a matched task, in what order, what happens when a stage fails, and what the pipeline does with the result once every stage succeeded. Tag matching lives on the PipelineSpec row (matchTags/isDefault), not in this document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stages", "finalAction"],
+  "properties": {
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Executed strictly in ascending `order`. Each stage receives the outputs of all previous stages as context.",
+      "items": { "$ref": "#/$defs/stage" }
+    },
+    "finalAction": { "$ref": "#/$defs/finalAction" }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order", "role", "agentRoleKey"],
+      "properties": {
+        "order": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Position in the sequence. Must be unique within the spec."
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Display/log name of what this step does, e.g. investigate, decide, fix, commit."
+        },
+        "agentRoleKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AgentRole.key within the same project. Supplies prompt/model/tools for the stage."
+        },
+        "onFail": {
+          "type": "string",
+          "enum": ["stop", "continue"],
+          "default": "stop",
+          "description": "stop = fail the whole run; continue = mark this stage failed and run the next one."
+        }
+      }
+    },
+    "finalAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "description": "What the run does after the last stage. commit_and_pr pushes the accumulated file changes and opens a PR/MR; comment_only just posts the summary back to the tracker; none finishes silently.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["commit_and_pr", "comment_only", "none"]
+        },
+        "branchPrefix": {
+          "type": "string",
+          "description": "Branch name prefix for commit_and_pr. Final name is <branchPrefix><task.externalId>. Defaults to 'agentiz/'."
+        },
+        "commitMessageTemplate": {
+          "type": "string",
+          "description": "Supports {{taskId}}, {{externalId}}, {{title}}, {{summary}}."
+        },
+        "pullRequestTitleTemplate": {
+          "type": "string",
+          "description": "Supports {{taskId}}, {{externalId}}, {{title}}, {{summary}}."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+variables:
+  # По умолчанию — реестр самого GitLab; переопределяется переменной проекта.
+  GITLAB_REGISTRY: $CI_REGISTRY
+  GIT_CLEAN_FLAGS: -ffdx
+  # GIT_SUBMODULE_STRATEGY: recursive
+  # GIT_SUBMODULE_UPDATE_FLAGS: "--init --force --depth 1"
+
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  only:
+    - main
+    - dev
+    - next
+  script:
+    # Вход в реестр
+    - docker login $GITLAB_REGISTRY -u $DOCKERHUB_USER -p $DOCKERHUB_PASSWORD
+
+
+    # Обычная сборка Docker-образа (amd64)
+    - DOCKER_BUILDKIT=1 docker build -f Dockerfile --secret id=github_npm_token,env=GITHUB_NPM_TOKEN --build-arg GITHUB_NPM_TOKEN=$GITHUB_NPM_TOKEN --build-arg GIT_SHA=$CI_COMMIT_SHA --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) -t $GITLAB_REGISTRY/$CI_PROJECT_PATH:${CI_COMMIT_BRANCH} .
+    - docker push $GITLAB_REGISTRY/$CI_PROJECT_PATH:${CI_COMMIT_BRANCH}
+
+    # # Включение эмуляции для arm64
+    # - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+    # # Сборка Docker-образа для arm64
+    # - docker build --build-arg GITHUB_NPM_TOKEN=$GITHUB_NPM_TOKEN --platform linux/arm64 -t $GITLAB_REGISTRY/$CI_PROJECT_PATH:${CI_COMMIT_BRANCH}-arm64 .
+    # - docker push $GITLAB_REGISTRY/$CI_PROJECT_PATH:${CI_COMMIT_BRANCH}-arm64
+    # дальше деплой на прод-хост через watchtower
