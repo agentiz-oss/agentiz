@@ -10,3 +10,13 @@ yarn-error.log*
 *.png
 worker-output
 deploy/worker-output
+# @nodeknit/* are installed from the registry inside the image, so the
+# submodule checkouts must not leak into the build context.
+local_modules
+dist
+logs
+.ai-notes*
+.fastembed_cache
+.env
+deploy/.env
+deploy/.env.local

@@ -1,0 +1,98 @@
+name: Container
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve build metadata
+        id: build_meta
+        run: |
+          echo "git_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@nodeknit'
+          always-auth: true
+
+      # local_modules/* are git submodules that publish to npm.pkg.github.com under a
+      # "commit" dist-tag on every push. The Docker build rewrites the @nodeknit/* deps from
+      # file:./local_modules/* to "commit" and resolves them from the registry, so that tag
+      # must point at the submodule commits this superproject currently pins.
+      # `git submodule status` reads the recorded gitlink SHA from the index, so the
+      # submodules do not need to be checked out.
+      - name: Ensure commit dist-tags point to pinned submodule versions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_NPM_TOKEN }}
+        run: |
+          # Base versions come from each submodule's package.json; the publish CI appends
+          # `-commit.<shortSha>`. Keep this map in sync with those "version" fields.
+          declare -A base=(
+            [app-adminizer]=1.0.0
+            [app-graphql]=1.0.0
+            [app-manager]=1.0.0
+            [app-mcp]=1.0.0
+            [app-telegram-bot]=1.0.0
+          )
+          for pkg in "${!base[@]}"; do
+            sha=$(git submodule status -- "local_modules/$pkg" | awk '{print $1}' | sed 's/^[-+U]//' | cut -c1-7)
+            version="${base[$pkg]}-commit.${sha}"
+            echo "Tagging @nodeknit/${pkg}@${version} as commit"
+            npm dist-tag add "@nodeknit/${pkg}@${version}" commit --registry=https://npm.pkg.github.com || true
+          done
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ steps.build_meta.outputs.git_sha }}
+            BUILD_TIME=${{ steps.build_meta.outputs.build_time }}
+          secrets: |
+            github_npm_token=${{ secrets.GH_PAT || secrets.GITHUB_NPM_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
