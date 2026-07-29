@@ -75,10 +75,10 @@ export class AgentWorkerApiService {
     return process.env.AGENTIZ_WORKER_API_ENABLED === 'true';
   }
 
-  /**
-   * Every job endpoint runs as a registered, approved worker: there is no shared token any more,
-   * the bearer is a personal token issued by AgentWorkerRegistryService.
-   */
+   /**
+    * Every job endpoint runs as an active worker identity: there is no shared token any more, the
+    * bearer is the personal token an admin issued when creating the worker in the panel.
+    */
   static async authorize(authHeader: string | undefined, ip?: string | null): Promise<AgentWorker> {
     if (!this.isEnabled()) throw new WorkerApiError(503, 'Agentiz Worker API is disabled');
     return AgentWorkerRegistryService.authenticateActive(authHeader, ip);
@@ -235,6 +235,12 @@ export class AgentWorkerApiService {
       await task.update({ status: taskStatus });
       await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await AgentPipelineService.log(run.id, null, terminal === 'cancelled' ? 'warn' : 'error', `Worker job ${terminal}: ${payload.errorMessage ?? summary}`);
+      // A failure is what a person most needs to see in the task thread, so it reports too.
+      await AgentPipelineService.reportToTaskThread(
+        run,
+        task,
+        payload.errorMessage ? `Запуск ${terminal}: ${payload.errorMessage}` : summary || `Запуск ${terminal}`,
+      );
     }
 
     return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: (await AgentRun.findByPk(job.runId))?.status ?? null };
@@ -245,6 +251,8 @@ export class AgentWorkerApiService {
     const payload = objectBody(body);
     const job = await this.requireLeasedJob(jobId, payload, worker);
     const message = typeof payload.errorMessage === 'string' ? payload.errorMessage : null;
+    // `released` is a parking state, not a terminal one: AgentJobReaperService flips it back to
+    // `queued` once availableAt passes, which is what makes the retryAt below a real promise.
     await job.update({
       status: 'released',
       workerId: null,

@@ -1,8 +1,10 @@
 import { GitProvider } from './GitProvider';
 import type {
+  CommentResult,
   CommitChangesParams,
   CommitResult,
   ListTasksParams,
+  NormalizedExternalComment,
   NormalizedExternalTask,
   OpenPullRequestParams,
   PullRequestResult,
@@ -18,6 +20,14 @@ interface GitHubIssue {
   state: string;
   labels: Array<{ name: string } | string>;
   pull_request?: unknown;
+}
+
+interface GitHubIssueComment {
+  id: number;
+  html_url: string | null;
+  body: string | null;
+  created_at: string | null;
+  user: { login: string } | null;
 }
 
 /**
@@ -108,13 +118,28 @@ export class GitHubProvider extends GitProvider {
     });
   }
 
-  async commentOnTask(externalId: string, body: string): Promise<{ url: string }> {
-    const comment = await this.request<{ html_url: string }>(
+  async commentOnTask(externalId: string, body: string): Promise<CommentResult> {
+    const comment = await this.request<{ id: number; html_url: string }>(
       'POST',
       `/repos/${this.repo.owner}/${this.repo.repo}/issues/${externalId}/comments`,
       { body },
     );
-    return { url: comment.html_url };
+    return { id: String(comment.id), url: comment.html_url };
+  }
+
+  async listComments(externalId: string): Promise<NormalizedExternalComment[]> {
+    const comments = await this.request<GitHubIssueComment[]>(
+      'GET',
+      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${externalId}/comments?per_page=100`,
+    );
+    return comments.map((comment) => ({
+      externalId: String(comment.id),
+      externalUrl: comment.html_url ?? null,
+      authorName: comment.user?.login ?? null,
+      body: comment.body ?? '',
+      createdAt: comment.created_at ?? null,
+      raw: comment,
+    }));
   }
 
   async commitChanges(params: CommitChangesParams): Promise<CommitResult> {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { Op } from 'sequelize';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
@@ -28,13 +28,6 @@ function issueToken(): { token: string; tokenHash: string; tokenPrefix: string }
   return { token, tokenHash: hashWorkerToken(token), tokenPrefix: token.slice(0, VISIBLE_PREFIX_LENGTH) };
 }
 
-function constantTimeEquals(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
-}
-
 function bearer(authHeader: string | undefined): string | null {
   if (!authHeader) return null;
   const match = /^Bearer\s+(.+)$/i.exec(authHeader.trim());
@@ -50,7 +43,6 @@ function optionalString(value: unknown, max = 200): string | null {
 export interface RegisterWorkerInput {
   schemaVersion?: number;
   instanceId?: unknown;
-  name?: unknown;
   version?: unknown;
   hostname?: unknown;
   capabilities?: unknown;
@@ -59,40 +51,58 @@ export interface RegisterWorkerInput {
 export interface RegisterWorkerResult {
   schemaVersion: number;
   workerId: string;
+  name: string;
   status: AgentWorkerStatus;
-  /** Present only when a token was issued — it is never retrievable afterwards. */
-  token?: string;
   tokenPrefix: string | null;
-  approved: boolean;
   allowedProjectIds: string[] | null;
   message: string;
 }
 
+export interface CreateWorkerInput {
+  name: string;
+  allowedProjectIds?: string[] | null;
+  createdBy?: string | null;
+}
+
 /**
- * Owns worker identities: enrollment, personal tokens, approval and revocation.
+ * Owns worker identities: creation, personal tokens, pausing and revocation.
  *
- * Trust model: the enrollment token (AGENTIZ_WORKER_ENROLLMENT_TOKEN) only buys the right to
- * create a *pending* worker record — it never grants access to jobs. Jobs are handed out solely
- * against a personal token bound to an `active` worker, so approving a worker in the admin panel
- * is the single point where someone decides who may see task snapshots and repository data.
+ * Trust model, borrowed from GitLab runners: a worker exists only because an admin created it in
+ * the panel, and its token is shown exactly once at that moment. There is no shared enrollment
+ * secret and no self-service registration — `POST /register` authenticates with the worker's own
+ * token and merely records which machine is using it. That keeps a single, auditable answer to
+ * "who may read task snapshots and repository data": whoever the admin handed a token to.
  */
 export class AgentWorkerRegistryService {
-  static isAutoApproveEnabled(): boolean {
-    return process.env.AGENTIZ_WORKER_AUTO_APPROVE === 'true';
-  }
-
-  private static enrollmentToken(): string {
-    const token = process.env.AGENTIZ_WORKER_ENROLLMENT_TOKEN;
-    if (!token) throw new WorkerRegistryError(503, 'AGENTIZ_WORKER_ENROLLMENT_TOKEN is not configured', 'enrollment_disabled');
-    return token;
+  /**
+   * Creates a worker and issues its token. The plain token is returned once and never again — the
+   * database only ever holds its hash.
+   */
+  static async create(input: CreateWorkerInput): Promise<{ worker: AgentWorker; token: string }> {
+    const name = optionalString(input.name);
+    if (!name) throw new WorkerRegistryError(400, 'name is required', 'bad_request');
+    const issued = issueToken();
+    const worker = await AgentWorker.create({
+      name,
+      instanceId: null,
+      kind: 'external' as AgentWorkerKind,
+      status: 'active',
+      tokenHash: issued.tokenHash,
+      tokenPrefix: issued.tokenPrefix,
+      tokenIssuedAt: new Date(),
+      allowedProjectIds: input.allowedProjectIds?.length ? input.allowedProjectIds : null,
+      createdBy: optionalString(input.createdBy),
+    });
+    console.log(`[AgentizWorkerRegistry] worker "${name}" created by ${worker.createdBy ?? 'admin'}`);
+    return { worker, token: issued.token };
   }
 
   /**
-   * Enrolls a worker and issues its personal token.
+   * Binds a running process to its worker record: the caller proves it holds the token, and tells
+   * the panel which machine, version and capabilities are behind it.
    *
-   * Re-registration rules keep an approved identity from being taken over by anyone holding the
-   * enrollment token: a known instanceId gets a fresh token only while it is still `pending`
-   * (nothing to steal yet) or when the caller already proves possession of the current token.
+   * Nothing here grants access — the token already did. Re-registering is normal (every restart
+   * does it) and simply refreshes the metadata.
    */
   static async register(body: unknown, authHeader: string | undefined, ip?: string | null): Promise<RegisterWorkerResult> {
     const payload = (body ?? {}) as RegisterWorkerInput;
@@ -101,77 +111,37 @@ export class AgentWorkerRegistryService {
     }
     const instanceId = optionalString(payload.instanceId);
     if (!instanceId) throw new WorkerRegistryError(400, 'instanceId is required', 'bad_request');
-    const name = optionalString(payload.name) ?? instanceId;
-    const presented = bearer(authHeader);
-    if (!presented) throw new WorkerRegistryError(401, 'Bearer token is required', 'unauthorized');
 
-    const existing = await AgentWorker.findOne({ where: { instanceId } });
-    const presentedHash = hashWorkerToken(presented);
-    const isOwnToken = Boolean(existing?.tokenHash && constantTimeEquals(existing.tokenHash, presentedHash));
-    const isEnrollment = !isOwnToken && constantTimeEquals(this.enrollmentToken(), presented);
-    if (!isOwnToken && !isEnrollment) {
-      throw new WorkerRegistryError(401, 'Invalid enrollment or worker token', 'unauthorized');
+    const worker = await this.authenticate(authHeader, ip);
+
+    // Two machines started with the same token would fight over one identity — and one of them
+    // would silently overwrite the other's telemetry. Make the admin issue a second worker.
+    const conflict = await AgentWorker.findOne({ where: { instanceId, id: { [Op.ne]: worker.id } } });
+    if (conflict) {
+      throw new WorkerRegistryError(
+        409,
+        `instanceId "${instanceId}" already belongs to worker "${conflict.name}"`,
+        'instance_taken',
+      );
     }
 
-    const attributes = {
-      name,
+    const firstContact = !worker.registeredAt;
+    await worker.update({
+      instanceId,
       version: optionalString(payload.version, 50),
       hostname: optionalString(payload.hostname),
       lastIp: optionalString(ip, 64),
-      capabilities: (payload.capabilities && typeof payload.capabilities === 'object' && !Array.isArray(payload.capabilities)
-        ? payload.capabilities as AgentWorkerCapabilities
-        : null),
+      capabilities:
+        payload.capabilities && typeof payload.capabilities === 'object' && !Array.isArray(payload.capabilities)
+          ? (payload.capabilities as AgentWorkerCapabilities)
+          : null,
       lastSeenAt: new Date(),
-    };
-
-    if (existing) {
-      if (existing.status === 'revoked') {
-        throw new WorkerRegistryError(403, 'This worker instance is revoked; ask an administrator to delete it before re-enrolling', 'revoked');
-      }
-      // An already-approved identity may only refresh its metadata, not silently get a new token
-      // from whoever knows the enrollment token.
-      if (isOwnToken) {
-        await existing.update(attributes);
-        return this.describe(existing, undefined, 'Worker re-announced with its existing token');
-      }
-      if (existing.status !== 'pending') {
-        throw new WorkerRegistryError(
-          409,
-          'instanceId is already registered and approved; rotate its token from the admin panel instead',
-          'already_registered',
-        );
-      }
-      const issued = issueToken();
-      await existing.update({
-        ...attributes,
-        tokenHash: issued.tokenHash,
-        tokenPrefix: issued.tokenPrefix,
-        tokenIssuedAt: new Date(),
-        registeredAt: new Date(),
-      });
-      return this.describe(existing, issued.token, 'Registration refreshed, waiting for approval');
-    }
-
-    const issued = issueToken();
-    const autoApprove = this.isAutoApproveEnabled();
-    const worker = await AgentWorker.create({
-      ...attributes,
-      instanceId,
-      kind: 'external' as AgentWorkerKind,
-      status: autoApprove ? 'active' : 'pending',
-      tokenHash: issued.tokenHash,
-      tokenPrefix: issued.tokenPrefix,
-      tokenIssuedAt: new Date(),
-      registeredAt: new Date(),
-      approvedAt: autoApprove ? new Date() : null,
-      approvedBy: autoApprove ? 'AGENTIZ_WORKER_AUTO_APPROVE' : null,
-      allowedProjectIds: null,
+      ...(firstContact ? { registeredAt: new Date() } : {}),
     });
-    console.log(`[AgentizWorkerRegistry] worker "${name}" (${instanceId}) registered as ${worker.status}`);
+    console.log(`[AgentizWorkerRegistry] worker "${worker.name}" connected from ${instanceId}`);
     return this.describe(
       worker,
-      issued.token,
-      autoApprove ? 'Worker registered and auto-approved' : 'Worker registered, waiting for an administrator to approve it',
+      firstContact ? 'Worker connected' : 'Worker re-announced',
     );
   }
 
@@ -192,8 +162,8 @@ export class AgentWorkerRegistryService {
   /** Authenticates and additionally requires the worker to be cleared for job traffic. */
   static async authenticateActive(authHeader: string | undefined, ip?: string | null): Promise<AgentWorker> {
     const worker = await this.authenticate(authHeader, ip);
-    if (worker.status === 'pending') {
-      throw new WorkerRegistryError(403, 'Worker is awaiting approval', 'pending_approval');
+    if (worker.status === 'paused') {
+      throw new WorkerRegistryError(403, 'Worker is paused', 'paused');
     }
     if (worker.status !== 'active') {
       throw new WorkerRegistryError(403, `Worker is ${worker.status}`, 'not_active');
@@ -201,14 +171,13 @@ export class AgentWorkerRegistryService {
     return worker;
   }
 
-  static describe(worker: AgentWorker, token?: string, message = ''): RegisterWorkerResult {
+  static describe(worker: AgentWorker, message = ''): RegisterWorkerResult {
     return {
       schemaVersion: SCHEMA_VERSION,
       workerId: worker.id,
+      name: worker.name,
       status: worker.status,
-      ...(token ? { token } : {}),
       tokenPrefix: worker.tokenPrefix,
-      approved: worker.status === 'active',
       allowedProjectIds: worker.allowedProjectIds ?? null,
       message,
     };
@@ -220,24 +189,19 @@ export class AgentWorkerRegistryService {
     return AgentWorker.findAll({ order: [['createdAt', 'DESC']] });
   }
 
-  static async approve(workerId: string, approvedBy: string, allowedProjectIds?: string[] | null): Promise<AgentWorker> {
+  /** Stops handing out jobs while keeping the identity and its token intact. */
+  static async pause(workerId: string, reason?: string | null): Promise<AgentWorker> {
     const worker = await this.require(workerId);
-    if (worker.status === 'revoked') throw new WorkerRegistryError(409, 'Revoked worker cannot be approved', 'revoked');
-    await worker.update({
-      status: 'active',
-      approvedAt: new Date(),
-      approvedBy,
-      revokedReason: null,
-      ...(allowedProjectIds === undefined ? {} : { allowedProjectIds: allowedProjectIds?.length ? allowedProjectIds : null }),
-    });
-    console.log(`[AgentizWorkerRegistry] worker ${worker.name} approved by ${approvedBy}`);
+    if (worker.status === 'revoked') throw new WorkerRegistryError(409, 'Revoked worker cannot be paused', 'revoked');
+    await worker.update({ status: 'paused', revokedReason: reason ?? null });
+    await this.releaseActiveJobs(worker, reason ?? 'worker paused');
     return worker;
   }
 
-  static async disable(workerId: string, reason?: string | null): Promise<AgentWorker> {
+  static async resume(workerId: string): Promise<AgentWorker> {
     const worker = await this.require(workerId);
-    await worker.update({ status: 'disabled', revokedReason: reason ?? null });
-    await this.releaseActiveJobs(worker, reason ?? 'worker disabled');
+    if (worker.status === 'revoked') throw new WorkerRegistryError(409, 'Revoked worker cannot be resumed', 'revoked');
+    await worker.update({ status: 'active', revokedReason: null });
     return worker;
   }
 
@@ -256,7 +220,21 @@ export class AgentWorkerRegistryService {
     return worker;
   }
 
-  /** Issues a new personal token; the previous one stops working immediately. */
+  /**
+   * Removes the record entirely, the way a GitLab runner is deleted. Anything it still held goes
+   * back to the queue first, so deleting a busy worker cannot strand its jobs.
+   */
+  static async remove(workerId: string): Promise<void> {
+    const worker = await this.require(workerId);
+    if (worker.kind === 'local') {
+      throw new WorkerRegistryError(409, 'The in-process worker is managed by the server, not the panel', 'local_worker');
+    }
+    await this.releaseActiveJobs(worker, 'worker deleted');
+    await worker.destroy();
+    console.log(`[AgentizWorkerRegistry] worker ${worker.name} deleted`);
+  }
+
+  /** Issues a new token; the previous one stops working immediately. */
   static async rotateToken(workerId: string): Promise<{ worker: AgentWorker; token: string }> {
     const worker = await this.require(workerId);
     if (worker.status === 'revoked') throw new WorkerRegistryError(409, 'Revoked worker cannot get a new token', 'revoked');
@@ -283,12 +261,11 @@ export class AgentWorkerRegistryService {
         tokenHash: null,
         tokenPrefix: null,
         registeredAt: new Date(),
-        approvedAt: new Date(),
-        approvedBy: 'system (in-process worker)',
+        createdBy: 'system (in-process worker)',
         allowedProjectIds: null,
       },
     });
-    await worker.update({ lastSeenAt: new Date(), ...(worker.status === 'pending' ? { status: 'active' } : {}) });
+    await worker.update({ lastSeenAt: new Date() });
     return worker;
   }
 

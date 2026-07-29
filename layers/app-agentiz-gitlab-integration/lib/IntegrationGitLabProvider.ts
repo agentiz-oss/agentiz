@@ -1,5 +1,9 @@
 import { GitLabProvider } from './GitLabProvider';
-import type { NormalizedExternalTask } from '../../app-agentiz/lib/git';
+import type {
+  CommentResult,
+  NormalizedExternalComment,
+  NormalizedExternalTask,
+} from '../../app-agentiz/lib/git';
 import { parseTaskExternalId } from '../types/gitlab';
 
 /**
@@ -22,7 +26,11 @@ export class IntegrationGitLabProvider extends GitLabProvider {
     return super.updateTaskStatus(this.toIssueIid(externalId), status);
   }
 
-  override async commentOnTask(externalId: string, body: string): Promise<{ url: string }> {
+  override async commentOnTask(externalId: string, body: string): Promise<CommentResult> {
     return super.commentOnTask(this.toIssueIid(externalId), body);
+  }
+
+  override async listComments(externalId: string): Promise<NormalizedExternalComment[]> {
+    return super.listComments(this.toIssueIid(externalId));
   }
 }

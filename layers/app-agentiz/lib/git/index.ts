@@ -9,6 +9,8 @@ export { GitProvider, GitHubProvider };
 export type {
   GitCredentials,
   NormalizedExternalTask,
+  NormalizedExternalComment,
+  CommentResult,
   FileChange,
   CommitResult,
   PullRequestResult,

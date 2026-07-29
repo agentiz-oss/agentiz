@@ -8,6 +8,11 @@
   to load with "Decorators are not valid here".
 - Layers talk to each other through app-manager collections (`@Collection` / `@CollectionHandler`),
   not direct imports — see `docs/app-layers/` before adding a cross-layer extension point.
+- `adminizerMiddlewares` routes are always prefixed with Adminizer's `routePrefix` (`/dashboard`).
+  A machine-facing API must be mounted on `this.appManager.app` in `mount()` instead — that is why
+  the Worker API lives in `layers/app-agentiz/lib/workerApiRouter.ts`.
+- Two separate collections own the two halves of "external system": `gitProviders` (where code
+  lives) and `taskManagers` (where tasks come from). A project can mix them freely.
 - Shared mutable registries must live on a `Symbol.for` global: under tsx a module can be
   instantiated twice (ESM + CJS graphs) and plain module state silently splits in two.
 - Keep documentation specific to Agentiz in `docs/` (a local symlink, not tracked).

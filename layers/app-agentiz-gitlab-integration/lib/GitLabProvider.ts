@@ -1,9 +1,11 @@
 import { GitProvider } from '../../app-agentiz/lib/git';
 import type {
+  CommentResult,
   CommitChangesParams,
   CommitResult,
   GitProviderAdapter,
   ListTasksParams,
+  NormalizedExternalComment,
   NormalizedExternalTask,
   OpenPullRequestParams,
   PullRequestResult,
@@ -18,6 +20,15 @@ interface GitLabIssue {
   description: string | null;
   state: string;
   labels: string[];
+}
+
+interface GitLabNote {
+  id: number;
+  body: string | null;
+  created_at: string | null;
+  /** True for activity records ("changed the description"), not real discussion. */
+  system: boolean;
+  author: { username?: string; name?: string } | null;
 }
 
 /**
@@ -117,14 +128,35 @@ export class GitLabProvider extends GitProvider {
     });
   }
 
-  async commentOnTask(externalId: string, body: string): Promise<{ url: string }> {
+  async commentOnTask(externalId: string, body: string): Promise<CommentResult> {
     const note = await this.request<{ id: number }>(
       'POST',
       `/projects/${this.projectPath}/issues/${externalId}/notes`,
       { body },
     );
     const issue = await this.getTask(externalId);
-    return { url: `${issue.externalUrl}#note_${note.id}` };
+    return { id: String(note.id), url: `${issue.externalUrl}#note_${note.id}` };
+  }
+
+  async listComments(externalId: string): Promise<NormalizedExternalComment[]> {
+    const notes = await this.request<GitLabNote[]>(
+      'GET',
+      `/projects/${this.projectPath}/issues/${externalId}/notes?per_page=100&sort=asc&order_by=created_at`,
+    );
+    // GitLab mixes activity records into the same endpoint ("changed the description",
+    // "assigned to @user"). They carry `system: true` and are not discussion — importing them
+    // would fill the thread with noise attributed to whoever triggered the change.
+    const discussion = notes.filter((note) => !note.system);
+    // The issue URL is fetched once, not per note: notes carry no web_url of their own.
+    const issueUrl = discussion.length ? (await this.getTask(externalId)).externalUrl : null;
+    return discussion.map((note) => ({
+      externalId: String(note.id),
+      externalUrl: issueUrl ? `${issueUrl}#note_${note.id}` : null,
+      authorName: note.author?.username ?? note.author?.name ?? null,
+      body: note.body ?? '',
+      createdAt: note.created_at ?? null,
+      raw: note,
+    }));
   }
 
   async commitChanges(params: CommitChangesParams): Promise<CommitResult> {

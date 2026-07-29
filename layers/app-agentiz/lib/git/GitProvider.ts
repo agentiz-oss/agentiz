@@ -21,6 +21,29 @@ export interface NormalizedExternalTask {
   raw: unknown;
 }
 
+/** One comment on a tracker task, normalized across platforms. */
+export interface NormalizedExternalComment {
+  /** Platform's own comment id. This is what dedup keys on, so it must be stable. */
+  externalId: string;
+  externalUrl: string | null;
+  /** Login/display name of whoever wrote it upstream. */
+  authorName: string | null;
+  body: string;
+  /** ISO timestamp from the platform, used to order the thread by when it was really written. */
+  createdAt: string | null;
+  raw: unknown;
+}
+
+/**
+ * Result of posting a comment. The `id` matters as much as the url: a comment we pushed comes
+ * back on the next pull, and without the platform's own id there is no way to recognise it as
+ * ours — every push would duplicate itself in the thread.
+ */
+export interface CommentResult {
+  id: string;
+  url: string;
+}
+
 export interface FileChange {
   /** Repo-relative path. */
   path: string;
@@ -123,7 +146,18 @@ export abstract class GitProvider {
   /** Best-effort mapping of our internal AgentTaskStatus onto whatever states the platform has. */
   abstract updateTaskStatus(externalId: string, status: string): Promise<void>;
 
-  abstract commentOnTask(externalId: string, body: string): Promise<{ url: string }>;
+  abstract commentOnTask(externalId: string, body: string): Promise<CommentResult>;
+
+  /**
+   * Reads the task's discussion upstream.
+   *
+   * Concrete rather than abstract so a provider written before comments existed keeps compiling
+   * and fails with a clear message instead of silently returning an empty thread — "no comments"
+   * and "cannot read comments" must not look the same to the caller.
+   */
+  async listComments(_externalId: string): Promise<NormalizedExternalComment[]> {
+    throw new Error(`Provider "${this.type}" cannot read task comments`);
+  }
 
   /** Creates (or reuses) `branch` and commits `changes` onto it in a single atomic operation. */
   abstract commitChanges(params: CommitChangesParams): Promise<CommitResult>;

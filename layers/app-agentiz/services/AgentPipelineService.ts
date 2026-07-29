@@ -5,6 +5,7 @@ import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
+import { AgentTaskComment } from '../models/AgentTaskComment';
 import { createGitProviderForTask, resolveTaskRepository } from '../lib/git';
 import type { FileChange } from '../lib/git';
 import { assertValidSpec, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
@@ -193,6 +194,35 @@ export class AgentPipelineService {
     return run;
   }
 
+  /**
+   * Writes the run's outcome into the task's comment thread as an `agent` comment.
+   *
+   * Called for successful runs (from applyFinalAction) and for failed/cancelled ones (from
+   * AgentWorkerApiService.applyResult) — a failure is precisely what a person needs to read in the
+   * tracker, so it must not be the case that only successes leave a trace.
+   *
+   * Deliberately best-effort: a comment must never be the reason a finished run is recorded as
+   * failed, so a write error only lands in the run log.
+   */
+  static async reportToTaskThread(run: AgentRun, task: AgentTask, summary: string): Promise<void> {
+    try {
+      await AgentTaskComment.create({
+        taskId: task.id,
+        authorKind: 'agent',
+        authorName: `run ${run.id.slice(0, 8)}`,
+        authorId: null,
+        runId: run.id,
+        body: summary || 'Запуск завершён без текстового результата.',
+        externalId: null,
+        externalUrl: null,
+        meta: { kind: 'run.finished', runId: run.id, runStatus: run.status },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeLog(run.id, null, 'warn', `Could not add the agent comment to the task: ${message}`);
+    }
+  }
+
   static async applyFinalAction(params: {
     run: AgentRun;
     task: AgentTask;
@@ -208,6 +238,11 @@ export class AgentPipelineService {
       title: task.title,
       summary,
     };
+
+    // The run always reports into the local task thread, whatever it does upstream: the built-in
+    // tracker is where a person reads what the machine did, and it must work even for a project
+    // with no reachable external system at all.
+    await this.reportToTaskThread(run, task, summary);
 
     if (action.type === 'none') {
       await writeLog(run.id, null, 'info', 'Final action: none, nothing pushed back');

@@ -9,3 +9,5 @@ export { AgentRunJob } from './AgentRunJob';
 export { AgentRunEventDedup } from './AgentRunEventDedup';
 export { AgentRunResultDedup } from './AgentRunResultDedup';
 export { AgentWorker } from './AgentWorker';
+export { AgentTaskSource } from './AgentTaskSource';
+export { AgentTaskComment } from './AgentTaskComment';

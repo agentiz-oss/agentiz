@@ -110,18 +110,19 @@ Worker не импортирует TypeScript-модели и не подклю�
 
 Все маршруты имеют префикс `/api/agentiz/worker/v1`, доступны только worker identity (персональный
 токен воркера с ротацией и отзывом; production — дополнительно mTLS или private network) и не
-используют браузерную сессию. Identity выдаётся при регистрации (`POST /register`, реализовано в
-`AgentWorkerRegistryService`): shared enrollment-токен создаёт запись `AgentWorker` в статусе
-`pending` и возвращает персональный токен, но доступ к job появляется только после подтверждения
-администратором. `workerId` в теле запроса не принимается — он берётся из аутентифицированной
+используют браузерную сессию. Identity создаётся в админке (Agentiz → «Воркеры» → «Новый воркер»,
+реализовано в `AgentWorkerRegistryService`) по модели GitLab-runner'ов: запись `AgentWorker`
+появляется сразу в статусе `active`, её токен показывается один раз, и воркер запускается с ним.
+Отдельного enrollment-секрета и шага подтверждения нет: создание записи админом **и есть**
+авторизация. `workerId` в теле запроса не принимается — он берётся из аутентифицированной
 identity; в каждом запросе обязательны `schemaVersion`, `jobId`, `attempt` и `leaseToken` там, где
 job уже claim-нута. JSON ограничен по размеру; stdout, patch и крупные
 артефакты передаются ссылкой на artifact store, а не телом события.
 
 | Метод | Назначение | Ответ / обязательная семантика |
 |---|---|---|
-| `POST /register` | Self-enrollment: worker представляется стабильным `instanceId`, name, version, capabilities. Единственный маршрут, принимающий enrollment-токен. | Создаёт `AgentWorker` (`pending`, либо `active` при `AGENTIZ_WORKER_AUTO_APPROVE`) и один раз возвращает персональный токен. Повторная регистрация approved-identity по enrollment-токену — `409`. |
-| `GET /me` | Worker опрашивает собственный статус, пока ждёт подтверждения. | `status`, `approved`, `allowedProjectIds`. Токен revoked → `401`. |
+| `POST /register` | Привязка процесса к identity: worker аутентифицируется **своим** токеном и сообщает стабильный `instanceId`, version, capabilities. Ничего не выдаёт. | Записывает `instanceId`/метаданные и `registeredAt` при первом контакте. Тот же `instanceId` у другого воркера — `409 instance_taken`. |
+| `GET /me` | Worker проверяет, что о нём думает сервер (статус, allowlist проектов). | `status`, `allowedProjectIds`. Токен revoked → `401`, paused → job'ы не выдаются. |
 | `POST /claims` | Worker запрашивает одну совместимую job, передавая capabilities и свободный slot. | `204` если работы нет; `200` с immutable job snapshot, `attempt`, `leaseToken`, `leaseExpiresAt`, `cancelRequested=false`. Claim атомарен. |
 | `POST /jobs/:jobId/heartbeat` | Продлить lease и получить команду control plane. | Возвращает `continue` либо `cancel`; просроченный/чужой lease получает `409` и worker немедленно прекращает sandbox. |
 | `POST /jobs/:jobId/events:batch` | Принять нормализованные stage/log/progress события. | `eventId` и `sequence` дедуплицируются; допускается частичный повтор batch. Ответ содержит последний принятый sequence. |

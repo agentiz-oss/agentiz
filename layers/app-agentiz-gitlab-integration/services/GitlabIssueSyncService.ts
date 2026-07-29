@@ -137,6 +137,11 @@ export class GitlabIssueSyncService {
           description: issue.description ?? '',
           tags: issue.labels ?? [],
           externalStatus: issue.state,
+          // Origin of the task, so the Agentiz tracker can name the system it came from. There is
+          // no AgentTaskSource row behind an OAuth integration, hence sourceId stays null.
+          sourceId: null as string | null,
+          sourceType: 'gitlab',
+          sourceName: `GitLab Issues · ${repository.pathWithNamespace}`,
           raw: { ...(issue as unknown as Record<string, unknown>), [TASK_INTEGRATION_RAW_KEY]: ref },
           lastSyncedAt: new Date(),
         };

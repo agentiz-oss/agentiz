@@ -2,13 +2,24 @@ import { Table, Column, Model, DataType, Default } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
-import type { AgentWorkerCapabilities, AgentWorkerKind, AgentWorkerStatus } from '../types/agentiz';
+import type {
+  AgentWorkerCapabilities,
+  AgentWorkerContactState,
+  AgentWorkerKind,
+  AgentWorkerStatus,
+} from '../types/agentiz';
+
+/** A worker that has not touched the API for this long is shown as offline. */
+const OFFLINE_AFTER_MS = 5 * 60 * 1000;
 
 /**
- * A worker identity. Workers hold sensitive material (job snapshots with task text, prompts and
- * repository coordinates), so every worker is a first-class, auditable record instead of anyone
- * who knows a shared token: it self-enrolls, waits for an admin to approve it, and authenticates
- * with a personal token whose plain text never reaches the database.
+ * A worker identity, modelled on a GitLab runner. Workers hold sensitive material (job snapshots
+ * with task text, prompts and repository coordinates), so a worker is a record an admin creates
+ * deliberately, never anyone who happens to know a shared token.
+ *
+ * The admin creates it in the panel and gets its token once, on screen; the worker is started with
+ * that token and calls `POST /register` to report which machine it runs on. The plain token never
+ * reaches the database — only its sha256.
  */
 @AdminizerModel({
   model: 'AgentWorker',
@@ -31,11 +42,11 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
 
   @AdminizerField({
     title: 'Instance ID',
-    tooltip: 'Stable id reported by the worker itself; re-registration with the same value updates this record instead of creating a second one',
+    tooltip: 'Stable id reported by the worker itself. Empty until the invited worker connects for the first time; afterwards it identifies the machine holding the token',
     views: { list: true, add: false, edit: false },
   })
-  @Column({ type: DataType.STRING, allowNull: false, unique: true })
-  declare instanceId: string;
+  @Column({ type: DataType.STRING, allowNull: true, unique: true })
+  declare instanceId: string | null;
 
   @AdminizerField({
     title: 'Kind',
@@ -51,16 +62,15 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
     title: 'Status',
     type: 'select',
     isIn: {
-      pending: 'Pending approval',
       active: 'Active',
-      disabled: 'Disabled',
+      paused: 'Paused',
       revoked: 'Revoked',
     },
-    tooltip: 'Only "active" workers are given jobs',
+    tooltip: 'Only "active" workers are given jobs; "paused" keeps the token but stops the queue',
     views: { list: true, add: false, edit: true },
   })
-  @Default('pending')
-  @Column({ type: DataType.STRING, allowNull: false, defaultValue: 'pending' })
+  @Default('active')
+  @Column({ type: DataType.STRING, allowNull: false, defaultValue: 'active' })
   declare status: CreationOptional<AgentWorkerStatus>;
 
   /** sha256 of the personal token. The token itself is shown once, at issue time, and never stored. */
@@ -77,6 +87,10 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
 
   @Column({ type: DataType.DATE, allowNull: true })
   declare tokenIssuedAt: Date | null;
+
+  @AdminizerField({ title: 'Created by', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare createdBy: string | null;
 
   @AdminizerField({
     title: 'Allowed projects',
@@ -120,15 +134,9 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   @Column({ type: DataType.INTEGER, allowNull: false, defaultValue: 0 })
   declare claimedJobsCount: CreationOptional<number>;
 
+  /** When the worker first redeemed its token and reported an instanceId. */
   @Column({ type: DataType.DATE, allowNull: true })
   declare registeredAt: Date | null;
-
-  @Column({ type: DataType.DATE, allowNull: true })
-  declare approvedAt: Date | null;
-
-  @AdminizerField({ title: 'Approved by', views: { list: false, add: false, edit: false } })
-  @Column({ type: DataType.STRING, allowNull: true })
-  declare approvedBy: string | null;
 
   @Column({ type: DataType.DATE, allowNull: true })
   declare revokedAt: Date | null;
@@ -147,5 +155,14 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   canClaimProject(projectId: string): boolean {
     if (!this.allowedProjectIds || this.allowedProjectIds.length === 0) return true;
     return this.allowedProjectIds.includes(projectId);
+  }
+
+  /**
+   * Same idea as a GitLab runner's online/offline dot: a worker polls for jobs continuously, so a
+   * long gap since the last request means nobody is running it, whatever its status says.
+   */
+  contactState(now: Date = new Date(), offlineAfterMs = OFFLINE_AFTER_MS): AgentWorkerContactState {
+    if (!this.lastSeenAt) return 'never_contacted';
+    return now.getTime() - new Date(this.lastSeenAt).getTime() <= offlineAfterMs ? 'online' : 'offline';
   }
 }

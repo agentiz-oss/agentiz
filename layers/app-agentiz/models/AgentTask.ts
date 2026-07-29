@@ -5,7 +5,8 @@ import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentProject } from './AgentProject';
 import { PipelineSpec } from './PipelineSpec';
 import { AgentRun } from './AgentRun';
-import type { AgentTaskStatus } from '../types/agentiz';
+import { AgentTaskComment } from './AgentTaskComment';
+import type { AgentTaskPriority, AgentTaskStatus } from '../types/agentiz';
 
 /**
  * A task pulled from the external tracker (GitHub/GitLab issue) and mirrored locally so we can
@@ -79,6 +80,41 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
   })
   declare status: AgentTaskStatus;
 
+  @AdminizerField({
+    title: 'Priority',
+    type: 'select',
+    isIn: { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' },
+    views: { list: true, add: true, edit: true },
+  })
+  @Default('normal')
+  @Column({
+    type: DataType.ENUM('low', 'normal', 'high', 'urgent'),
+    allowNull: false,
+    defaultValue: 'normal',
+  })
+  declare priority: CreationOptional<AgentTaskPriority>;
+
+  /** UserAP id of whoever owns the task in the built-in tracker. */
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare assigneeId: number | null;
+
+  /**
+   * Which task manager this task was mirrored from. `sourceId` points at the AgentTaskSource row
+   * when the generic mechanism produced it; `sourceType` is the adapter key (github/gitlab/jira)
+   * and survives even when that row is deleted, so the task list can always name its origin.
+   * Both are null for a task created by hand in Agentiz.
+   */
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare sourceId: string | null;
+
+  @AdminizerField({ title: 'Source', views: { list: true, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare sourceType: string | null;
+
+  /** Human label of the origin ("GitHub Issues · nodeknit/demo-repo"), denormalized for the list. */
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare sourceName: string | null;
+
   @ForeignKey(() => PipelineSpec)
   @Column({ type: DataType.STRING, allowNull: true })
   declare pipelineSpecId: string | null;
@@ -105,4 +141,7 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
 
   @HasMany(() => AgentRun, 'taskId')
   declare runs: AgentRun[];
+
+  @HasMany(() => AgentTaskComment, 'taskId')
+  declare comments: AgentTaskComment[];
 }

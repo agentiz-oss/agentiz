@@ -40,6 +40,14 @@ export const adminizerConfig: AdminizerConfig = {
                 section: 'Agentiz',
             },
             {
+                id: 'agentiz-tasks',
+                title: 'Задачи',
+                link: '/dashboard/agentiz-tasks',
+                type: 'self',
+                icon: 'checklist',
+                section: 'Agentiz',
+            },
+            {
                 id: 'agentiz-gitlab',
                 title: 'GitLab-интеграции',
                 link: '/dashboard/agentiz-gitlab',

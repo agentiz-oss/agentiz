@@ -18,6 +18,18 @@ export type AgentTaskStatus =
   | 'cancelled'
   | 'ignored';
 
+/** Operator-set urgency, independent of anything the upstream tracker reports. */
+export type AgentTaskPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+/** Who wrote a task comment: a person, a pipeline run, or the platform itself. */
+export type AgentTaskCommentAuthorKind = 'human' | 'agent' | 'system';
+
+/**
+ * Where a comment was written. Orthogonal to `AgentTaskCommentAuthorKind`: a person commenting in
+ * GitLab is `human` + `remote`, the same person commenting in Agentiz is `human` + `local`.
+ */
+export type AgentTaskCommentOrigin = 'local' | 'remote';
+
 export type AgentRunStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export type AgentRunTrigger = 'sync' | 'manual' | 'webhook' | 'schedule';
@@ -37,10 +49,18 @@ export type AgentRunJobStatus =
   | 'dead';
 
 /**
- * Lifecycle of a worker identity. A worker is useless until an admin approves it: `pending` and
- * `disabled` workers authenticate successfully but receive no jobs, `revoked` ones fail auth.
+ * Lifecycle of a worker identity, modelled on GitLab runners: an admin creates the worker in the
+ * panel and it is `active` from that moment — there is no approval step, because creating it *is*
+ * the authorisation. `paused` workers authenticate but receive no jobs, `revoked` ones have no
+ * token left and fail auth.
  */
-export type AgentWorkerStatus = 'pending' | 'active' | 'disabled' | 'revoked';
+export type AgentWorkerStatus = 'active' | 'paused' | 'revoked';
+
+/**
+ * Connectivity, derived from `lastSeenAt` rather than stored: a worker that was created but has
+ * never called the API is `never_contacted`, one that stopped polling goes `offline`.
+ */
+export type AgentWorkerContactState = 'never_contacted' | 'online' | 'offline';
 
 /** `local` is the in-process queue drainer, `external` is a self-enrolled remote worker. */
 export type AgentWorkerKind = 'local' | 'external';

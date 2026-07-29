@@ -1,6 +1,7 @@
 import { AgentProject } from '../models/AgentProject';
 import { AgentTask } from '../models/AgentTask';
 import { createGitProvider, createGitProviderForTask } from '../lib/git';
+import { taskManagerTitle } from '../lib/taskManager';
 import type { NormalizedExternalTask } from '../lib/git';
 
 export interface SyncResult {
@@ -75,6 +76,8 @@ export class GitSyncService {
     }
 
     result.fetched = external.length;
+    // Origin label stored on each task so the tracker list can name where it came from.
+    const sourceLabel = `${taskManagerTitle(project.repoProvider ?? '')} · ${project.repoConfig?.owner}/${project.repoConfig?.repo}`;
 
     for (const item of external) {
       try {
@@ -92,6 +95,11 @@ export class GitSyncService {
             tags: item.tags,
             externalStatus: item.externalStatus,
             status: 'new',
+            // These tasks come from the project's own repository rather than an AgentTaskSource
+            // row, so sourceId stays null while sourceType still names the origin for the UI.
+            sourceId: null,
+            sourceType: project.repoProvider ?? null,
+            sourceName: sourceLabel,
             raw: item.raw as Record<string, unknown>,
             lastSyncedAt: new Date(),
           });
@@ -111,6 +119,8 @@ export class GitSyncService {
           tags: item.tags,
           externalStatus: item.externalStatus,
           status: nextStatus,
+          sourceType: existing.sourceType ?? project.repoProvider ?? null,
+          sourceName: existing.sourceName ?? sourceLabel,
           raw: item.raw as Record<string, unknown>,
           lastSyncedAt: new Date(),
         });

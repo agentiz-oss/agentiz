@@ -14,6 +14,7 @@ import { GitlabIssueSyncService } from './services/GitlabIssueSyncService';
 import { IntegrationResolverService } from './services/IntegrationResolverService';
 import { maskModelForUI, restoreMaskedSecrets } from './lib/secrets';
 import { gitlabProviderAdapter } from './lib/GitLabProvider';
+import { gitlabIssuesTaskManagerAdapter } from './lib/GitlabIssuesTaskManager';
 import { DEFAULT_GITLAB_BASE_URL, DEFAULT_GITLAB_SCOPES } from './types/gitlab';
 import { AgentProject } from '../app-agentiz/models/AgentProject';
 import { GitSyncService } from '../app-agentiz/services/GitSyncService';
@@ -24,6 +25,7 @@ import {
   unregisterTaskRepositoryResolver,
 } from '../app-agentiz/lib/git';
 import type { GitProviderAdapter } from '../app-agentiz/lib/git';
+import type { TaskManagerAdapter } from '../app-agentiz/lib/taskManager';
 
 const APP_ID = 'app-agentiz-gitlab-integration';
 /** Route under the Adminizer prefix, e.g. /dashboard/agentiz-gitlab. */
@@ -89,6 +91,14 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
    */
   @Collection
   gitProviders: GitProviderAdapter[] = [gitlabProviderAdapter];
+
+  /**
+   * The same GitLab client offered as a *task source*. Contributing to both collections is what
+   * lets a project read its tasks from GitLab while committing somewhere else — the two roles are
+   * wired independently in app-agentiz.
+   */
+  @Collection
+  taskManagers: TaskManagerAdapter[] = [gitlabIssuesTaskManagerAdapter];
 
   @Collection
   adminizerMiddlewares: AdminizerRouteMiddleware[] = [
