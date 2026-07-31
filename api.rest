@@ -10,3 +10,28 @@ Content-Type: application/json
     "userId": 123
   }
 }
+
+### ── Mobile API (app-agentiz-mobile-api) ──────────────────────────────────────
+@mobileHost = http://localhost:17280
+@mobileBase = {{mobileHost}}/api/agentiz/mobile/v1
+
+### Health
+GET {{mobileBase}}/healthz
+
+### Login: admin (UserAP) credentials -> JWT bearer token
+# @name mobileLogin
+POST {{mobileBase}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "admin",
+  "password": "secret"
+}
+
+### Current user (reuses the token from the login response)
+GET {{mobileBase}}/auth/me
+Authorization: Bearer {{mobileLogin.response.body.token}}
+
+### Projects owned by the logged-in user
+GET {{mobileBase}}/projects
+Authorization: Bearer {{mobileLogin.response.body.token}}

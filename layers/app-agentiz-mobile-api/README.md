@@ -1,0 +1,50 @@
+# app-agentiz-mobile-api
+
+Machine-facing JSON API for the Agentiz mobile client. It does two things: exchange an Adminizer
+admin login (`UserAP`) for a JWT bearer token, and serve the projects that token's user owns.
+
+It owns no models and no admin pages — it reuses `UserAP` (app-adminizer) and `AgentProject`
+(app-agentiz). Like the Worker API, it is mounted on the **root** Express app, outside Adminizer's
+`/dashboard` prefix, because mobile clients authenticate with their own bearer token, not admin
+session cookies.
+
+## Base path
+
+```
+/api/agentiz/mobile/v1
+```
+
+## Endpoints
+
+| Method | Path             | Auth        | Purpose                                             |
+| ------ | ---------------- | ----------- | --------------------------------------------------- |
+| GET    | `/healthz`       | none        | Liveness probe.                                     |
+| POST   | `/auth/login`    | none        | `{ login, password }` → `{ token, expiresAt, user }`. |
+| GET    | `/auth/me`       | Bearer JWT  | The current user.                                   |
+| GET    | `/projects`      | Bearer JWT  | Projects owned by the current user (secrets masked).|
+| GET    | `/projects/:id`  | Bearer JWT  | One owned project, or 404.                           |
+
+`login` accepts whatever identifier the UserAP model stores (`login`, `email`, or `username`).
+Project scope mirrors the admin panel's `userAccessRelation: 'owner'`: a user sees only the projects
+whose `ownerId` is theirs. A project with no owner set is visible to nobody through this API.
+
+## Configuration
+
+| Variable                        | Default              | Meaning                                             |
+| ------------------------------- | -------------------- | --------------------------------------------------- |
+| `AGENTIZ_MOBILE_JWT_SECRET`     | `process.env.SECRET` | HS256 signing secret for mobile tokens.             |
+| `AGENTIZ_MOBILE_TOKEN_TTL_SEC`  | `2592000` (30 days)  | Token lifetime in seconds.                          |
+
+## Example
+
+```http
+POST http://localhost:17280/api/agentiz/mobile/v1/auth/login
+Content-Type: application/json
+
+{ "login": "admin", "password": "secret" }
+```
+
+```http
+GET http://localhost:17280/api/agentiz/mobile/v1/projects
+Authorization: Bearer <token from /auth/login>
+```

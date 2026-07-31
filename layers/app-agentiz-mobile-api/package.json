@@ -1,0 +1,12 @@
+{
+  "name": "@agentiz/app-agentiz-mobile-api",
+  "appId": "app-agentiz-mobile-api",
+  "appName": "App Agentiz Mobile API",
+  "version": "1.0.0",
+  "description": "Machine-facing JSON API for the Agentiz mobile client: admin (UserAP) login exchanged for a JWT bearer token, then owner-scoped read access to Agentiz projects. Mounted on the root app outside the Adminizer /dashboard prefix.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-adminizer": "*",
+    "app-agentiz": "*"
+  }
+}
