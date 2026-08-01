@@ -21,17 +21,20 @@
     "app-mcp": "*"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.30",
     "@nodeknit/app-adminizer": "file:./local_modules/app-adminizer",
     "@nodeknit/app-graphql": "file:./local_modules/app-graphql",
     "@nodeknit/app-manager": "file:./local_modules/app-manager",
     "@nodeknit/app-mcp": "file:./local_modules/app-mcp",
     "@nodeknit/app-telegram-bot": "file:./local_modules/app-telegram-bot",
+    "@openharness/core": "^0.7.0",
     "@types/ajv": "^0.0.5",
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node-cron": "^3.0.11",
     "@types/node-fetch": "^2.6.13",
     "@types/node-telegram-bot-api": "^0.64.6",
+    "ai": "^6.0.97",
     "ajv": "^8.17.1",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
@@ -54,7 +57,8 @@
     "sequelize-typescript": "^2.1.6",
     "shadcn-ui": "^0.9.5",
     "sqlite3": "^5.1.7",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.8.0",

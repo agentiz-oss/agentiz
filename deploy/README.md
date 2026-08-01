@@ -4,7 +4,7 @@ This folder contains Docker Compose files for running **Agentiz** in production.
 
 ## Usage
 
-1. Copy `.env.example` from the project root to `.env` and adjust the variables as needed (see [../docs/nodeknit-data-migrations.md](../docs/nodeknit-data-migrations.md) for database configuration and migration mode).
+1. Copy `.env.example` from the project root to `.env` and adjust the variables as needed (see [../notes/nodeknit-data-migrations.md](../notes/nodeknit-data-migrations.md) for database configuration and migration mode).
 2. Run the default compose setup:
 
 ```sh

@@ -1,6 +1,8 @@
 import { AbstractApp, AppManager, Collection, CollectionHandler } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
-import { AdminizerRouteMiddleware, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
+import { AdminizerRouteMiddleware, AppAdminizer, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
+import { AppMCP } from '@nodeknit/app-mcp';
+import { AgentizAssistantService } from './lib/ai/AgentizAssistantService';
 import cron, { type ScheduledTask } from 'node-cron';
 import { migrations } from './migrations';
 import { AgentProject } from './models/AgentProject';
@@ -383,6 +385,23 @@ export class AppAgentiz extends AbstractApp {
             console.log(`[AppAgentiz] tracker sync scheduled: ${SYNC_CRON}`);
         } else {
             console.log('[AppAgentiz] tracker sync disabled (set AGENTIZ_SYNC_ENABLED=true to enable)');
+        }
+
+        // app-adminizer and app-mcp are both declared appDependencies above, so both are already
+        // mounted by the time this runs. The panel itself is entirely built into adminizer 5's
+        // aiAssistant module; this only supplies the model + the MCP tool bridge.
+        // AppManager.getApp() looks apps up by class name, but AppStorage is keyed by appId, so
+        // it never finds anything here — go straight to appStorage with the real key instead.
+        const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
+        const mcpApp = this.appManager.appStorage.get('app-mcp')?.appInstance as AppMCP | undefined;
+        if (adminizerApp && mcpApp) {
+            adminizerApp.adminizer.aiAssistantHandler.registerModel(
+                new AgentizAssistantService(mcpApp, this.appManager),
+                this.appId,
+            );
+            console.log('[AppAgentiz] Agentiz Assistant registered with the Adminizer AI panel');
+        } else {
+            console.warn('[AppAgentiz] app-adminizer or app-mcp instance not found; Agentiz Assistant not registered');
         }
     }
 

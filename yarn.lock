@@ -5,6 +5,67 @@ __metadata:
   version: 9
   cacheKey: 10c0
 
+"@ai-sdk/gateway@npm:3.0.161":
+  version: 3.0.161
+  resolution: "@ai-sdk/gateway@npm:3.0.161"
+  dependencies:
+    "@ai-sdk/provider": "npm:3.0.14"
+    "@ai-sdk/provider-utils": "npm:4.0.41"
+    "@vercel/oidc": "npm:3.2.0"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/65ca31024c21cb691298c422b19c7b2041f94930317618c48ca6c0bb78de27fbf50f2f788f8d270db34575fc8a6fe437ed6ba7d77cff1065656affbf3c09235d
+  languageName: node
+  linkType: hard
+
+"@ai-sdk/mcp@npm:^1.0.21":
+  version: 1.0.66
+  resolution: "@ai-sdk/mcp@npm:1.0.66"
+  dependencies:
+    "@ai-sdk/provider": "npm:3.0.14"
+    "@ai-sdk/provider-utils": "npm:4.0.41"
+    pkce-challenge: "npm:^5.0.0"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/65919d1c5387870ca1b28e2957ddfdf5dbcbd67de9b648e07c184fe8701454d945050db449bc8c984c11cbb7a32f052e643c8bf4131b74181bb7ce5e9f7f5e99
+  languageName: node
+  linkType: hard
+
+"@ai-sdk/openai@npm:^3.0.30":
+  version: 3.0.90
+  resolution: "@ai-sdk/openai@npm:3.0.90"
+  dependencies:
+    "@ai-sdk/provider": "npm:3.0.14"
+    "@ai-sdk/provider-utils": "npm:4.0.41"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/31af720d368490e87ad3384f04d26e8256c080cc9369159df36143c2e7db421f107916ec159aef24f556b506441dd7505af01088d80aae139993861f3506eb78
+  languageName: node
+  linkType: hard
+
+"@ai-sdk/provider-utils@npm:4.0.41":
+  version: 4.0.41
+  resolution: "@ai-sdk/provider-utils@npm:4.0.41"
+  dependencies:
+    "@ai-sdk/provider": "npm:3.0.14"
+    "@standard-schema/spec": "npm:^1.1.0"
+    eventsource-parser: "npm:^3.0.8"
+    undici: "npm:^5.29.0"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/7b79491b31c3ec47d7ff731de44e953ad78214c12d9022604c98e3e146e32860eef2b66797843a2d6ce601f2b114dd626b5cd6d9bd76b2541506076f5c130bea
+  languageName: node
+  linkType: hard
+
+"@ai-sdk/provider@npm:3.0.14":
+  version: 3.0.14
+  resolution: "@ai-sdk/provider@npm:3.0.14"
+  dependencies:
+    json-schema: "npm:^0.4.0"
+  checksum: 10c0/4a533f0c7e98c3f7a3b75119b3f1855fd1ae759d696f7ee9c07b9bd4feaed57716f3e0d81586333e621a501dc0b99d3a103def3e063a45970a653ab027a8f163
+  languageName: node
+  linkType: hard
+
 "@alloc/quick-lru@npm:^5.2.0":
   version: 5.2.0
   resolution: "@alloc/quick-lru@npm:5.2.0"
@@ -1023,6 +1084,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@fastify/busboy@npm:^2.0.0":
+  version: 2.1.1
+  resolution: "@fastify/busboy@npm:2.1.1"
+  checksum: 10c0/6f8027a8cba7f8f7b736718b013f5a38c0476eea67034c94a0d3c375e2b114366ad4419e6a6fa7ffc2ef9c6d3e0435d76dd584a7a1cbac23962fda7650b579e3
+  languageName: node
+  linkType: hard
+
 "@gar/promisify@npm:^1.0.1":
   version: 1.1.3
   resolution: "@gar/promisify@npm:1.1.3"
@@ -1358,9 +1426,9 @@ __metadata:
 
 "@nodeknit/app-adminizer@file:./local_modules/app-adminizer::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-adminizer@file:./local_modules/app-adminizer#./local_modules/app-adminizer::hash=34a4fb&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-adminizer@file:./local_modules/app-adminizer#./local_modules/app-adminizer::hash=76f2f3&locator=agentiz%40workspace%3A."
   dependencies:
-    adminizer: "npm:5.0.0-build.7"
+    adminizer: "npm:^5.0.0-build.12"
     ajv: "npm:^8.17.1"
     express: "npm:^4.21.2"
     password-hash: "npm:^1.2.2"
@@ -1371,13 +1439,13 @@ __metadata:
   peerDependencies:
     "@nodeknit/app-manager": "*"
     reflect-metadata: ^0.2.2
-  checksum: 10c0/dc55f7b44014c52843b350acf9790a1037a1dbfc4675b4807692de74f1de759d946385adb59c46778bda2e870b0dba1f1bcbcb62a478d4c55b3b741aa5d7d684
+  checksum: 10c0/0388d327b3eb63cd8d6f3ccc923cbaace8de6b2e1fa34886e72d098a98ba5852c8df39f9bd7b02d8bb1afa62b4cec4d245abb0e566121701a568ec7069d44ca6
   languageName: node
   linkType: hard
 
 "@nodeknit/app-graphql@file:./local_modules/app-graphql::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-graphql@file:./local_modules/app-graphql#./local_modules/app-graphql::hash=cf14b9&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-graphql@file:./local_modules/app-graphql#./local_modules/app-graphql::hash=94decd&locator=agentiz%40workspace%3A."
   dependencies:
     "@apollo/server": "npm:^5.0.0"
     graphql: "npm:^16.8.1"
@@ -1387,13 +1455,13 @@ __metadata:
   peerDependencies:
     "@nodeknit/app-manager": "*"
     reflect-metadata: ^0.2.2
-  checksum: 10c0/6c616b04d2201969845dc57c666a14cea177322889001d089b4fe61c65f418917747297b32ef8db6732e4b098e6c5e7d683d45c98507a98bd5057f8b54656840
+  checksum: 10c0/ec8da0cc2fd2021179652fbca673eb5c2af087109b39607224650e58a63be01e6b0bf73b0498f4f175e36152f1374482ef05d832dd1dd7672ad3ce67402f996f
   languageName: node
   linkType: hard
 
 "@nodeknit/app-manager@file:./local_modules/app-manager::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-manager@file:./local_modules/app-manager#./local_modules/app-manager::hash=d0d0ae&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-manager@file:./local_modules/app-manager#./local_modules/app-manager::hash=2a2c1d&locator=agentiz%40workspace%3A."
   dependencies:
     ajv: "npm:^8.17.1"
     express: "npm:^4.21.2"
@@ -1404,28 +1472,28 @@ __metadata:
     winston: "npm:^3.17.0"
   peerDependencies:
     reflect-metadata: ^0.2.2
-  checksum: 10c0/177e962f1d5777102468a40d59b50db5be6fd82fdf67d1be873afd678169d6f55b64ee5c809f31268415c26dca4cfa9a25f0827e4184bdf7a6109879bb89eb1a
+  checksum: 10c0/acca7e2e8e8fb096c3649ad45d1d8593dcaefbd707612cdf6927c9ce4d1eb4bf3640034f19ba3bf0e008cdb2f759a23e3e3621fc96948ea228301bc433cffce3
   languageName: node
   linkType: hard
 
 "@nodeknit/app-mcp@file:./local_modules/app-mcp::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-mcp@file:./local_modules/app-mcp#./local_modules/app-mcp::hash=a402cd&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-mcp@file:./local_modules/app-mcp#./local_modules/app-mcp::hash=8b8211&locator=agentiz%40workspace%3A."
   peerDependencies:
     "@nodeknit/app-manager": "*"
-  checksum: 10c0/a88e88cc01b0f256a0ec160cf9d0128ae3a47e84f1f6567f2d0f93f5c383f463c98a2dd7f68d061c73dc0a6760b80e673d86e8f6b0119a8045a79e7052c3d6e6
+  checksum: 10c0/692201d61d8a8dabb6c9b85f9037a5f26495fd9cd941d0b0e8378478b5c2454d132562e5ecf6cca77c0f8cee281b82a5b0cbcfb57409f3a94d343d530c57b41e
   languageName: node
   linkType: hard
 
 "@nodeknit/app-telegram-bot@file:./local_modules/app-telegram-bot::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-telegram-bot@file:./local_modules/app-telegram-bot#./local_modules/app-telegram-bot::hash=f05847&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-telegram-bot@file:./local_modules/app-telegram-bot#./local_modules/app-telegram-bot::hash=dcb4fe&locator=agentiz%40workspace%3A."
   dependencies:
     telegraf: "npm:^4.16.3"
   peerDependencies:
     "@nodeknit/app-manager": "*"
     reflect-metadata: ^0.2.2
-  checksum: 10c0/eca23a9867546c2551869f312007ab9a9947720f5a9cee46544ffdb0be758d1b5ab68d8f5b3e4c0c42ce9893e99f6a70349a6de062c0f786fc429ea635ffd749
+  checksum: 10c0/65c5c603bbca5f3b188d19884805834f34b83fc7704ce59d674359da2ad35633a5874d8cdc8da7ed80c1c770495c46626a2e48906f3cdf106605a83967c69fdb
   languageName: node
   linkType: hard
 
@@ -1473,6 +1541,26 @@ __metadata:
     mkdirp: "npm:^1.0.4"
     rimraf: "npm:^3.0.2"
   checksum: 10c0/02e946f3dafcc6743132fe2e0e2b585a96ca7265653a38df5a3e53fcf26c7c7a57fc0f861d7c689a23fdb6d6836c7eea5050c8086abf3c994feb2208d1514ff0
+  languageName: node
+  linkType: hard
+
+"@openharness/core@npm:^0.7.0":
+  version: 0.7.0
+  resolution: "@openharness/core@npm:0.7.0"
+  dependencies:
+    "@ai-sdk/mcp": "npm:^1.0.21"
+    ai: "npm:^6.0.97"
+    zod: "npm:^4.3.6"
+  peerDependencies:
+    zod: ^4.0.0
+  checksum: 10c0/69bb39b0faf2740b35c99a572e66fa50234090b8dba82ddbae8fca635d5fefcbb0a78eee9245bb87cd9f4351bfc338f01fb87c272f69eceb93266b1945c94feb
+  languageName: node
+  linkType: hard
+
+"@opentelemetry/api@npm:^1.9.0":
+  version: 1.9.1
+  resolution: "@opentelemetry/api@npm:1.9.1"
+  checksum: 10c0/c608485fc8b5a91e1f7e05e843b45b509307456b31cd2ad365933d90813e40ebfedf179f1451c762037e82d7c76aa8500e95d2da3609f640a1206cde5322cd14
   languageName: node
   linkType: hard
 
@@ -1816,6 +1904,13 @@ __metadata:
   version: 1.2.5
   resolution: "@sqltools/formatter@npm:1.2.5"
   checksum: 10c0/4b4fa62b8cd4880784b71cc5edd4a13da04fda0a915c14282765a8ec1a900a495e69b322704413e2052d221b5646d9fb0e20e87911f9a8f438f33180eecb11a4
+  languageName: node
+  linkType: hard
+
+"@standard-schema/spec@npm:^1.1.0":
+  version: 1.1.0
+  resolution: "@standard-schema/spec@npm:1.1.0"
+  checksum: 10c0/d90f55acde4b2deb983529c87e8025fa693de1a5e8b49ecc6eb84d1fd96328add0e03d7d551442156c7432fd78165b2c26ff561b970a9a881f046abb78d6a526
   languageName: node
   linkType: hard
 
@@ -2503,6 +2598,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@vercel/oidc@npm:3.2.0":
+  version: 3.2.0
+  resolution: "@vercel/oidc@npm:3.2.0"
+  checksum: 10c0/98318d3236f58c296616c8c2e1655b268c7bf58525bcd985adac7af6d900e05fc610f6f03ce2ff4bdcd3df7885a40c0ca44fdc761f122dcfe15a78c2756b0243
+  languageName: node
+  linkType: hard
+
 "@vitejs/plugin-react-swc@npm:^4.0.1":
   version: 4.3.1
   resolution: "@vitejs/plugin-react-swc@npm:4.3.1"
@@ -2682,9 +2784,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"adminizer@npm:5.0.0-build.7":
-  version: 5.0.0-build.7
-  resolution: "adminizer@npm:5.0.0-build.7"
+"adminizer@npm:^5.0.0-build.12":
+  version: 5.0.0-build.12
+  resolution: "adminizer@npm:5.0.0-build.12"
   dependencies:
     body-parser: "npm:^2.2.2"
     chalk: "npm:^5.4.1"
@@ -2699,6 +2801,7 @@ __metadata:
     jsonwebtoken: "npm:^9.0.3"
     multer: "npm:^2.1.1"
     password-hash: "npm:^1.2.2"
+    serve-static: "npm:^2.2.1"
     sharp: "npm:^0.33.5"
     sprintf-js: "npm:^1.1.3"
     sqlite3: "npm:^5.1.7"
@@ -2707,7 +2810,7 @@ __metadata:
     winston: "npm:^3.17.0"
     xlsx: "npm:^0.18.5"
     zod: "npm:^4.1.11"
-  checksum: 10c0/52aac9058ebd4f20e8998e3c8da0544ecf1bb89bee116cd43c768d0c49074333c9af32cf73c06474d898b5f0611608e46b89a0622bb810ffbecbcf91088cac98
+  checksum: 10c0/f4ce26dbe66c37aacb3910c192ff625abebf49641667afc4076c17aeee9a4b8e2a8d91941ba8ba17197f4c9d5b05ba6888544ad35548cfad5752e74672a874f9
   languageName: node
   linkType: hard
 
@@ -2724,6 +2827,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "agentiz@workspace:."
   dependencies:
+    "@ai-sdk/openai": "npm:^3.0.30"
     "@faker-js/faker": "npm:^9.8.0"
     "@inertiajs/react": "npm:^1.1.0"
     "@nodeknit/app-adminizer": "file:./local_modules/app-adminizer"
@@ -2731,6 +2835,7 @@ __metadata:
     "@nodeknit/app-manager": "file:./local_modules/app-manager"
     "@nodeknit/app-mcp": "file:./local_modules/app-mcp"
     "@nodeknit/app-telegram-bot": "file:./local_modules/app-telegram-bot"
+    "@openharness/core": "npm:^0.7.0"
     "@playwright/test": "npm:^1.55.0"
     "@tailwindcss/postcss": "npm:^4.1.10"
     "@types/ajv": "npm:^0.0.5"
@@ -2749,6 +2854,7 @@ __metadata:
     "@types/semver": "npm:^7.5.8"
     "@vitejs/plugin-react": "npm:^4.0.0"
     "@vitejs/plugin-react-swc": "npm:^4.0.1"
+    ai: "npm:^6.0.97"
     ajv: "npm:^8.17.1"
     autoprefixer: "npm:^10.4.13"
     bcrypt: "npm:^6.0.0"
@@ -2782,6 +2888,7 @@ __metadata:
     vite: "npm:^4.0.0"
     vite-plugin-externals: "npm:^0.6.2"
     vitest: "npm:^3.0.7"
+    zod: "npm:^4.4.3"
   languageName: unknown
   linkType: soft
 
@@ -2801,6 +2908,20 @@ __metadata:
     clean-stack: "npm:^2.0.0"
     indent-string: "npm:^4.0.0"
   checksum: 10c0/a42f67faa79e3e6687a4923050e7c9807db3848a037076f791d10e092677d65c1d2d863b7848560699f40fc0502c19f40963fb1cd1fb3d338a7423df8e45e039
+  languageName: node
+  linkType: hard
+
+"ai@npm:^6.0.97":
+  version: 6.0.239
+  resolution: "ai@npm:6.0.239"
+  dependencies:
+    "@ai-sdk/gateway": "npm:3.0.161"
+    "@ai-sdk/provider": "npm:3.0.14"
+    "@ai-sdk/provider-utils": "npm:4.0.41"
+    "@opentelemetry/api": "npm:^1.9.0"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/551d1ed79b138a1cf84471a7875ab7b3e0a97572fa0a86efd4838630974a22bbc4436eccc50c299cc6a34028b9bc1a6e891573f5e29a97f86f04096e4f2cd20a
   languageName: node
   linkType: hard
 
@@ -4719,6 +4840,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"eventsource-parser@npm:^3.0.8":
+  version: 3.1.0
+  resolution: "eventsource-parser@npm:3.1.0"
+  checksum: 10c0/5ab4c6c9a2a042be0b387b6d03810eb580bac4ce90e299ede56458125a97ffe3af8145b2740089fc898a96cfa5aae792ee79f2a06257fba2776b0e7bce037071
+  languageName: node
+  linkType: hard
+
 "expand-template@npm:^2.0.3":
   version: 2.0.3
   resolution: "expand-template@npm:2.0.3"
@@ -6092,7 +6220,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"json-schema@npm:0.4.0":
+"json-schema@npm:0.4.0, json-schema@npm:^0.4.0":
   version: 0.4.0
   resolution: "json-schema@npm:0.4.0"
   checksum: 10c0/d4a637ec1d83544857c1c163232f3da46912e971d5bf054ba44fdb88f07d8d359a462b4aec46f2745efbc57053365608d88bc1d7b1729f7b4fc3369765639ed3
@@ -7398,6 +7526,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"pkce-challenge@npm:^5.0.0":
+  version: 5.0.1
+  resolution: "pkce-challenge@npm:5.0.1"
+  checksum: 10c0/207f4cb976682f27e8324eb49cf71937c98fbb8341a0b8f6142bc6f664825b30e049a54a21b5c034e823ee3c3d412f10d74bd21de78e17452a6a496c2991f57c
+  languageName: node
+  linkType: hard
+
 "playwright-core@npm:1.60.0":
   version: 1.60.0
   resolution: "playwright-core@npm:1.60.0"
@@ -8296,7 +8431,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"serve-static@npm:^2.2.0":
+"serve-static@npm:^2.2.0, serve-static@npm:^2.2.1":
   version: 2.2.1
   resolution: "serve-static@npm:2.2.1"
   dependencies:
@@ -9511,6 +9646,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"undici@npm:^5.29.0":
+  version: 5.29.0
+  resolution: "undici@npm:5.29.0"
+  dependencies:
+    "@fastify/busboy": "npm:^2.0.0"
+  checksum: 10c0/e4e4d631ca54ee0ad82d2e90e7798fa00a106e27e6c880687e445cc2f13b4bc87c5eba2a88c266c3eecffb18f26e227b778412da74a23acc374fca7caccec49b
+  languageName: node
+  linkType: hard
+
 "undici@npm:^8.4.1":
   version: 8.9.0
   resolution: "undici@npm:8.9.0"
@@ -10142,7 +10286,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod@npm:^4.1.11":
+"zod@npm:^4.1.11, zod@npm:^4.3.6, zod@npm:^4.4.3":
   version: 4.4.3
   resolution: "zod@npm:4.4.3"
   checksum: 10c0/7ea31b558e88f9faf44f31dd185e2e1cbf51fed3081787fb96cc2534749b50c0acfc6da7f0922a7353ed092dd358c7d50c28ea96c94d04af64191bd33152eca3

@@ -21,6 +21,11 @@ export const adminizerConfig: AdminizerConfig = {
     security: {
       csrf: false
     },
+    aiAssistant: {
+        enabled: (process.env.OPENHARNESS_ENABLED ?? "true") === "true",
+        defaultModel: "agentiz-assistant",
+        models: ["agentiz-assistant"],
+    },
     brand: {
         link: {
             id: 'brand',

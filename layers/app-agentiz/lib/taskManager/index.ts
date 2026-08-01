@@ -28,7 +28,7 @@ export type {
  * The map is parked on a global symbol rather than kept as plain module state: under tsx the same
  * file can end up instantiated twice (once through the ESM graph, once through CJS), and a
  * module-level Map would then split in two — adapters registered by the handler would be invisible
- * to createTaskManager(). Same rule as lib/git/index.ts, see docs/app-layers/pitfalls.md.
+ * to createTaskManager(). Same rule as lib/git/index.ts, see notes/app-layers/pitfalls.md.
  */
 const ADAPTERS_KEY = Symbol.for('agentiz.taskManagerAdapters');
 const globalScope = globalThis as unknown as Record<symbol, Map<string, TaskManagerAdapter> | undefined>;
