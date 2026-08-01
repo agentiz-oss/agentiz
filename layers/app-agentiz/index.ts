@@ -3,6 +3,7 @@ import type { Migration } from '@nodeknit/app-manager';
 import { AdminizerRouteMiddleware, AppAdminizer, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
 import { AppMCP } from '@nodeknit/app-mcp';
 import { AgentizAssistantService } from './lib/ai/AgentizAssistantService';
+import { buildAgentizAgentSkills } from './lib/ai/agentSkills';
 import cron, { type ScheduledTask } from 'node-cron';
 import { migrations } from './migrations';
 import { AgentProject } from './models/AgentProject';
@@ -395,6 +396,16 @@ export class AppAgentiz extends AbstractApp {
         const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
         const mcpApp = this.appManager.appStorage.get('app-mcp')?.appInstance as AppMCP | undefined;
         if (adminizerApp && mcpApp) {
+            // Adminizer 5.0.0-build.12 ships read/update data skills but no create; add it here
+            // until a build that ships create_model_record itself lands (then `add()` below would
+            // throw on the duplicate id, which is exactly the signal to delete this).
+            for (const skill of buildAgentizAgentSkills(adminizerApp.adminizer)) {
+                try {
+                    adminizerApp.adminizer.aiAssistantAgentSkillHandler.add(skill, this.appId);
+                } catch (error) {
+                    console.warn(`[AppAgentiz] agent skill "${skill.id}" is already provided by adminizer, keeping the built-in one`);
+                }
+            }
             adminizerApp.adminizer.aiAssistantHandler.registerModel(
                 new AgentizAssistantService(mcpApp, this.appManager),
                 this.appId,

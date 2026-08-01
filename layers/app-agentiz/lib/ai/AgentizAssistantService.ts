@@ -181,7 +181,7 @@ export class AgentizAssistantService extends AbstractAiModelService {
         // project's classic moduleResolution can't see — go through Function() so this one
         // import resolves as `any` instead of a type error. ai/@ai-sdk/openai resolve normally.
         const dynamicImport = (specifier: string): Promise<any> => Function('specifier', 'return import(specifier)')(specifier);
-        const [{ Agent, Session }, { createOpenAI }, { tool }] = await Promise.all([
+        const [{ Agent, Session }, { createOpenAI }, { tool, jsonSchema }] = await Promise.all([
             dynamicImport('@openharness/core'),
             import('@ai-sdk/openai'),
             import('ai'),
@@ -249,6 +249,25 @@ export class AgentizAssistantService extends AbstractAiModelService {
             },
         });
 
+        // Adminizer's own agent skills (current_user, list_data_models, read_model_records,
+        // update_model_record, create_model_record, ...): every call re-checks this user's model
+        // permissions server-side. Available to every user, not just administrators.
+        const skillTools: Record<string, any> = {};
+        for (const skill of this.getAgentSkills(user)) {
+            skillTools[skill.id] = tool({
+                description: skill.description,
+                inputSchema: jsonSchema(skill.inputSchema),
+                execute: async (input: Record<string, unknown>) => {
+                    try {
+                        const result = await this.executeAgentSkill(skill.id, input ?? {}, user);
+                        return summarizeToolResult(skill.id, result);
+                    } catch (error: any) {
+                        return { error: error?.message || `Skill "${skill.id}" failed.` };
+                    }
+                },
+            });
+        }
+
         const agent = new Agent({
             name: 'Agentiz Assistant',
             model: provider.chat(model),
@@ -259,12 +278,13 @@ export class AgentizAssistantService extends AbstractAiModelService {
             },
             systemPrompt: [
                 'You are the Agentiz admin assistant. Agentiz runs agent pipelines against tasks pulled from external trackers.',
+                'Use list_data_models, read_model_records, update_model_record and create_model_record to inspect and edit admin data the current user may access.',
                 mcpAvailable
                     ? 'Use list_mcp_tools first (without group for a compact catalogue, with a group for exact schemas), then call_mcp_tool with the exact tool_name and params.'
                     : 'MCP tools are only available to administrator users in this chat.',
-                'Prefer read-only MCP tools for diagnostics. Do not call mutating tools (agentiz.sync, agentiz.runTask, agentiz.cancelRun, adminizer.user create/update/delete, ...) unless the user explicitly asked for that action.',
+                'Prefer read-only tools for diagnostics. Do not call mutating tools (create/update/delete records, agentiz.sync, agentiz.runTask, agentiz.cancelRun, ...) unless the user explicitly asked for that action.',
             ].join('\n'),
-            tools: mcpAvailable ? { list_mcp_tools: listMcpTools, call_mcp_tool: callMcpTool } : {},
+            tools: { ...skillTools, ...(mcpAvailable ? { list_mcp_tools: listMcpTools, call_mcp_tool: callMcpTool } : {}) },
         });
         const session = new Session({ agent, contextWindow: Number(process.env.OPENHARNESS_CONTEXT_WINDOW) || 128_000 });
         this.sessions.set(user.id, session);
