@@ -65,7 +65,11 @@ export class MobileAuthService {
     let ok = await verifyUserPassword(password, stored);
     if (!ok) {
       const login = String(attr(user, 'login') ?? identifier);
-      ok = await verifyUserPassword(`${login}${password}${process.env.AP_PASSWORD_SALT ?? ''}`, stored);
+      // Mirror Adminizer's concatenation *exactly* — it interpolates process.env.AP_PASSWORD_SALT
+      // with no fallback, so when the salt is unset it hashes the literal string "undefined" onto
+      // the end (login.ts, addUser.ts, …). Coalescing to '' here would hash a different input and
+      // reject a password the dashboard accepts, so the salt is stringified the same way JS does.
+      ok = await verifyUserPassword(`${login}${password}${process.env.AP_PASSWORD_SALT}`, stored);
     }
     if (!ok) throw new MobileAuthError(401, 'Invalid credentials');
 
