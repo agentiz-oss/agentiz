@@ -55,7 +55,18 @@ export class MobileAuthService {
     // confirming which admin logins exist.
     if (!user) throw new MobileAuthError(401, 'Invalid credentials');
 
-    const ok = await verifyUserPassword(password, this.storedPassword(user));
+    // Adminizer's UserAP stores the credential under `passwordHashed`; fall back to it when the
+    // generic field probe (password/passwordHash/hash) finds nothing.
+    const stored = this.storedPassword(user) ?? (attr(user, 'passwordHashed') as string | null);
+    // Two accepted formats: a bcrypt hash of the bare password (dev seeds), or Adminizer's own
+    // `password-hash` string, which it derives from `login + password + AP_PASSWORD_SALT`. Try the
+    // bare password first, then reproduce Adminizer's salted input so a dashboard account logs in
+    // through the mobile API unchanged.
+    let ok = await verifyUserPassword(password, stored);
+    if (!ok) {
+      const login = String(attr(user, 'login') ?? identifier);
+      ok = await verifyUserPassword(`${login}${password}${process.env.AP_PASSWORD_SALT ?? ''}`, stored);
+    }
     if (!ok) throw new MobileAuthError(401, 'Invalid credentials');
 
     const authUser = this.toAuthUser(user);

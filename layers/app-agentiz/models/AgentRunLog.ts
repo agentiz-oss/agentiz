@@ -2,6 +2,7 @@ import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default } from '
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
+import { AgentProject } from './AgentProject';
 import { AgentRun } from './AgentRun';
 import { AgentStageExecution } from './AgentStageExecution';
 import type { AgentRunLogLevel } from '../types/agentiz';
@@ -11,8 +12,10 @@ import type { AgentRunLogLevel } from '../types/agentiz';
   model: 'AgentRunLog',
   title: 'Agent Run Logs',
   icon: 'article',
+  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
-    visible: false,
+    visible: true,
+    section: 'Agentiz',
   },
 })
 @Table({ tableName: 'agentiz_run_logs', timestamps: true })
@@ -21,10 +24,16 @@ export class AgentRunLog extends Model<InferAttributes<AgentRunLog>, InferCreati
   @Column({ type: DataType.STRING, primaryKey: true })
   declare id: CreationOptional<string>;
 
+  @AdminizerField({ title: 'Run', views: { list: true, add: false, edit: false } })
   @ForeignKey(() => AgentRun)
   @Column({ type: DataType.STRING, allowNull: false })
   declare runId: string;
 
+  @ForeignKey(() => AgentProject)
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare projectId: string | null;
+
+  @AdminizerField({ title: 'Stage execution', views: { list: true, add: false, edit: false } })
   @ForeignKey(() => AgentStageExecution)
   @Column({ type: DataType.STRING, allowNull: true })
   declare stageExecutionId: string | null;
@@ -59,6 +68,9 @@ export class AgentRunLog extends Model<InferAttributes<AgentRunLog>, InferCreati
 
   @BelongsTo(() => AgentRun, 'runId')
   declare run: AgentRun;
+
+  @BelongsTo(() => AgentProject, 'projectId')
+  declare project: AgentProject | null;
 
   @BelongsTo(() => AgentStageExecution, 'stageExecutionId')
   declare stageExecution: AgentStageExecution | null;

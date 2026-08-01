@@ -69,7 +69,7 @@ export class AgentJobReaperService {
     for (const job of jobs) {
       if (await this.buryIfExhausted(job, 'released too many times')) continue;
       await job.update({ status: 'queued', workerId: null, leaseTokenHash: null, lockedUntil: null });
-      await AgentPipelineService.log(job.runId, null, 'info', 'Released job returned to the queue', {
+      await AgentPipelineService.log(job.runId, job.projectId, null, 'info', 'Released job returned to the queue', {
         jobId: job.id,
         attempt: job.attempt,
       });
@@ -101,7 +101,7 @@ export class AgentJobReaperService {
         availableAt: new Date(Date.now() + RETRY_BACKOFF_MS),
         lastError: `Lease expired after attempt ${job.attempt}, job requeued`,
       });
-      await AgentPipelineService.log(job.runId, null, 'warn', 'Worker lease expired, job returned to the queue', {
+      await AgentPipelineService.log(job.runId, job.projectId, null, 'warn', 'Worker lease expired, job returned to the queue', {
         jobId: job.id,
         attempt: job.attempt,
       });
@@ -133,7 +133,7 @@ export class AgentJobReaperService {
       });
       await AgentTask.update({ status: 'failed' }, { where: { id: run.taskId } });
     }
-    await AgentPipelineService.log(job.runId, null, 'error', `Job buried: ${reason}`, {
+    await AgentPipelineService.log(job.runId, job.projectId, null, 'error', `Job buried: ${reason}`, {
       jobId: job.id,
       attempt: job.attempt,
     });

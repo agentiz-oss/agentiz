@@ -125,7 +125,7 @@ export class AgentWorkerApiService {
     if (!job) return null;
     await AgentWorkerRegistryService.noteClaim(worker);
     await this.markRunStarted(job);
-    await AgentPipelineService.log(job.runId, null, 'info', `Worker job claimed by ${worker.name}`, {
+    await AgentPipelineService.log(job.runId, job.projectId, null, 'info', `Worker job claimed by ${worker.name}`, {
       jobId: job.id,
       attempt: job.attempt,
       workerId,
@@ -220,13 +220,13 @@ export class AgentWorkerApiService {
         const finalTaskStatus: AgentTaskStatus = run.pipelineSnapshot.finalAction.type === 'commit_and_pr' ? 'waiting_review' : 'done';
         await task.update({ status: finalTaskStatus });
         await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null });
-        await AgentPipelineService.log(run.id, null, 'info', `Worker job succeeded, task moved to "${finalTaskStatus}"`);
+        await AgentPipelineService.log(run.id, run.projectId, null, 'info', `Worker job succeeded, task moved to "${finalTaskStatus}"`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message });
         await task.update({ status: 'failed' });
         await job.update({ status: 'failed', result: payload as unknown as Record<string, unknown>, lastError: message, lockedUntil: null });
-        await AgentPipelineService.log(run.id, null, 'error', `Final action failed: ${message}`);
+        await AgentPipelineService.log(run.id, run.projectId, null, 'error', `Final action failed: ${message}`);
       }
     } else {
       const terminal = payload.status === 'cancelled' ? 'cancelled' : 'failed';
@@ -234,7 +234,7 @@ export class AgentWorkerApiService {
       await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
       await task.update({ status: taskStatus });
       await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
-      await AgentPipelineService.log(run.id, null, terminal === 'cancelled' ? 'warn' : 'error', `Worker job ${terminal}: ${payload.errorMessage ?? summary}`);
+      await AgentPipelineService.log(run.id, run.projectId, null, terminal === 'cancelled' ? 'warn' : 'error', `Worker job ${terminal}: ${payload.errorMessage ?? summary}`);
       // A failure is what a person most needs to see in the task thread, so it reports too.
       await AgentPipelineService.reportToTaskThread(
         run,
@@ -261,7 +261,7 @@ export class AgentWorkerApiService {
       availableAt: datePlus(30_000),
       lastError: message,
     });
-    await AgentPipelineService.log(job.runId, null, 'warn', `Worker released job${message ? `: ${message}` : ''}`);
+    await AgentPipelineService.log(job.runId, job.projectId, null, 'warn', `Worker released job${message ? `: ${message}` : ''}`);
     return { schemaVersion: SCHEMA_VERSION, released: true, retryAt: job.availableAt };
   }
 
@@ -298,6 +298,7 @@ export class AgentWorkerApiService {
     const level = event.level ?? (event.type.includes('failed') ? 'error' : 'info');
     await AgentRunLog.create({
       runId: job.runId,
+      projectId: job.projectId,
       stageExecutionId: event.stageExecutionId ?? null,
       level,
       message: event.message ?? event.type,

@@ -101,7 +101,7 @@ export class AgentWorkerQueueService {
 
   private static async executeLocalJob(worker: AgentWorker, job: AgentRunJob): Promise<void> {
     await AgentWorkerRegistryService.noteClaim(worker);
-    await AgentPipelineService.log(job.runId, null, 'info', `Local worker picked job ${job.id}`, {
+    await AgentPipelineService.log(job.runId, job.projectId, null, 'info', `Local worker picked job ${job.id}`, {
       workerId: worker.id,
       attempt: job.attempt,
     });
@@ -127,7 +127,7 @@ export class AgentWorkerQueueService {
       if (run && run.status !== 'succeeded' && run.status !== 'failed' && run.status !== 'cancelled') {
         await run.update({ status: 'failed', finishedAt: new Date(), errorMessage: message });
       }
-      await AgentPipelineService.log(job.runId, null, 'error', `Local worker failed: ${message}`);
+      await AgentPipelineService.log(job.runId, job.projectId, null, 'error', `Local worker failed: ${message}`);
     }
   }
 }

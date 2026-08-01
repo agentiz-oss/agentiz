@@ -15,6 +15,10 @@ import {
   up as upWorkerProvisioning,
   down as downWorkerProvisioning,
 } from './umzug/1785000006000_worker_admin_provisioning';
+import {
+  up as upRunLogProjectScope,
+  down as downRunLogProjectScope,
+} from './umzug/1785000007000_run_log_project_scope';
 
 export const umzugExports: Migration[] = [
   {
@@ -58,5 +62,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1785000006000,
     up: upWorkerProvisioning,
     down: downWorkerProvisioning,
+  },
+  {
+    name: 'run_log_project_scope',
+    timestamp: 1785000007000,
+    up: upRunLogProjectScope,
+    down: downRunLogProjectScope,
   },
 ];

@@ -14,7 +14,22 @@ export class StubAgentExecutor extends AgentExecutor {
     const { task, stage, role, previousOutputs } = context;
     await context.log('info', `stub executor running role "${role.key}" for stage ${stage.order} (${stage.role})`);
 
+    await context.log('debug', `reading task #${task.externalId} "${task.title}" (${(task.description ?? '').length} chars of description)`);
+
     const priorSummaries = Object.entries(previousOutputs).map(([roleName, result]) => `${roleName}: ${result.summary}`);
+    await context.log(
+      'debug',
+      priorSummaries.length > 0
+        ? `considering ${priorSummaries.length} prior stage output(s): ${priorSummaries.join('; ')}`
+        : 'no prior stage outputs to consider, this is the first stage',
+    );
+
+    await context.log(
+      'debug',
+      `resolving role "${role.key}" (${role.title}): model=${role.model ?? '(not set)'}, prompt=${(role.systemPrompt ?? '').length} chars`,
+    );
+
+    await context.log('debug', `drafting stage report for stage ${stage.order} (${stage.role})`);
 
     const report = [
       `# Agentiz stage report`,
@@ -32,6 +47,10 @@ export class StubAgentExecutor extends AgentExecutor {
       ``,
     ].join('\n');
 
+    const reportPath = `.agentiz/${task.externalId}/stage-${stage.order}-${stage.role}.md`;
+    await context.log('debug', `writing report file ${reportPath} (${report.length} chars)`);
+    await context.log('info', `stub executor finished stage ${stage.order} (${stage.role})`);
+
     return {
       summary: `[${stage.role}] executed by stub agent "${role.key}"`,
       output: {
@@ -43,7 +62,7 @@ export class StubAgentExecutor extends AgentExecutor {
       },
       fileChanges: [
         {
-          path: `.agentiz/${task.externalId}/stage-${stage.order}-${stage.role}.md`,
+          path: reportPath,
           content: report,
         },
       ],

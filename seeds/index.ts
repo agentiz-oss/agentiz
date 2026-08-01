@@ -1,8 +1,10 @@
 import type { AppManager } from '@nodeknit/app-manager';
 import { seed as agentizSeed } from './agentiz.seed';
+import { seed as agentizProjectsSeed } from './agentiz-projects.seed';
 
 const seeds = [
   { name: 'agentiz', fn: agentizSeed },
+  { name: 'agentiz-projects', fn: agentizProjectsSeed },
 ];
 
 export async function runSeeds(appManager: AppManager) {

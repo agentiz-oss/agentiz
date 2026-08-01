@@ -19,12 +19,13 @@ function renderTemplate(template: string, values: Record<string, string>): strin
 
 async function writeLog(
   runId: string,
+  projectId: string | null,
   stageExecutionId: string | null,
   level: 'debug' | 'info' | 'warn' | 'error',
   message: string,
   meta?: Record<string, unknown>,
 ): Promise<void> {
-  await AgentRunLog.create({ runId, stageExecutionId, level, message, meta: meta ?? null });
+  await AgentRunLog.create({ runId, projectId, stageExecutionId, level, message, meta: meta ?? null });
 }
 
 export class AgentPipelineService {
@@ -63,7 +64,7 @@ export class AgentPipelineService {
     }
 
     await task.update({ status: 'queued', pipelineSpecId: spec.id });
-    await writeLog(run.id, null, 'info', `Run created from spec "${spec.name}" with ${stages.length} stage(s)`, {
+    await writeLog(run.id, run.projectId, null, 'info', `Run created from spec "${spec.name}" with ${stages.length} stage(s)`, {
       specId: spec.id,
       trigger,
     });
@@ -101,7 +102,7 @@ export class AgentPipelineService {
 
       if (failed) {
         await execution.update({ status: 'skipped', finishedAt: new Date() });
-        await writeLog(run.id, execution.id, 'warn', `Stage ${stage.order} (${stage.role}) skipped after earlier failure`);
+        await writeLog(run.id, run.projectId, execution.id, 'warn', `Stage ${stage.order} (${stage.role}) skipped after earlier failure`);
         continue;
       }
 
@@ -122,7 +123,7 @@ export class AgentPipelineService {
           stage,
           role,
           previousOutputs,
-          log: (level, message, meta) => writeLog(run.id, execution.id, level, message, meta),
+          log: (level, message, meta) => writeLog(run.id, run.projectId, execution.id, level, message, meta),
         });
 
         previousOutputs[stage.role] = result;
@@ -135,11 +136,11 @@ export class AgentPipelineService {
           output: { ...result.output, summary: result.summary },
           finishedAt: new Date(),
         });
-        await writeLog(run.id, execution.id, 'info', `Stage ${stage.order} (${stage.role}) succeeded: ${result.summary}`);
+        await writeLog(run.id, run.projectId, execution.id, 'info', `Stage ${stage.order} (${stage.role}) succeeded: ${result.summary}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await execution.update({ status: 'failed', errorMessage: message, finishedAt: new Date() });
-        await writeLog(run.id, execution.id, 'error', `Stage ${stage.order} (${stage.role}) failed: ${message}`);
+        await writeLog(run.id, run.projectId, execution.id, 'error', `Stage ${stage.order} (${stage.role}) failed: ${message}`);
         if ((stage.onFail ?? 'stop') === 'stop') {
           failed = true;
           failureMessage = `Stage ${stage.order} (${stage.role}) failed: ${message}`;
@@ -158,7 +159,7 @@ export class AgentPipelineService {
         errorMessage: failureMessage,
       });
       await task.update({ status: 'failed' });
-      await writeLog(run.id, null, 'error', `Run failed: ${failureMessage}`);
+      await writeLog(run.id, run.projectId, null, 'error', `Run failed: ${failureMessage}`);
       return run;
     }
 
@@ -174,7 +175,7 @@ export class AgentPipelineService {
       const message = error instanceof Error ? error.message : String(error);
       await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message });
       await task.update({ status: 'failed' });
-      await writeLog(run.id, null, 'error', `Final action failed: ${message}`);
+      await writeLog(run.id, run.projectId, null, 'error', `Final action failed: ${message}`);
       return run;
     }
 
@@ -182,7 +183,7 @@ export class AgentPipelineService {
     const finalTaskStatus: AgentTaskStatus =
       run.pipelineSnapshot.finalAction.type === 'commit_and_pr' ? 'waiting_review' : 'done';
     await task.update({ status: finalTaskStatus });
-    await writeLog(run.id, null, 'info', `Run succeeded, task moved to "${finalTaskStatus}"`);
+    await writeLog(run.id, run.projectId, null, 'info', `Run succeeded, task moved to "${finalTaskStatus}"`);
 
     return run;
   }
@@ -219,7 +220,7 @@ export class AgentPipelineService {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await writeLog(run.id, null, 'warn', `Could not add the agent comment to the task: ${message}`);
+      await writeLog(run.id, run.projectId, null, 'warn', `Could not add the agent comment to the task: ${message}`);
     }
   }
 
@@ -245,7 +246,7 @@ export class AgentPipelineService {
     await this.reportToTaskThread(run, task, summary);
 
     if (action.type === 'none') {
-      await writeLog(run.id, null, 'info', 'Final action: none, nothing pushed back');
+      await writeLog(run.id, run.projectId, null, 'info', 'Final action: none, nothing pushed back');
       return;
     }
 
@@ -256,7 +257,7 @@ export class AgentPipelineService {
       const body = `Agentiz run \`${run.id}\` finished.\n\n${summary}`;
       const comment = await provider.commentOnTask(task.externalId, body);
       await run.update({ responseUrl: comment.url });
-      await writeLog(run.id, null, 'info', `Final action: commented on task, ${comment.url}`);
+      await writeLog(run.id, run.projectId, null, 'info', `Final action: commented on task, ${comment.url}`);
       return;
     }
 
@@ -277,7 +278,7 @@ export class AgentPipelineService {
       changes,
     });
     await run.update({ commitSha: commit.sha, commitUrl: commit.url });
-    await writeLog(run.id, null, 'info', `Committed ${changes.length} file(s) to ${branch}: ${commit.url}`);
+    await writeLog(run.id, run.projectId, null, 'info', `Committed ${changes.length} file(s) to ${branch}: ${commit.url}`);
 
     const pr = await provider.openPullRequest({
       branch,
@@ -286,7 +287,7 @@ export class AgentPipelineService {
       body: `Automated by agentiz run \`${run.id}\` for task #${task.externalId}.\n\n${summary}`,
     });
     await run.update({ responseUrl: pr.url });
-    await writeLog(run.id, null, 'info', `Opened pull request ${pr.url}`);
+    await writeLog(run.id, run.projectId, null, 'info', `Opened pull request ${pr.url}`);
   }
 
   static async cancelRun(runId: string, reason = 'Cancelled by user'): Promise<AgentRun> {
@@ -300,28 +301,29 @@ export class AgentPipelineService {
       await job.update({ status: 'cancelled', cancelRequestedAt: new Date(), cancelReason: reason });
       await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
       await AgentTask.update({ status: 'cancelled' }, { where: { id: run.taskId } });
-      await writeLog(run.id, null, 'warn', `Queued run cancelled: ${reason}`);
+      await writeLog(run.id, run.projectId, null, 'warn', `Queued run cancelled: ${reason}`);
       return run;
     }
     if (job && (job.status === 'leased' || job.status === 'running')) {
       await job.update({ cancelRequestedAt: new Date(), cancelReason: reason });
-      await writeLog(run.id, null, 'warn', `Cancel requested for worker job: ${reason}`);
+      await writeLog(run.id, run.projectId, null, 'warn', `Cancel requested for worker job: ${reason}`);
       return run;
     }
     await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
     await AgentTask.update({ status: 'cancelled' }, { where: { id: run.taskId } });
-    await writeLog(run.id, null, 'warn', `Run cancelled: ${reason}`);
+    await writeLog(run.id, run.projectId, null, 'warn', `Run cancelled: ${reason}`);
     return run;
   }
 
   static async log(
     runId: string,
+    projectId: string | null,
     stageExecutionId: string | null,
     level: 'debug' | 'info' | 'warn' | 'error',
     message: string,
     meta?: Record<string, unknown>,
   ): Promise<void> {
-    await writeLog(runId, stageExecutionId, level, message, meta);
+    await writeLog(runId, projectId, stageExecutionId, level, message, meta);
   }
 }
 
@@ -351,7 +353,7 @@ export class AgentWorkerJobBuilder {
       await job.update({ status: 'queued', availableAt: new Date(), snapshot });
     }
     if (created) {
-      await writeLog(run.id, null, 'info', 'Worker job queued', { jobId: job.id });
+      await writeLog(run.id, run.projectId, null, 'info', 'Worker job queued', { jobId: job.id });
     }
     return job;
   }

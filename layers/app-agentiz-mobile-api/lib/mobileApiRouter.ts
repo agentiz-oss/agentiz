@@ -4,6 +4,7 @@ import type { Model, Sequelize } from 'sequelize';
 import { bearerToken, verifyMobileToken } from './mobileAuth';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
 import { MobileProjectService } from '../services/MobileProjectService';
+import { MobileTaskService } from '../services/MobileTaskService';
 
 /** Public base path of the mobile API. Versioned so the app can pin a contract. */
 export const MOBILE_API_BASE = '/api/agentiz/mobile/v1';
@@ -14,8 +15,12 @@ interface AuthedRequest extends Request {
 }
 
 function errorResponse(res: Response, error: unknown) {
-  if (error instanceof MobileAuthError) {
-    return res.status(error.status).json({ message: error.message });
+  // MobileAuthError and the tracker's TaskServiceError both carry the status they want reported.
+  // Matching on the shape rather than the class keeps a validation error from app-agentiz (400,
+  // "title is required") from being flattened into a 500 the client cannot act on.
+  const status = (error as { status?: unknown } | null)?.status;
+  if (error instanceof MobileAuthError || (typeof status === 'number' && status >= 400 && status < 600)) {
+    return res.status(status as number).json({ message: (error as Error).message });
   }
   return res.status(500).json({ message: error instanceof Error ? error.message : String(error) });
 }
@@ -88,6 +93,72 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
       const project = await MobileProjectService.getForOwner(req.params.id, ownerId);
       if (!project) return res.status(404).json({ message: 'Project not found' });
       res.json({ data: project });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /** The signed-in mobile user, recorded as the author of anything they create. */
+  const actorOf = (req: AuthedRequest): { id: number | null; name: string } => {
+    const user = MobileAuthService.toAuthUser(req.mobileUser) as any;
+    const id = Number(user?.id);
+    return { id: Number.isFinite(id) ? id : null, name: user?.login ?? 'mobile' };
+  };
+
+  const ownerOf = (req: AuthedRequest) => MobileAuthService.toAuthUser(req.mobileUser).id;
+
+  router.get('/projects/:id/tasks', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.listForProject(req.params.id, ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/projects/:id/tasks', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const tags = Array.isArray(req.body?.tags) ? req.body.tags.map(String) : [];
+      const data = await MobileTaskService.create(
+        req.params.id,
+        ownerOf(req),
+        {
+          title: String(req.body?.title ?? ''),
+          description: req.body?.description == null ? null : String(req.body.description),
+          tags,
+        },
+        actorOf(req),
+      );
+      res.status(201).json({ data });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.get('/tasks/:id', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.detail(req.params.id, ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/tasks/:id/run', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.status(202).json({ data: await MobileTaskService.run(req.params.id, ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/tasks/:id/comments', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const data = await MobileTaskService.addComment(
+        req.params.id,
+        ownerOf(req),
+        String(req.body?.body ?? ''),
+        actorOf(req),
+      );
+      res.status(201).json({ data });
     } catch (error) {
       errorResponse(res, error);
     }
