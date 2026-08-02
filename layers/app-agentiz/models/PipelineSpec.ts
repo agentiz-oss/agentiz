@@ -1,9 +1,10 @@
-import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default } from 'sequelize-typescript';
+import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default, BeforeValidate } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentProject } from './AgentProject';
 import type { PipelineSpecDef } from '../types/agentiz';
+import { assertValidSpec } from '../services/PipelineSpecValidation';
 
 /**
  * The rule specification the user asked for: "если это не дефолтное для всей системы поведение,
@@ -24,6 +25,12 @@ import type { PipelineSpecDef } from '../types/agentiz';
 })
 @Table({ tableName: 'agentiz_pipeline_specs', timestamps: true })
 export class PipelineSpec extends Model<InferAttributes<PipelineSpec>, InferCreationAttributes<PipelineSpec>> {
+  /** Reject malformed specs in every write path, including Adminizer's generic CRUD route. */
+  @BeforeValidate
+  static validateSpec(instance: PipelineSpec): void {
+    assertValidSpec(instance.spec);
+  }
+
   @Default(() => randomUUID())
   @Column({ type: DataType.STRING, primaryKey: true })
   declare id: CreationOptional<string>;
@@ -61,7 +68,7 @@ export class PipelineSpec extends Model<InferAttributes<PipelineSpec>, InferCrea
   @AdminizerField({
     title: 'Spec (JSON)',
     type: 'jsoneditor',
-    tooltip: 'See schemas/pipeline-spec.schema.json: { match?, stages: [{order,role,agentRoleKey,onFail}], finalAction }',
+    tooltip: 'Every stage must include runtime.mode: host or docker. See schemas/pipeline-spec.schema.json.',
     required: true,
     views: { list: false, add: true, edit: true },
   })

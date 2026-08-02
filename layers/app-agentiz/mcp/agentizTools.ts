@@ -12,6 +12,7 @@ import { AgentPipelineService } from '../services/AgentPipelineService';
 import { GitSyncService } from '../services/GitSyncService';
 import { AgentWorkerApiService } from '../services/AgentWorkerApiService';
 import { AgentWorkerQueueService } from '../services/AgentWorkerQueueService';
+import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
 
 type Params = Record<string, unknown>;
 
@@ -325,5 +326,5 @@ const cancelRunTool: IMcpTool = {
 export const agentizMcpTools: IMcpTool[] = [
   overviewTool, projectsTool, tasksTool, runsTool, runDetailsTool, configurationTool,
   workersTool, workerDetailsTool, jobsTool,
-  syncTool, runTaskTool, cancelRunTool,
+  syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
 ];
