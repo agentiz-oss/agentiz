@@ -1,0 +1,51 @@
+name: Build worker release artifacts
+
+on:
+  push:
+    tags:
+      - 'worker'
+      - 'worker-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Wheel and controller image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build Python wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build worker --wheel --outdir artifacts
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build controller OCI image
+        uses: docker/build-push-action@v7
+        with:
+          context: worker
+          file: worker/Dockerfile
+          push: false
+          tags: agentiz-worker:${{ github.ref_name }}
+          outputs: type=oci,dest=artifacts/agentiz-worker-${{ github.ref_name }}.oci.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Upload worker release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentiz-worker-${{ github.ref_name }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            artifacts/*.whl
+            artifacts/*.oci.tar

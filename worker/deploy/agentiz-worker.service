@@ -1,0 +1,18 @@
+[Unit]
+Description=Agentiz OpenHands worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentiz-worker
+Group=agentiz-worker
+EnvironmentFile=/etc/agentiz-worker.env
+ExecStart=/opt/agentiz-worker/venv/bin/agentiz-worker
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

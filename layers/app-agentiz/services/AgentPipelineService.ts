@@ -375,6 +375,7 @@ export class AgentWorkerJobBuilder {
         role: stage.role,
         agentRoleKey: stage.agentRoleKey,
         onFail: stage.onFail,
+        runtime: stage.runtime ?? null,
         systemPrompt: role?.systemPrompt ?? null,
         agent: {
           kind: String((role?.config as any)?.executor ?? 'stub'),

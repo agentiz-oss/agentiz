@@ -76,6 +76,17 @@ export interface AgentWorkerCapabilities {
 /** What happens to the run when a stage fails. */
 export type StageFailurePolicy = 'stop' | 'continue';
 
+/**
+ * Development runner selected by a pipeline stage.  It is deliberately a pipeline property:
+ * a role describes an agent, while this decides where OpenHands executes it.
+ *
+ * This is only the stage-0 spike contract. ACP command and credentials remain owned by the
+ * role/worker protocol.
+ */
+export interface PipelineStageRuntimeDef {
+  mode: 'host' | 'docker';
+}
+
 export interface PipelineStageDef {
   order: number;
   /** Free-form role name used for display/log grouping, e.g. "investigate" | "decide" | "fix" | "commit". */
@@ -83,6 +94,8 @@ export interface PipelineStageDef {
   /** Key of the AgentRole (scoped to the same project) that provides prompt/model/tools for this stage. */
   agentRoleKey: string;
   onFail: StageFailurePolicy;
+  /** Optional while existing pipelines migrate. Required by the stage-0 fixture worker. */
+  runtime?: PipelineStageRuntimeDef;
 }
 
 export type PipelineFinalActionType = 'commit_and_pr' | 'comment_only' | 'none';

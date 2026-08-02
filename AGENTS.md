@@ -17,3 +17,25 @@
   instantiated twice (ESM + CJS graphs) and plain module state silently splits in two.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
+
+## Calling the Agentiz MCP endpoint
+
+- Base URL: `https://agentiz.m42.cx/mcp`. Auth via header `X-Mcp-Key: <MCP_KEY>` (or query param
+  `mcp_key=...`) — the key lives in `.env` as `MCP_KEY` (`MCP_ADMIN_KEY` is a separate key and did
+  not authenticate against this endpoint). Never hardcode the key value in tracked files; read it
+  from `.env` at call time.
+- `GET /mcp` returns the compact tool catalogue (groups + tool list). Without a valid key it only
+  shows the public `general` group (just `health`). With a valid key it also shows `agentiz`
+  (read-only: overview, projects, tasks, runs, runDetails, configuration) and `agentiz-actions`
+  (state-changing: sync, runTask, cancelRun), plus more `general` tools (adminizer.user,
+  system.listApps, system.toggleApp).
+- `GET /mcp/group/:group` returns full schemas for one group.
+- `POST /mcp/call/:toolName` calls a tool with a JSON body.
+- Example:
+  ```bash
+  source .env
+  curl -s -H "X-Mcp-Key: $MCP_KEY" https://agentiz.m42.cx/mcp
+  ```
+- The auth status has appeared as `unauthenticated` on a first request and `authenticated` on an
+  immediate retry with the same key — treat a stale/cached-looking `unauthenticated` response as
+  worth one retry before assuming the key is wrong.

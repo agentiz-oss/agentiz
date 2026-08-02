@@ -1,6 +1,6 @@
 # OpenHands worker для Agentiz: исследование и каркас реализации
 
-Статус: design draft, без реализации. Дата проверки источников: 2026-07-21.
+Статус: stage-0 spike начат. Дата проверки источников: 2026-08-02.
 
 ## 1. Вывод
 
@@ -349,6 +349,16 @@ credentials и по возможности rootless Docker/remote workspace. WSL
 - Измерить cold start, RAM/disk и объём событий.
 
 Критерий выхода: воспроизводимый script + таблица подтверждённых API; никаких `latest`.
+
+#### Реализованный минимальный контур
+
+`worker/src/agentiz_worker/main.py` проверяет machine-to-machine границу (`register → claim →
+events → result`) и запускает `ACPAgent` через OpenHands. Pipeline stage выбирает только
+расположение workspace: `runtime.mode: "host"` даёт локальный `Conversation`,
+`runtime.mode: "docker"` — `DockerWorkspace`. ACP-команда остаётся свойством `AgentRole.config`
+(`acpCommand`) и не дублируется между стадиями. Версии фиксируются в `pyproject.toml`:
+`openhands-sdk==1.40.0` и `openhands-workspace==1.40.0`; Docker image передаётся только digest-ом
+через `AGENTIZ_OPENHANDS_SERVER_IMAGE`. Команда локальной проверки — в `README.md`.
 
 ### Этап 1 — protocol и skeleton worker
 

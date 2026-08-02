@@ -41,6 +41,15 @@
           "enum": ["stop", "continue"],
           "default": "stop",
           "description": "stop = fail the whole run; continue = mark this stage failed and run the next one."
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "OpenHands workspace placement. host runs the ACP agent in the worker process; docker starts an OpenHands Agent Server container through DockerWorkspace.",
+          "required": ["mode"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["host", "docker"] }
+          }
         }
       }
     },

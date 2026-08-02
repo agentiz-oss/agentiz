@@ -1,0 +1,22 @@
+[project]
+name = "agentiz-worker"
+version = "0.0.1"
+description = "Stage-0 Agentiz worker spike"
+requires-python = ">=3.11"
+dependencies = [
+  "openhands-sdk==1.40.0",
+  "openhands-workspace==1.40.0",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+agentiz-worker = "agentiz_worker.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
