@@ -32,8 +32,8 @@ function limitParam(params: Params, fallback = LIMIT_DEFAULT): number {
 function projectTeaser(project: AgentProject) {
   return {
     id: project.id, slug: project.slug, name: project.name, repoProvider: project.repoProvider,
-    repository: `${project.repoConfig.owner}/${project.repoConfig.repo}`,
-    defaultBranch: project.repoConfig.defaultBranch ?? null, isActive: project.isActive,
+    repository: project.repoConfig ? `${project.repoConfig.owner}/${project.repoConfig.repo}` : null,
+    defaultBranch: project.repoConfig?.defaultBranch ?? null, isActive: project.isActive,
     lastSyncedAt: project.lastSyncedAt, updatedAt: project.updatedAt,
   };
 }
