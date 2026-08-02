@@ -10,6 +10,15 @@ coverage
 .yarn/install-state.gz
 webapp/vite.config.ts.timestamp-*
 
+# ── Python worker: virtualenvs and build outputs ─────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+worker/artifacts/
+
 # ── Секреты и локальные конфиги ──────────────────────────────────────
 # .env матчится на любой глубине, .env.example остаётся в репозитории
 .env
