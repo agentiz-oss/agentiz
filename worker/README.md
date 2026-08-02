@@ -47,16 +47,23 @@ docker version
 docker run --rm hello-world
 ```
 
-Создайте worker в панели Agentiz и включите `AGENTIZ_WORKER_API_ENABLED=true` у сервера. Затем:
+В production Worker API уже доступен на `https://agentiz.m42.cx`. Настройка не требует
+переменных окружения: профиль, включая токен, хранится в
+`~/.config/agentiz/worker.json` с правами `0600`.
 
 ```bash
-export AGENTIZ_WORKER_API_URL=http://localhost:17280/api/agentiz/worker/v1
-export AGENTIZ_WORKER_TOKEN='token-shown-once-in-the-panel'
-export AGENTIZ_WORKER_ID="dev-$(hostname)"
-export AGENTIZ_WORKER_WORKSPACE="$PWD/../fixture-repo"
-export AGENTIZ_OPENHANDS_SERVER_IMAGE='ghcr.io/openhands/agent-server:1.40.0-python-amd64@sha256:b2326ac6d444f3f80f2fa3260ab21653a9b6dfd02d5331643921428d79b87cc6'
-agentiz-worker --once
+agentiz-worker configure
+# 1) выберите Agentiz production или 2) укажите свой сервер;
+# в панели выбранного сервера создайте «Новый воркер» и вставьте показанный токен.
+agentiz-worker run --once
 ```
+
+Рабочую директорию вручную выбирать не нужно: настройщик создаёт
+`~/.local/share/agentiz-worker/workspace`. В текущем stage-0 она нужна только для host-mode
+исполнителя; будущий clone/checkout будет подготавливать её автоматически для каждой job.
+
+Запись воркера создаётся в панели, а не самим клиентом: она выдаёт одноразовый **токен**,
+не только ID. Сервер по этому токену сам связывает процесс с созданным воркером.
 
 `--once` полезен для проверки регистрации и одной job. Первый запуск `docker` скачает образ
 примерно на несколько гигабайт. Образ намеренно указан digest-ом, а не mutable `latest`.
@@ -89,17 +96,17 @@ python3 -m venv /opt/agentiz-worker/venv
 /opt/agentiz-worker/venv/bin/pip install agentiz_worker-0.0.1-py3-none-any.whl
 ```
 
-Запуск оформляется systemd unit с environment file, в котором лежат `AGENTIZ_WORKER_API_URL`,
-`AGENTIZ_WORKER_TOKEN`, `AGENTIZ_WORKER_ID`, `AGENTIZ_WORKER_WORKSPACE` и закреплённый
-`AGENTIZ_OPENHANDS_SERVER_IMAGE`. Готовые шаблоны: [environment file](deploy/agentiz-worker.env.example)
-и [systemd unit](deploy/agentiz-worker.service). Установить их можно так:
+После успешной проверки создайте постоянную пользовательскую systemd-службу:
 
 ```bash
-sudo install -D -m 600 deploy/agentiz-worker.env.example /etc/agentiz-worker.env
-sudo install -D -m 644 deploy/agentiz-worker.service /etc/systemd/system/agentiz-worker.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now agentiz-worker
+agentiz-worker install-service
+systemctl --user status agentiz-worker
 ```
+
+Команда создаёт `~/.config/systemd/user/agentiz-worker.service`, включает и запускает службу.
+Она читает только профиль текущего пользователя, поэтому токен не передаётся через environment
+и не оказывается в unit-файле. Чтобы она продолжала работать после logout/reboot, включите linger
+один раз от имени администратора: `sudo loginctl enable-linger $USER`.
 
 ### Controller image
 

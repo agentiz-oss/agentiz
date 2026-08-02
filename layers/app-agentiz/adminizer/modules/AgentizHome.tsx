@@ -93,6 +93,18 @@ const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   revoked: { bg: "#fee2e2", fg: "#b91c1c" },
 };
 
+const ISSUED_TOKEN_COLORS = {
+  border: "#f59e0b",
+  bg: "#fffbeb",
+  fg: "#78350f",
+  codeBorder: "#fcd34d",
+  codeBg: "#ffffff",
+  codeFg: "#111827",
+  buttonBorder: "#d97706",
+  buttonBg: "#fef3c7",
+  buttonFg: "#78350f",
+};
+
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const swatch = STATUS_COLORS[status] ?? { bg: "#f1f5f9", fg: "#334155" };
   return (
@@ -341,16 +353,54 @@ const AgentizHome: React.FC = () => {
         )}
 
         {issuedToken && (
-          <div className="mb-3 rounded border p-3 text-sm" style={{ borderColor: "#fcd34d", backgroundColor: "#fffbeb" }}>
-            <div className="font-medium" style={{ color: "#78350f" }}>
+          <div
+            className="mb-3 rounded border p-3 text-sm"
+            style={{ borderColor: ISSUED_TOKEN_COLORS.border, backgroundColor: ISSUED_TOKEN_COLORS.bg, color: ISSUED_TOKEN_COLORS.fg }}
+          >
+            <div className="font-medium">
               Токен воркера «{issuedToken.workerName}» — показывается один раз
             </div>
-            <code className="mt-1 block break-all rounded px-2 py-1 text-xs" style={{ backgroundColor: "#ffffff" }}>{issuedToken.token}</code>
-            <div className="mt-2 text-xs" style={{ color: "#78350f" }}>Запустите воркер с этим токеном:</div>
-            <code className="mt-1 block break-all rounded px-2 py-1 text-xs" style={{ backgroundColor: "#ffffff" }}>
-              {`AGENTIZ_URL=${issuedToken.workerApiUrl} AGENTIZ_TOKEN=${issuedToken.token} agentiz-worker run`}
+            <code
+              className="mt-1 block break-all rounded border px-2 py-1 text-xs"
+              style={{
+                borderColor: ISSUED_TOKEN_COLORS.codeBorder,
+                backgroundColor: ISSUED_TOKEN_COLORS.codeBg,
+                color: ISSUED_TOKEN_COLORS.codeFg,
+              }}
+            >
+              {issuedToken.token}
             </code>
-            <button onClick={() => setIssuedToken(null)} className="mt-2 rounded border px-2 py-1 text-xs">
+            <div className="mt-2 text-xs">
+              Как установить воркер:{" "}
+              <a
+                href="https://docs.agentiz.m42.cx/worker-install"
+                target="_blank"
+                rel="noreferrer"
+                className="underline"
+              >
+                docs.agentiz.m42.cx/worker-install
+              </a>
+            </div>
+            <div className="mt-2 text-xs">На машине воркера запустите настройку, выберите сервер и вставьте этот токен:</div>
+            <code
+              className="mt-1 block break-all rounded border px-2 py-1 text-xs"
+              style={{
+                borderColor: ISSUED_TOKEN_COLORS.codeBorder,
+                backgroundColor: ISSUED_TOKEN_COLORS.codeBg,
+                color: ISSUED_TOKEN_COLORS.codeFg,
+              }}
+            >
+              {`agentiz-worker configure  # сервер: ${issuedToken.workerApiUrl}`}
+            </code>
+            <button
+              onClick={() => setIssuedToken(null)}
+              className="mt-2 rounded border px-2 py-1 text-xs"
+              style={{
+                borderColor: ISSUED_TOKEN_COLORS.buttonBorder,
+                backgroundColor: ISSUED_TOKEN_COLORS.buttonBg,
+                color: ISSUED_TOKEN_COLORS.buttonFg,
+              }}
+            >
               Я скопировал
             </button>
           </div>
