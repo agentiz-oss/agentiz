@@ -74,6 +74,15 @@ const overviewTool: IMcpTool = {
       return result;
     }, {});
     return {
+      // gitSha/buildTime come from the Docker build args (see container.yml); processStartedAt is
+      // derived from uptime so a redeploy loop can tell "still the old process" from "new build,
+      // not restarted yet" apart from "new build, running" without guessing from timestamps alone.
+      server: {
+        gitSha: process.env.GIT_SHA ?? null,
+        buildTime: process.env.BUILD_TIME ?? null,
+        processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        uptimeSec: Math.round(process.uptime()),
+      },
       projects: projects.map(projectTeaser),
       taskCounts: countBy(tasks),
       runningRuns: runs.map(runTeaser),

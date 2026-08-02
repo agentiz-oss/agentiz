@@ -19,6 +19,10 @@ import {
   up as upRunLogProjectScope,
   down as downRunLogProjectScope,
 } from './umzug/1785000007000_run_log_project_scope';
+import {
+  up as upRepairEmptySpecs,
+  down as downRepairEmptySpecs,
+} from './umzug/1785000008000_repair_empty_pipeline_specs';
 
 export const umzugExports: Migration[] = [
   {
@@ -68,5 +72,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1785000007000,
     up: upRunLogProjectScope,
     down: downRunLogProjectScope,
+  },
+  {
+    name: 'repair_empty_pipeline_specs',
+    timestamp: 1785000008000,
+    up: upRepairEmptySpecs,
+    down: downRepairEmptySpecs,
   },
 ];

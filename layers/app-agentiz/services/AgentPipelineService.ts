@@ -385,22 +385,28 @@ export class AgentWorkerJobBuilder {
       };
     }));
 
-    // The task may come from a linked integration repository rather than the project's own repo.
-    const repository = await resolveTaskRepository(task, project);
-    const baseHost = repository.baseUrl
-      ? repository.baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
-      : repository.provider === 'gitlab' ? 'gitlab.com' : 'github.com';
-    const cloneUrl = `https://${baseHost}/${repository.owner}/${repository.repo}.git`;
+    // finalAction 'none' never touches git (see finalize()), so a task-manager-only project with
+    // no repository at all — neither its own repoConfig nor an integration — must still be able to
+    // queue a job instead of failing before the first stage even runs.
+    const finalAction = run.pipelineSnapshot.finalAction;
+    let repository: Record<string, unknown> | null = null;
+    if (finalAction.type !== 'none') {
+      const resolved = await resolveTaskRepository(task, project);
+      const baseHost = resolved.baseUrl
+        ? resolved.baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+        : resolved.provider === 'gitlab' ? 'gitlab.com' : 'github.com';
+      repository = {
+        provider: resolved.provider,
+        cloneUrl: `https://${baseHost}/${resolved.owner}/${resolved.repo}.git`,
+        owner: resolved.owner,
+        repo: resolved.repo,
+        baseRef: resolved.defaultBranch ?? 'main',
+      };
+    }
     return {
       schemaVersion: 1,
       runId: run.id,
-      repository: {
-        provider: repository.provider,
-        cloneUrl,
-        owner: repository.owner,
-        repo: repository.repo,
-        baseRef: repository.defaultBranch ?? 'main',
-      },
+      repository,
       task: {
         id: task.id,
         externalId: task.externalId,
