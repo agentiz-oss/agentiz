@@ -19,7 +19,7 @@
     "stage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["order", "role", "agentRoleKey"],
+      "required": ["order", "role", "agentRoleKey", "runtime"],
       "properties": {
         "order": {
           "type": "integer",

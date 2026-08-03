@@ -94,8 +94,8 @@ export interface PipelineStageDef {
   /** Key of the AgentRole (scoped to the same project) that provides prompt/model/tools for this stage. */
   agentRoleKey: string;
   onFail: StageFailurePolicy;
-  /** Optional while existing pipelines migrate. Required by the stage-0 fixture worker. */
-  runtime?: PipelineStageRuntimeDef;
+  /** Selects the workspace used by the worker. */
+  runtime: PipelineStageRuntimeDef;
 }
 
 export type PipelineFinalActionType = 'commit_and_pr' | 'comment_only' | 'none';

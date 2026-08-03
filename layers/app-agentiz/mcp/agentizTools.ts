@@ -6,8 +6,13 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentRun } from '../models/AgentRun';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentRunLog } from '../models/AgentRunLog';
+import { AgentRunJob } from '../models/AgentRunJob';
+import { AgentWorker } from '../models/AgentWorker';
 import { AgentPipelineService } from '../services/AgentPipelineService';
 import { GitSyncService } from '../services/GitSyncService';
+import { AgentWorkerApiService } from '../services/AgentWorkerApiService';
+import { AgentWorkerQueueService } from '../services/AgentWorkerQueueService';
+import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
 
 type Params = Record<string, unknown>;
 
@@ -55,6 +60,30 @@ function runTeaser(run: AgentRun) {
   };
 }
 
+/** Deliberately excludes token fields, IP address and the job snapshot (which can contain task data). */
+function workerTeaser(worker: AgentWorker) {
+  return {
+    id: worker.id, name: worker.name, kind: worker.kind, status: worker.status,
+    contactState: worker.contactState(), instanceId: worker.instanceId,
+    allowedProjectIds: worker.allowedProjectIds ?? null, capabilities: worker.capabilities ?? null,
+    version: worker.version, hostname: worker.hostname, registeredAt: worker.registeredAt,
+    lastSeenAt: worker.lastSeenAt, lastClaimAt: worker.lastClaimAt,
+    claimedJobsCount: worker.claimedJobsCount, revokedAt: worker.revokedAt,
+    createdAt: worker.createdAt, updatedAt: worker.updatedAt,
+  };
+}
+
+/** Job snapshots and results may contain task content, so the debugging listing exposes only routing state. */
+function jobTeaser(job: AgentRunJob) {
+  return {
+    id: job.id, runId: job.runId, projectId: job.projectId, status: job.status,
+    priority: job.priority, attempt: job.attempt, workerId: job.workerId,
+    lockedUntil: job.lockedUntil, availableAt: job.availableAt,
+    cancelRequestedAt: job.cancelRequestedAt, lastError: job.lastError,
+    createdAt: job.createdAt, updatedAt: job.updatedAt,
+  };
+}
+
 const overviewTool: IMcpTool = {
   name: 'agentiz.overview',
   group: 'agentiz',
@@ -83,11 +112,77 @@ const overviewTool: IMcpTool = {
         processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
         uptimeSec: Math.round(process.uptime()),
       },
+      workerRuntime: {
+        workerApiEnabled: AgentWorkerApiService.isEnabled(),
+        localWorkerEnabled: AgentWorkerQueueService.isEnabled(),
+      },
       projects: projects.map(projectTeaser),
       taskCounts: countBy(tasks),
       runningRuns: runs.map(runTeaser),
       timestamp: new Date().toISOString(),
     };
+  },
+};
+
+const workersTool: IMcpTool = {
+  name: 'agentiz.workers', group: 'agentiz',
+  shortDescription: 'Lists worker identities, their availability and last activity.',
+  description: 'Lists registered local and external workers. contactState is derived from lastSeenAt (online means seen within five minutes); no worker token or IP address is returned.',
+  mode: 'protected',
+  inputSchema: { type: 'object', properties: { status: { type: 'string' }, kind: { type: 'string' }, limit: { type: 'integer', default: 50, maximum: 200 } } },
+  async handler(params) {
+    const payload = objectParams(params);
+    const status = stringParam(payload, 'status');
+    const kind = stringParam(payload, 'kind');
+    const where = { ...(status ? { status } : {}), ...(kind ? { kind } : {}) };
+    const workers = await AgentWorker.findAll({ where, order: [['lastSeenAt', 'DESC NULLS LAST'], ['createdAt', 'DESC']], limit: limitParam(payload) });
+    return {
+      count: workers.length,
+      runtime: { workerApiEnabled: AgentWorkerApiService.isEnabled(), localWorkerEnabled: AgentWorkerQueueService.isEnabled() },
+      items: workers.map(workerTeaser),
+    };
+  },
+};
+
+const workerDetailsTool: IMcpTool = {
+  name: 'agentiz.workerDetails', group: 'agentiz',
+  shortDescription: 'Returns one worker and its recent job history.',
+  description: 'Returns detailed safe telemetry for one worker plus recent jobs it claimed. Use it to diagnose a worker that is offline, paused or holding a lease.',
+  mode: 'protected',
+  inputSchema: { type: 'object', required: ['workerId'], properties: { workerId: { type: 'string' }, jobLimit: { type: 'integer', default: 50, maximum: 200 } } },
+  async handler(params) {
+    const payload = objectParams(params);
+    const workerId = stringParam(payload, 'workerId');
+    if (!workerId) throw new Error('workerId:string is required');
+    const worker = await AgentWorker.findByPk(workerId);
+    if (!worker) throw new Error(`AgentWorker ${workerId} not found`);
+    const jobs = await AgentRunJob.findAll({
+      where: { workerId }, order: [['updatedAt', 'DESC']],
+      limit: limitParam({ ...payload, limit: payload.jobLimit }),
+    });
+    const jobCounts = jobs.reduce<Record<string, number>>((counts, job) => {
+      counts[job.status] = (counts[job.status] ?? 0) + 1;
+      return counts;
+    }, {});
+    return { worker: workerTeaser(worker), recentJobCounts: jobCounts, recentJobs: jobs.map(jobTeaser) };
+  },
+};
+
+const jobsTool: IMcpTool = {
+  name: 'agentiz.jobs', group: 'agentiz',
+  shortDescription: 'Lists worker-queue jobs and their lease state.',
+  description: 'Lists queue jobs to diagnose work that is waiting, leased or failed. Job snapshots and results are omitted because they may contain task content.',
+  mode: 'protected',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, runId: { type: 'string' }, workerId: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', default: 50, maximum: 200 } } },
+  async handler(params) {
+    const payload = objectParams(params);
+    const projectId = stringParam(payload, 'projectId');
+    const runId = stringParam(payload, 'runId');
+    const workerId = stringParam(payload, 'workerId');
+    const status = stringParam(payload, 'status');
+    const where = { ...(projectId ? { projectId } : {}), ...(runId ? { runId } : {}), ...(workerId ? { workerId } : {}), ...(status ? { status } : {}) };
+    const jobs = await AgentRunJob.findAll({ where, order: [['createdAt', 'DESC']], limit: limitParam(payload) });
+    return { count: jobs.length, items: jobs.map(jobTeaser) };
   },
 };
 
@@ -228,4 +323,8 @@ const cancelRunTool: IMcpTool = {
   },
 };
 
-export const agentizMcpTools: IMcpTool[] = [overviewTool, projectsTool, tasksTool, runsTool, runDetailsTool, configurationTool, syncTool, runTaskTool, cancelRunTool];
+export const agentizMcpTools: IMcpTool[] = [
+  overviewTool, projectsTool, tasksTool, runsTool, runDetailsTool, configurationTool,
+  workersTool, workerDetailsTool, jobsTool,
+  syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
+];

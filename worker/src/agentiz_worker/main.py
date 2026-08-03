@@ -152,8 +152,9 @@ def install_service(config_path: Path, no_start: bool) -> None:
     # Do not resolve this symlink: a virtualenv's python usually points at the system interpreter,
     # while its original path is what activates the virtualenv's site-packages.
     executable = Path(sys.executable)
+    environment_path = config_path.with_suffix('.env')
     unit_path.parent.mkdir(parents=True, exist_ok=True)
-    unit_path.write_text(f"""[Unit]\nDescription=Agentiz OpenHands worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={executable} -m agentiz_worker.main run --config {config_path}\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n""")
+    unit_path.write_text(f"""[Unit]\nDescription=Agentiz OpenHands worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-{environment_path}\nExecStart={executable} -m agentiz_worker.main run --config {config_path}\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n""")
     unit_path.chmod(0o644)
     systemd_environment = os.environ.copy()
     # A terminal launched outside the graphical login/SSH PAM session may not export these even
@@ -222,7 +223,24 @@ def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
     return "\n\n".join(part for part in [stage.get("systemPrompt") or "", f"Task: {task.get('title', '')}", task.get("description") or ""] if part)
 
 
-def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, on_event: Any) -> str:
+MAX_AGENT_MESSAGE_CHARS = 4_000
+
+
+def agent_message_text(event: Any) -> str | None:
+    """Return displayable agent text without persisting prompts, hidden reasoning, or tool output."""
+    if type(event).__name__ != "MessageEvent" or getattr(event, "source", None) != "agent":
+        return None
+    try:
+        from openhands.sdk.llm import content_to_str
+        text = "".join(content_to_str(event.llm_message.content)).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    return text[:MAX_AGENT_MESSAGE_CHARS] + ("…" if len(text) > MAX_AGENT_MESSAGE_CHARS else "")
+
+
+def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, on_event: Any) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -237,14 +255,23 @@ def run_openhands(mode: str, acp_command: list[str], message: str, settings: Set
         context = DockerWorkspace(server_image=settings.server_image)
         workspace = context
     agent = ACPAgent(acp_command=acp_command)
+    final_message: str | None = None
+
+    def forward_event(event: Any) -> None:
+        nonlocal final_message
+        text = agent_message_text(event)
+        if text:
+            final_message = text
+        on_event(event, text)
+
     try:
         if context:
             context.__enter__()
-        conversation = Conversation(agent=agent, workspace=workspace, callbacks=[on_event])
+        conversation = Conversation(agent=agent, workspace=workspace, callbacks=[forward_event])
         try:
             conversation.send_message(message)
             conversation.run()
-            return str(conversation.state.execution_status)
+            return str(conversation.state.execution_status), final_message
         finally:
             conversation.close()
     finally:
@@ -283,10 +310,17 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             stage_id = stage.get("executionId")
             mode, kind, command = stage_config(stage)
             emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
-            status = run_bash_fixture(mode, command, settings) if kind == "bash-fixture" else run_openhands(mode, command, prompt(stage, job), settings,
-                lambda event: emit("stage.event", stage_id, type(event).__name__))
-            outputs.append({"executionId": stage_id, "status": "succeeded", "summary": status, "output": {"workspaceMode": mode, "executionStatus": status}})
-            emit("stage.completed", stage_id, status)
+            if kind == "bash-fixture":
+                status, agent_response = run_bash_fixture(mode, command, settings), None
+            else:
+                status, agent_response = run_openhands(
+                    mode, command, prompt(stage, job), settings,
+                    lambda event, text: emit("stage.event", stage_id, text or type(event).__name__),
+                )
+            summary = agent_response or status
+            outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
+                "output": {"workspaceMode": mode, "executionStatus": status, "agentResponse": agent_response}})
+            emit("stage.completed", stage_id, summary)
         client.post(f"/jobs/{job['jobId']}/result", job, {"resultId": str(uuid.uuid4()), "status": "succeeded",
             "summary": "\n".join(f"- {item['summary']}" for item in outputs), "stageOutputs": outputs, "fileChanges": []})
     except Exception as error:

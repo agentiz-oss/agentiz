@@ -87,10 +87,10 @@ export async function seed(appManager: AppManager) {
       version: 1,
       spec: {
         stages: [
-          { order: 1, role: 'investigate', agentRoleKey: 'investigator', onFail: 'stop' },
-          { order: 2, role: 'decide', agentRoleKey: 'decider', onFail: 'stop' },
-          { order: 3, role: 'fix', agentRoleKey: 'fixer', onFail: 'stop' },
-          { order: 4, role: 'commit', agentRoleKey: 'committer', onFail: 'stop' },
+          { order: 1, role: 'investigate', agentRoleKey: 'investigator', onFail: 'stop', runtime: { mode: 'host' } },
+          { order: 2, role: 'decide', agentRoleKey: 'decider', onFail: 'stop', runtime: { mode: 'host' } },
+          { order: 3, role: 'fix', agentRoleKey: 'fixer', onFail: 'stop', runtime: { mode: 'host' } },
+          { order: 4, role: 'commit', agentRoleKey: 'committer', onFail: 'stop', runtime: { mode: 'host' } },
         ],
         finalAction: {
           type: 'commit_and_pr',
@@ -109,8 +109,8 @@ export async function seed(appManager: AppManager) {
       version: 1,
       spec: {
         stages: [
-          { order: 1, role: 'investigate', agentRoleKey: 'investigator', onFail: 'stop' },
-          { order: 2, role: 'decide', agentRoleKey: 'decider', onFail: 'stop' },
+          { order: 1, role: 'investigate', agentRoleKey: 'investigator', onFail: 'stop', runtime: { mode: 'host' } },
+          { order: 2, role: 'decide', agentRoleKey: 'decider', onFail: 'stop', runtime: { mode: 'host' } },
         ],
         finalAction: { type: 'none' },
       },

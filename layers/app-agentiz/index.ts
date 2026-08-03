@@ -161,6 +161,24 @@ export class AppAgentiz extends AbstractApp {
                     });
                 }
 
+                if (method === 'getPipelineConfiguration') {
+                    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+                    if (!projectId) return res.status(400).json({ message: 'projectId is required' });
+                    const [roles, specs] = await Promise.all([
+                        AgentRole.findAll({ where: { projectId }, order: [['key', 'ASC']] }),
+                        PipelineSpec.findAll({ where: { projectId }, order: [['updatedAt', 'DESC']] }),
+                    ]);
+                    return res.json({
+                        data: {
+                            roles: roles.map((role) => ({
+                                id: role.id, key: role.key, title: role.title, model: role.model,
+                                config: role.config ?? {}, updatedAt: role.updatedAt,
+                            })),
+                            specs: specs.map((spec) => spec.toJSON()),
+                        },
+                    });
+                }
+
                 if (method === 'getRunDetails') {
                     const runId = typeof req.query.runId === 'string' ? req.query.runId : '';
                     if (!runId) return res.status(400).json({ message: 'runId is required' });
@@ -245,6 +263,32 @@ export class AppAgentiz extends AbstractApp {
                         if (!runId) return res.status(400).json({ message: 'runId is required' });
                         const run = await AgentPipelineService.cancelRun(runId);
                         return res.json({ data: run.toJSON() });
+                    }
+
+                    if (method === 'updatePipelineSpec') {
+                        const specId = String(req.body?.specId ?? '');
+                        const spec = req.body?.spec;
+                        if (!specId) return res.status(400).json({ message: 'specId is required' });
+                        const pipelineSpec = await PipelineSpec.findByPk(specId);
+                        if (!pipelineSpec) return res.status(404).json({ message: 'Pipeline Spec not found' });
+                        await pipelineSpec.update({ spec });
+                        return res.json({ data: pipelineSpec.toJSON() });
+                    }
+
+                    if (method === 'setRoleAcpProvider') {
+                        const roleId = String(req.body?.roleId ?? '');
+                        const provider = String(req.body?.provider ?? '');
+                        if (!roleId) return res.status(400).json({ message: 'roleId is required' });
+                        const role = await AgentRole.findByPk(roleId);
+                        if (!role) return res.status(404).json({ message: 'Agent role not found' });
+                        const presets: Record<string, string[]> = {
+                            codex: ['npx', '-y', '@agentclientprotocol/codex-acp'],
+                            claude: ['npx', '-y', '@agentclientprotocol/claude-agent-acp'],
+                        };
+                        const acpCommand = presets[provider];
+                        if (!acpCommand) return res.status(400).json({ message: 'provider must be codex or claude' });
+                        await role.update({ config: { executor: 'openhands-acp', provider, acpCommand } });
+                        return res.json({ data: role.toJSON() });
                     }
 
                     if (method === 'createWorker') {

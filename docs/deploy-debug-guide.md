@@ -128,7 +128,8 @@ minutes and there's no reason to block on it.
 ## 5. No MCP tool for what you need? Add one.
 
 The `agentiz` group (read-only: `overview`, `projects`, `tasks`, `runs`, `runDetails`,
-`configuration`) and `agentiz-actions` group (state-changing: `sync`, `runTask`, `cancelRun`) are
+`configuration`, `workers`, `workerDetails`, `jobs`) and `agentiz-actions` group (state-changing:
+`sync`, `runTask`, `cancelRun`) are
 defined in `layers/app-agentiz/mcp/agentizTools.ts` as a flat `IMcpTool[]` array
 (`agentizMcpTools`). If the thing you need to inspect or change in production has no tool:
 

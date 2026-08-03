@@ -72,7 +72,7 @@ function objectBody(body: unknown): Record<string, unknown> {
 
 export class AgentWorkerApiService {
   static isEnabled(): boolean {
-    return process.env.AGENTIZ_WORKER_API_ENABLED === 'true';
+    return process.env.AGENTIZ_WORKER_API_ENABLED !== 'false';
   }
 
    /**

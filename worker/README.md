@@ -108,6 +108,35 @@ systemctl --user status agentiz-worker
 и не оказывается в unit-файле. Чтобы она продолжала работать после logout/reboot, включите linger
 один раз от имени администратора: `sudo loginctl enable-linger $USER`.
 
+### ACP: Codex или Claude
+
+В панели Agentiz в разделе «ACP-агенты и пайплайн» выберите для роли **Codex** или **Claude**.
+Панель сохранит только публичную команду ACP-адаптера в `AgentRole.config`; ключи моделей остаются
+исключительно на машине воркера.
+
+Основной вариант — войти по подписке один раз под **тем же Unix-пользователем**, который запускает
+`agentiz-worker.service`. ACP-адаптеры увидят локальную сессию и будут использовать лимиты подписки:
+
+- **Codex**: выполните `codex login` (на headless-хосте доступен `codex login --device-auth`) и
+  завершите вход в ChatGPT. Сессия сохраняется в `~/.codex/`.
+- **Claude**: установите Claude Code, выполните `claude` и завершите browser login в аккаунт с
+  Pro/Max/Team/Enterprise-подпиской. Сессия хранится локально для этого пользователя.
+
+API-ключи остаются только запасным вариантом для сервисных аккаунтов. Если они нужны, сохраните
+ключ в `~/.config/agentiz/worker.env` с правами `0600`; служба автоматически читает этот файл:
+
+```dotenv
+# Codex ACP: @agentclientprotocol/codex-acp
+OPENAI_API_KEY=...
+
+# Claude ACP: @agentclientprotocol/claude-agent-acp
+# ANTHROPIC_API_KEY=...
+```
+
+Для Claude оставьте только `ANTHROPIC_API_KEY`, для Codex — только `OPENAI_API_KEY` (либо
+`CODEX_API_KEY`). Затем перезапустите пользовательскую службу воркера. У worker-host должны быть
+Node.js/npm и доступ в сеть: ACP-адаптеры запускаются через `npx`.
+
 ### Controller image
 
 Собрать и опубликовать версионный образ, например `registry.example/agentiz-worker:0.0.1`:
