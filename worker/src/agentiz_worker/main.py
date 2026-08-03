@@ -14,6 +14,7 @@ import socket
 import subprocess
 import shlex
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 SCHEMA_VERSION = 1
+HEARTBEAT_INTERVAL_SEC = 20
 DEFAULT_API_URL = "https://agentiz.m42.cx/api/agentiz/worker/v1"
 DEFAULT_SERVER_IMAGE = ""
 CONFIG_VERSION = 1
@@ -204,6 +206,9 @@ class Client:
     def post(self, path: str, job: dict[str, Any], extra: dict[str, Any]) -> Any:
         return self.request("POST", path, {"schemaVersion": SCHEMA_VERSION, "attempt": job["attempt"], "leaseToken": job["leaseToken"], **extra})[1]
 
+    def heartbeat(self, job: dict[str, Any]) -> Any:
+        return self.post(f"/jobs/{job['jobId']}/heartbeat", job, {})
+
 
 def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str]]:
     runtime = stage.get("runtime")
@@ -297,16 +302,36 @@ def run_bash_fixture(mode: str, command: list[str], settings: Settings) -> str:
         return result.stdout.strip()
 
 
+def maintain_lease(client: Client, job: dict[str, Any], stop: threading.Event, failure: list[Exception]) -> None:
+    """Keep a claimed job private while a long-running ACP conversation is executing."""
+    while not stop.wait(HEARTBEAT_INTERVAL_SEC):
+        try:
+            response = client.heartbeat(job) or {}
+            if response.get("command") == "cancel":
+                failure.append(WorkerError(response.get("reason") or "Job cancellation requested by server"))
+                stop.set()
+                return
+        except Exception as error:
+            # Never submit a stale success after the server has revoked this lease.
+            failure.append(error)
+            stop.set()
+            return
 def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None:
     sequence = 0
     outputs: list[dict[str, Any]] = []
+    heartbeat_stop = threading.Event()
+    heartbeat_failure: list[Exception] = []
     def emit(kind: str, stage_id: str | None, message: str, level: str = "info") -> None:
         nonlocal sequence
         sequence += 1
         client.post(f"/jobs/{job['jobId']}/events:batch", job, {"events": [{"eventId": str(uuid.uuid4()), "sequence": sequence,
             "type": kind, "stageExecutionId": stage_id, "level": level, "message": message}]})
+    heartbeat = threading.Thread(target=maintain_lease, args=(client, job, heartbeat_stop, heartbeat_failure), daemon=True)
+    heartbeat.start()
     try:
         for stage in job.get("stages", []):
+            if heartbeat_failure:
+                raise heartbeat_failure[0]
             stage_id = stage.get("executionId")
             mode, kind, command = stage_config(stage)
             emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
@@ -317,6 +342,8 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                     mode, command, prompt(stage, job), settings,
                     lambda event, text: emit("stage.event", stage_id, text or type(event).__name__),
                 )
+            if heartbeat_failure:
+                raise heartbeat_failure[0]
             summary = agent_response or status
             outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
                 "output": {"workspaceMode": mode, "executionStatus": status, "agentResponse": agent_response}})
@@ -325,6 +352,9 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             "summary": "\n".join(f"- {item['summary']}" for item in outputs), "stageOutputs": outputs, "fileChanges": []})
     except Exception as error:
         client.post(f"/jobs/{job['jobId']}/result", job, {"resultId": str(uuid.uuid4()), "status": "failed", "errorMessage": str(error), "stageOutputs": outputs})
+    finally:
+        heartbeat_stop.set()
+        heartbeat.join(timeout=1)
 
 
 def main() -> None:
