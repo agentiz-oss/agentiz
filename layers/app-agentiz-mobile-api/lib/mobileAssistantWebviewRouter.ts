@@ -60,10 +60,16 @@ function issueAdminizerCookie(res: Response, user: any, adminizer: AdminizerRunt
     login: user.get('login'),
     isAdministrator: Boolean(user.get('isAdministrator')),
   }, adminizer.jwtSecret, { algorithm: 'HS256', expiresIn: '15d' });
+  // The assistant is embedded in an iframe/WebView owned by the mobile application, so on the
+  // public HTTPS deployment this is a cross-site navigation. Lax cookies are not sent for the
+  // redirected iframe request and Adminizer consequently sees no req.user. CHIPS keeps this
+  // cookie isolated per embedding top-level site while allowing it through that iframe.
+  const embedded = process.env.NODE_ENV === 'production';
   res.cookie('adminizer_jwt', token, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: embedded ? 'none' : 'lax',
+    secure: embedded,
+    partitioned: embedded,
     path: '/',
     maxAge: 1000 * 60 * 60 * 24 * 15,
   });
