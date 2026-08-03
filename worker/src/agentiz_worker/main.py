@@ -187,8 +187,8 @@ class Client:
             # A server may intentionally disable remote execution during maintenance. Claims are
             # a polling endpoint, so preserve the daemon and retry rather than crash-looping under
             # systemd. Other authentication/protocol failures still fail loudly below.
-            if error.code == 503 and path == "/claims":
-                return 503, None
+            if error.code in (502, 503, 504) and path == "/claims":
+                return error.code, None
             raise WorkerError(f"{method} {path}: HTTP {error.code}: {error.read().decode(errors='replace')}") from error
 
     def register(self) -> Any:
