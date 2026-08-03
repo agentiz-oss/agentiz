@@ -257,13 +257,23 @@ MAX_AGENT_MESSAGE_CHARS = 4_000
 
 
 def agent_message_text(event: Any) -> str | None:
-    """Return displayable agent text without persisting prompts, hidden reasoning, or tool output."""
-    if type(event).__name__ != "MessageEvent" or getattr(event, "source", None) != "agent":
+    """Return the displayable final agent text without tool output or reasoning.
+
+    ACPAgent emits ordinary assistant messages as ``MessageEvent``, but a successful
+    ACP turn is finalized as ``ActionEvent(FinishAction(message=...))``.  Reading
+    only MessageEvent silently loses every normal successful response.
+    """
+    if getattr(event, "source", None) != "agent":
         return None
-    try:
-        from openhands.sdk.llm import content_to_str
-        text = "".join(content_to_str(event.llm_message.content)).strip()
-    except Exception:
+    if type(event).__name__ == "MessageEvent":
+        try:
+            from openhands.sdk.llm import content_to_str
+            text = "".join(content_to_str(event.llm_message.content)).strip()
+        except Exception:
+            return None
+    elif type(event).__name__ == "ActionEvent" and type(getattr(event, "action", None)).__name__ == "FinishAction":
+        text = str(getattr(event.action, "message", "")).strip()
+    else:
         return None
     if not text:
         return None
