@@ -1,5 +1,6 @@
 import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentRun } from '../../app-agentiz/models/AgentRun';
+import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { AgentRunLog } from '../../app-agentiz/models/AgentRunLog';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
@@ -68,9 +69,12 @@ export class MobileTaskService {
   }
 
   private static async runDetail(run: AgentRun) {
-    const [stages, logs] = await Promise.all([
+    const [stages, logs, job] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
       AgentRunLog.findAll({ where: { runId: run.id }, order: [['createdAt', 'ASC']], limit: 500 }),
+      // A run has one durable queue job. Its `result` is the exact terminal payload accepted
+      // from the worker; AgentRun intentionally keeps only the small human summary.
+      AgentRunJob.findOne({ where: { runId: run.id }, order: [['createdAt', 'DESC']] }),
     ]);
     const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
     return {
@@ -79,6 +83,9 @@ export class MobileTaskService {
         role: stage.role,
         status: stage.status,
         summary: (stage.output as any)?.summary ?? null,
+        // Do not collapse the worker response to a summary. The app uses agentResponse as the
+        // readable conclusion and retains the rest as inspectable structured diagnostics.
+        output: stage.output ?? null,
         errorMessage: stage.errorMessage,
       })),
       logs: logs.map((log) => ({
@@ -87,6 +94,7 @@ export class MobileTaskService {
         stageRole: log.stageExecutionId ? stageRoleByExecutionId.get(log.stageExecutionId) ?? null : null,
         createdAt: log.createdAt,
       })),
+      workerResult: job?.result ?? null,
     };
   }
 

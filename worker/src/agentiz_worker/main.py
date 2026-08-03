@@ -270,7 +270,7 @@ def agent_message_text(event: Any) -> str | None:
     return text[:MAX_AGENT_MESSAGE_CHARS] + ("…" if len(text) > MAX_AGENT_MESSAGE_CHARS else "")
 
 
-def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, on_event: Any) -> tuple[str, str | None]:
+def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, on_agent_message: Any) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -292,7 +292,9 @@ def run_openhands(mode: str, acp_command: list[str], message: str, settings: Set
         text = agent_message_text(event)
         if text:
             final_message = text
-        on_event(event, text)
+            # The run log is user-facing.  Sending the event class name for tool/system events
+            # made it look like a result while hiding the actual agent response.
+            on_agent_message(text)
 
     try:
         if context:
@@ -365,7 +367,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             else:
                 status, agent_response = run_openhands(
                     mode, command, prompt(stage, job), settings,
-                    lambda event, text: emit("stage.event", stage_id, text or type(event).__name__),
+                    lambda text: emit("stage.event", stage_id, text),
                 )
             if heartbeat_failure:
                 raise heartbeat_failure[0]
