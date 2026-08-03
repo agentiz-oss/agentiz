@@ -152,8 +152,9 @@ def install_service(config_path: Path, no_start: bool) -> None:
     # Do not resolve this symlink: a virtualenv's python usually points at the system interpreter,
     # while its original path is what activates the virtualenv's site-packages.
     executable = Path(sys.executable)
+    environment_path = config_path.with_suffix('.env')
     unit_path.parent.mkdir(parents=True, exist_ok=True)
-    unit_path.write_text(f"""[Unit]\nDescription=Agentiz OpenHands worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={executable} -m agentiz_worker.main run --config {config_path}\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n""")
+    unit_path.write_text(f"""[Unit]\nDescription=Agentiz OpenHands worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-{environment_path}\nExecStart={executable} -m agentiz_worker.main run --config {config_path}\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n""")
     unit_path.chmod(0o644)
     systemd_environment = os.environ.copy()
     # A terminal launched outside the graphical login/SSH PAM session may not export these even

@@ -60,7 +60,7 @@ export async function up({ context }: { context: QI }) {
     }
 
     const fixedSpec = {
-      stages: [{ order: 1, role: 'execute', agentRoleKey: STUB_ROLE_KEY, onFail: 'stop' }],
+      stages: [{ order: 1, role: 'execute', agentRoleKey: STUB_ROLE_KEY, onFail: 'stop', runtime: { mode: 'host' } }],
       finalAction: { type: 'none' },
     };
 

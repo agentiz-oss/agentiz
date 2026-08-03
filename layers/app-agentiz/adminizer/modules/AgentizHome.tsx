@@ -54,6 +54,29 @@ interface AgentWorker {
   allowedProjectIds?: string[] | null;
 }
 
+interface AgentRoleConfig {
+  id: string;
+  key: string;
+  title: string;
+  model?: string | null;
+  config?: { executor?: string; provider?: string } | null;
+}
+
+interface PipelineStageConfig {
+  order: number;
+  role: string;
+  agentRoleKey: string;
+  onFail?: "stop" | "continue";
+  runtime?: { mode?: "host" | "docker" };
+}
+
+interface PipelineSpecConfig {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  spec: { stages: PipelineStageConfig[]; finalAction: Record<string, unknown> };
+}
+
 /** Server-issued secret shown once, together with the command that consumes it. */
 interface IssuedToken {
   workerName: string;
@@ -128,6 +151,9 @@ const AgentizHome: React.FC = () => {
   const [newWorkerName, setNewWorkerName] = useState("");
   /** An issued token is returned by the server exactly once — keep it on screen until dismissed. */
   const [issuedToken, setIssuedToken] = useState<IssuedToken | null>(null);
+  const [roles, setRoles] = useState<AgentRoleConfig[]>([]);
+  const [pipelineSpecs, setPipelineSpecs] = useState<PipelineSpecConfig[]>([]);
+  const [selectedPipelineSpecId, setSelectedPipelineSpecId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -175,6 +201,24 @@ const AgentizHome: React.FC = () => {
       });
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось загрузить воркеров");
+    }
+  }, []);
+
+  const fetchPipelineConfiguration = useCallback(async (projectId: string) => {
+    if (!projectId) {
+      setRoles([]);
+      setPipelineSpecs([]);
+      return;
+    }
+    try {
+      const res = await axios.get(API_URL, { params: { _method: "getPipelineConfiguration", projectId } });
+      const data = res.data?.data ?? {};
+      const specs: PipelineSpecConfig[] = data.specs ?? [];
+      setRoles(data.roles ?? []);
+      setPipelineSpecs(specs);
+      setSelectedPipelineSpecId((current) => current || specs.find((spec) => spec.isDefault)?.id || specs[0]?.id || "");
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось загрузить настройки пайплайна");
     }
   }, []);
 
@@ -233,9 +277,10 @@ const AgentizHome: React.FC = () => {
 
   useEffect(() => {
     fetchTasks(selectedProjectId);
+    fetchPipelineConfiguration(selectedProjectId);
     setSelectedTaskId("");
     setRuns([]);
-  }, [selectedProjectId, fetchTasks]);
+  }, [selectedProjectId, fetchTasks, fetchPipelineConfiguration]);
 
   useEffect(() => {
     fetchRuns(selectedTaskId);
@@ -274,7 +319,40 @@ const AgentizHome: React.FC = () => {
     [selectedProjectId, fetchTasks, fetchRuns],
   );
 
+  const setRoleProvider = useCallback(async (roleId: string, provider: "codex" | "claude") => {
+    setBusy(true);
+    setError(null);
+    try {
+      await axios.post(API_URL, { _method: "setRoleAcpProvider", roleId, provider });
+      await fetchPipelineConfiguration(selectedProjectId);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось настроить ACP-агента");
+    } finally {
+      setBusy(false);
+    }
+  }, [fetchPipelineConfiguration, selectedProjectId]);
+
+  const saveStage = useCallback(async (stageIndex: number, patch: Partial<PipelineStageConfig>) => {
+    const pipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
+    if (!pipelineSpec) return;
+    const spec = {
+      ...pipelineSpec.spec,
+      stages: pipelineSpec.spec.stages.map((stage, index) => index === stageIndex ? { ...stage, ...patch } : stage),
+    };
+    setBusy(true);
+    setError(null);
+    try {
+      await axios.post(API_URL, { _method: "updatePipelineSpec", specId: pipelineSpec.id, spec });
+      await fetchPipelineConfiguration(selectedProjectId);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось сохранить стадию пайплайна");
+    } finally {
+      setBusy(false);
+    }
+  }, [fetchPipelineConfiguration, pipelineSpecs, selectedPipelineSpecId, selectedProjectId]);
+
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
+  const selectedPipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
 
   return (
     <div className="space-y-6 p-6">
@@ -318,6 +396,73 @@ const AgentizHome: React.FC = () => {
             <span className="text-xs text-muted-foreground">
               Последняя синхронизация: {selectedProject.lastSyncedAt ?? "никогда"}
             </span>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold">ACP-агенты и пайплайн</h2>
+            <p className="text-xs text-muted-foreground">Сначала выберите Codex или Claude для роли, затем назначьте роль и workspace каждой стадии.</p>
+          </div>
+          {pipelineSpecs.length > 0 && (
+            <select
+              value={selectedPipelineSpecId}
+              onChange={(event) => setSelectedPipelineSpecId(event.target.value)}
+              className="rounded border px-2 py-1 text-sm"
+            >
+              {pipelineSpecs.map((spec) => <option key={spec.id} value={spec.id}>{spec.name}{spec.isDefault ? " · default" : ""}</option>)}
+            </select>
+          )}
+        </div>
+
+        {roles.length === 0 ? <p className="text-sm text-muted-foreground">Выберите проект с ролями.</p> : (
+          <div className="space-y-2">
+            {roles.map((role) => (
+              <div key={role.id} className="flex flex-wrap items-center justify-between gap-3 rounded border p-2 text-sm">
+                <div><span className="font-medium">{role.title}</span><span className="ml-2 text-xs text-muted-foreground">{role.key}</span></div>
+                <select
+                  value={role.config?.provider === "claude" ? "claude" : role.config?.provider === "codex" ? "codex" : ""}
+                  onChange={(event) => event.target.value && setRoleProvider(role.id, event.target.value as "codex" | "claude")}
+                  disabled={busy}
+                  className="rounded border px-2 py-1 text-sm disabled:opacity-50"
+                >
+                  <option value="">Выберите ACP-агента</option>
+                  <option value="codex">Codex · ChatGPT subscription</option>
+                  <option value="claude">Claude · subscription</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {selectedPipelineSpec && (
+          <div className="mt-4 space-y-2">
+            <h3 className="text-sm font-medium">Стадии</h3>
+            {selectedPipelineSpec.spec.stages.map((stage, index) => (
+              <div key={`${stage.order}-${stage.role}`} className="flex flex-wrap items-center gap-2 rounded border p-2 text-sm">
+                <span className="w-16 text-xs text-muted-foreground">#{stage.order} {stage.role}</span>
+                <select
+                  value={stage.agentRoleKey}
+                  onChange={(event) => saveStage(index, { agentRoleKey: event.target.value })}
+                  disabled={busy}
+                  className="rounded border px-2 py-1 disabled:opacity-50"
+                >
+                  {roles.map((role) => <option key={role.id} value={role.key}>{role.title} ({role.key})</option>)}
+                </select>
+                <select
+                  value={stage.runtime?.mode ?? ""}
+                  onChange={(event) => saveStage(index, { runtime: { mode: event.target.value as "host" | "docker" } })}
+                  disabled={busy}
+                  className="rounded border px-2 py-1 disabled:opacity-50"
+                >
+                  <option value="" disabled>Workspace</option>
+                  <option value="host">Host</option>
+                  <option value="docker">Docker</option>
+                </select>
+              </div>
+            ))}
           </div>
         )}
       </div>

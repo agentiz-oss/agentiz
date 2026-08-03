@@ -180,6 +180,7 @@ export async function seed(appManager: AppManager) {
           role: stage.role,
           agentRoleKey: stage.agentRoleKey,
           onFail: 'stop',
+          runtime: { mode: 'host' },
         })),
         // `none` keeps the run entirely inside Agentiz: no branch, no PR, no tracker call.
         finalAction: { type: 'none' },
