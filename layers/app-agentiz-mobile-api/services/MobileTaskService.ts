@@ -54,6 +54,42 @@ export class MobileTaskService {
     };
   }
 
+  /** A history row is deliberately compact; traces are loaded only after the user opens a run. */
+  private static runRow(run: AgentRun) {
+    return {
+      id: run.id,
+      status: run.status,
+      trigger: run.trigger,
+      resultSummary: run.resultSummary,
+      errorMessage: run.errorMessage,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+    };
+  }
+
+  private static async runDetail(run: AgentRun) {
+    const [stages, logs] = await Promise.all([
+      AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
+      AgentRunLog.findAll({ where: { runId: run.id }, order: [['createdAt', 'ASC']], limit: 500 }),
+    ]);
+    const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
+    return {
+      ...this.runRow(run),
+      stages: stages.map((stage) => ({
+        role: stage.role,
+        status: stage.status,
+        summary: (stage.output as any)?.summary ?? null,
+        errorMessage: stage.errorMessage,
+      })),
+      logs: logs.map((log) => ({
+        level: log.level,
+        message: log.message,
+        stageRole: log.stageExecutionId ? stageRoleByExecutionId.get(log.stageExecutionId) ?? null : null,
+        createdAt: log.createdAt,
+      })),
+    };
+  }
+
   static async listForProject(projectId: string, ownerId: number | string) {
     await this.ownedProject(projectId, ownerId);
     const tasks = await AgentTask.findAll({
@@ -97,15 +133,6 @@ export class MobileTaskService {
     ]);
 
     const latestRun = runs[0] ?? null;
-    const [stages, logs] = latestRun
-      ? await Promise.all([
-          AgentStageExecution.findAll({ where: { runId: latestRun.id }, order: [['stageIndex', 'ASC']] }),
-          // Deliberately every level, not just info/error and up: the app shows the run's full
-          // process trace, the same detail the admin dashboard's Agent Run Logs list carries.
-          AgentRunLog.findAll({ where: { runId: latestRun.id }, order: [['createdAt', 'ASC']], limit: 500 }),
-        ])
-      : [[], []];
-    const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
 
     return {
       task: {
@@ -113,29 +140,7 @@ export class MobileTaskService {
         description: task.description,
         runCount: runs.length,
       },
-      latestRun: latestRun
-        ? {
-            id: latestRun.id,
-            status: latestRun.status,
-            trigger: latestRun.trigger,
-            resultSummary: latestRun.resultSummary,
-            errorMessage: latestRun.errorMessage,
-            startedAt: latestRun.startedAt,
-            finishedAt: latestRun.finishedAt,
-            stages: stages.map((stage) => ({
-              role: stage.role,
-              status: stage.status,
-              summary: (stage.output as any)?.summary ?? null,
-              errorMessage: stage.errorMessage,
-            })),
-            logs: logs.map((log) => ({
-              level: log.level,
-              message: log.message,
-              stageRole: log.stageExecutionId ? stageRoleByExecutionId.get(log.stageExecutionId) ?? null : null,
-              createdAt: log.createdAt,
-            })),
-          }
-        : null,
+      latestRun: latestRun ? await this.runDetail(latestRun) : null,
       // Same ordering rule as the dashboard: upstream timestamp when the comment came from a
       // tracker, local creation time otherwise.
       comments: [...comments]
@@ -165,6 +170,30 @@ export class MobileTaskService {
     await this.ownedTask(taskId, ownerId);
     const run = await AgentPipelineService.runTask(taskId, 'manual');
     return { id: run.id, status: run.status };
+  }
+
+  /** All attempts for a task. Results stay small enough to render as a phone-friendly history. */
+  static async runs(taskId: string, ownerId: number | string) {
+    await this.ownedTask(taskId, ownerId);
+    const runs = await AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 100 });
+    return runs.map((run) => this.runRow(run));
+  }
+
+  /** One attempt including stage results and its process trace. */
+  static async runDetailForTask(taskId: string, runId: string, ownerId: number | string) {
+    await this.ownedTask(taskId, ownerId);
+    const run = await AgentRun.findOne({ where: { id: runId, taskId } });
+    if (!run) throw new MobileAuthError(404, 'Run not found');
+    return this.runDetail(run);
+  }
+
+  /** Cancellation is scoped through the task, so a known run id cannot cross project boundaries. */
+  static async cancelRun(taskId: string, runId: string, ownerId: number | string) {
+    await this.ownedTask(taskId, ownerId);
+    const run = await AgentRun.findOne({ where: { id: runId, taskId } });
+    if (!run) throw new MobileAuthError(404, 'Run not found');
+    await AgentPipelineService.cancelRun(run.id, 'Cancelled from mobile app');
+    return this.runDetailForTask(taskId, runId, ownerId);
   }
 
   static async addComment(

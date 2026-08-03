@@ -23,6 +23,9 @@ session cookies.
 | GET    | `/auth/me`       | Bearer JWT  | The current user.                                   |
 | GET    | `/projects`      | Bearer JWT  | Projects owned by the current user (secrets masked).|
 | GET    | `/projects/:id`  | Bearer JWT  | One owned project, or 404.                           |
+| GET    | `/tasks/:id/runs` | Bearer JWT | Compact history of a task's pipeline runs.            |
+| GET    | `/tasks/:taskId/runs/:runId` | Bearer JWT | Full result, stages and log of one run.       |
+| POST   | `/tasks/:taskId/runs/:runId/cancel` | Bearer JWT | Requests cancellation of a run.             |
 
 `login` accepts whatever identifier the UserAP model stores (`login`, `email`, or `username`).
 Project scope mirrors the admin panel's `userAccessRelation: 'owner'`: a user sees only the projects
