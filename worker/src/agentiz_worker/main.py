@@ -8,6 +8,7 @@ manager. No worker code talks to Agentiz's database or invokes `docker run` itse
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import os
 import socket
@@ -79,6 +80,30 @@ def default_config_path() -> Path:
 
 def default_workspace_path() -> Path:
     return Path.home() / ".local" / "share" / "agentiz-worker" / "workspace"
+
+
+def worker_version() -> str:
+    """Version announced to Agentiz on every registration.
+
+    An installed wheel normally has no .git directory, so a release pipeline can set
+    AGENTIZ_WORKER_COMMIT in the optional profile .env file. Local editable installations derive
+    the commit from their checkout automatically.
+    """
+    try:
+        release = package_version("agentiz-worker")
+    except PackageNotFoundError:
+        release = "dev"
+    commit = os.environ.get("AGENTIZ_WORKER_COMMIT", "").strip()
+    if not commit:
+        checkout = Path(__file__).resolve().parents[2]
+        try:
+            commit = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "--short=12", "HEAD"],
+                check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2,
+            ).stdout.strip()
+        except (FileNotFoundError, subprocess.SubprocessError):
+            commit = "unknown"
+    return f"agentiz-worker/{release}+{commit}"[:50]
 
 
 def load_settings(config_path: Path, once: bool) -> Settings:
@@ -196,7 +221,7 @@ class Client:
 
     def register(self) -> Any:
         return self.request("POST", "/register", {"schemaVersion": SCHEMA_VERSION, "instanceId": self.settings.instance_id,
-            "version": "stage-0", "capabilities": {"executors": ["openhands-acp"], "workspaceModes": ["host", "docker"], "maxConcurrency": 1}})[1]
+            "version": worker_version(), "capabilities": {"executors": ["openhands-acp"], "workspaceModes": ["host", "docker"], "maxConcurrency": 1}})[1]
 
     def claim(self) -> dict[str, Any] | None:
         status, data = self.request("POST", "/claims", {"schemaVersion": SCHEMA_VERSION,

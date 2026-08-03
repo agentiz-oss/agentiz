@@ -108,6 +108,22 @@ systemctl --user status agentiz-worker
 и не оказывается в unit-файле. Чтобы она продолжала работать после logout/reboot, включите linger
 один раз от имени администратора: `sudo loginctl enable-linger $USER`.
 
+При регистрации worker отправляет на сервер `agentiz-worker/<package-version>+<git-commit>`.
+В editable checkout commit определяется автоматически. Для wheel или container без `.git` укажите
+commit release-а в необязательном `~/.config/agentiz/worker.env`:
+
+```dotenv
+AGENTIZ_WORKER_COMMIT=0123456789ab
+```
+
+После обновления checkout локальный worker обновляется так:
+
+```bash
+git pull
+~/.local/share/agentiz-worker/venv/bin/pip install -e /prj/agentiz/worker
+systemctl --user restart agentiz-worker
+```
+
 ### ACP: Codex или Claude
 
 В панели Agentiz в разделе «ACP-агенты и пайплайн» выберите для роли **Codex** или **Claude**.

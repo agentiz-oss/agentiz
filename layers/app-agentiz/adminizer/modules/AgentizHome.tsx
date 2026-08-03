@@ -94,6 +94,15 @@ function contactLabel(worker: AgentWorker): string {
   return `не в сети (последний раз ${new Date(worker.lastSeenAt).toLocaleString()})`;
 }
 
+function workerBuildLabel(version?: string | null): React.ReactNode {
+  if (!version) return null;
+  const match = version.match(/^agentiz-worker\/(.+)\+([0-9a-f]{7,}|unknown)$/i);
+  if (!match) return <>версия: <code>{version}</code></>;
+  return <>
+    версия: <code>{match[1]}</code> · commit: <code>{match[2]}</code>
+  </>;
+}
+
 const API_URL = `${(window as any).routePrefix ?? "/dashboard"}/agentiz`;
 
 /**
@@ -565,7 +574,6 @@ const AgentizHome: React.FC = () => {
                 <span className="text-xs text-muted-foreground">
                   {worker.kind}
                   {worker.instanceId ? ` · ${worker.instanceId}` : ""}
-                  {worker.version ? ` · v${worker.version}` : ""}
                   {worker.tokenPrefix ? ` · ${worker.tokenPrefix}…` : " · без токена"}
                 </span>
               </div>
@@ -578,6 +586,11 @@ const AgentizHome: React.FC = () => {
                       .join(", ")
                   : "все"}
               </div>
+              {worker.version && (
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {workerBuildLabel(worker.version)}
+                </div>
+              )}
               <div className="mt-2 flex flex-wrap gap-2">
                 {worker.status === "paused" && (
                   <button
