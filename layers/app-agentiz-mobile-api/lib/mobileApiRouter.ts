@@ -150,6 +150,30 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
     }
   });
 
+  router.get('/tasks/:id/runs', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.runs(String(req.params.id), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.get('/tasks/:taskId/runs/:runId', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.runDetailForTask(String(req.params.taskId), String(req.params.runId), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/tasks/:taskId/runs/:runId/cancel', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.cancelRun(String(req.params.taskId), String(req.params.runId), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
   router.post('/tasks/:id/comments', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const data = await MobileTaskService.addComment(
