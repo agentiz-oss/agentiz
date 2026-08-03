@@ -31,13 +31,17 @@ export class AppAgentizMobileApi extends AbstractApp {
   }];
 
   async mount(): Promise<void> {
+    // Resolve the dependency before registering *any* HTTP route. App-manager orders this layer
+    // after app-adminizer through package.json's appDependencies; failing here must not leave a
+    // half-mounted mobile API whose old routes work while the WebView router is absent.
+    const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
+    if (!adminizerApp) {
+      console.error('[AppAgentizMobileApi] app-adminizer is unavailable; mobile API was not mounted');
+      throw new Error('app-adminizer must be mounted before app-agentiz-mobile-api');
+    }
     // Root app, not the Adminizer prefix: mobile clients authenticate with their own bearer token,
     // not admin sessions. Same placement as the Worker API.
     this.appManager.app.use(MOBILE_API_BASE, createMobileApiRouter(this.appManager.sequelize));
-    const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
-    if (!adminizerApp) {
-      throw new Error('app-adminizer must be mounted before app-agentiz-mobile-api');
-    }
     this.appManager.app.use(
       `${MOBILE_API_BASE}/assistant`,
       createMobileAssistantWebviewRouter(this.appManager.sequelize, adminizerApp.adminizer),
