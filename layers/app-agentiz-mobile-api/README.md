@@ -26,10 +26,23 @@ session cookies.
 | GET    | `/tasks/:id/runs` | Bearer JWT | Compact history of a task's pipeline runs.            |
 | GET    | `/tasks/:taskId/runs/:runId` | Bearer JWT | Full result, stages and log of one run.       |
 | POST   | `/tasks/:taskId/runs/:runId/cancel` | Bearer JWT | Requests cancellation of a run.             |
+| POST   | `/assistant/webview-session` | Bearer JWT | Creates a one-use URL for the embedded Assistant WebView. |
 
 `login` accepts whatever identifier the UserAP model stores (`login`, `email`, or `username`).
 Project scope mirrors the admin panel's `userAccessRelation: 'owner'`: a user sees only the projects
 whose `ownerId` is theirs. A project with no owner set is visible to nobody through this API.
+
+## Embedded Assistant WebView
+
+The mobile application first calls `POST /assistant/webview-session` with its existing bearer token,
+then navigates the WebView to the returned `url`. The URL contains a random one-use launch code that
+expires after 60 seconds; it is exchanged for an HttpOnly Adminizer cookie and immediately removed
+by a redirect. The page renders Adminizer's existing `agent.es.js` UI in fullscreen mode, pointed at
+`agentiz-assistant`, so the same streaming transport, history, commands and registered agent skills
+are used as in the dashboard.
+
+The user must have the Adminizer permission `ai-assistant-agentiz-assistant`. The mobile JWT, the
+Adminizer cookie and the OpenHarness API key are never exposed to page JavaScript.
 
 ## Configuration
 

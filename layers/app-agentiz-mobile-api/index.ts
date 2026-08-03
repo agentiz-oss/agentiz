@@ -1,5 +1,7 @@
-import { AbstractApp, AppManager } from '@nodeknit/app-manager';
+import { AbstractApp, AppManager, Collection } from '@nodeknit/app-manager';
+import type { AdminizerRouteMiddleware, AppAdminizer } from '@nodeknit/app-adminizer';
 import { createMobileApiRouter, MOBILE_API_BASE } from './lib/mobileApiRouter';
+import { createMobileAssistantWebviewRouter } from './lib/mobileAssistantWebviewRouter';
 
 /**
  * Mobile API layer for Agentiz.
@@ -17,11 +19,31 @@ export class AppAgentizMobileApi extends AbstractApp {
     super(appManager);
   }
 
+  @Collection
+  adminizerMiddlewares: AdminizerRouteMiddleware[] = [{
+    route: '/mobile-assistant',
+    method: 'get',
+    handler: async (req: any, res: any) => {
+      if (!req.user) return res.sendStatus(401);
+      if (!req.adminizer.accessRightsHelper.hasPermission('ai-assistant-agentiz-assistant', req.user)) return res.sendStatus(403);
+      return req.Inertia.render({ component: 'module', props: { moduleComponent: '/dashboard/modules/MobileAssistant.js' } });
+    },
+  }];
+
   async mount(): Promise<void> {
     // Root app, not the Adminizer prefix: mobile clients authenticate with their own bearer token,
     // not admin sessions. Same placement as the Worker API.
     this.appManager.app.use(MOBILE_API_BASE, createMobileApiRouter(this.appManager.sequelize));
+    const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
+    if (!adminizerApp) {
+      throw new Error('app-adminizer must be mounted before app-agentiz-mobile-api');
+    }
+    this.appManager.app.use(
+      `${MOBILE_API_BASE}/assistant`,
+      createMobileAssistantWebviewRouter(this.appManager.sequelize, adminizerApp.adminizer),
+    );
     console.log(`[AppAgentizMobileApi] mobile API mounted at ${MOBILE_API_BASE}`);
+    console.log(`[AppAgentizMobileApi] mobile assistant WebView mounted at ${MOBILE_API_BASE}/assistant`);
   }
 
   async unmount(): Promise<void> {
