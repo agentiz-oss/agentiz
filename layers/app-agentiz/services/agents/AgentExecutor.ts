@@ -4,6 +4,7 @@ import type { AgentRun } from '../../models/AgentRun';
 import type { AgentTask } from '../../models/AgentTask';
 import type { FileChange } from '../../lib/git';
 import type { PipelineStageDef } from '../../types/agentiz';
+import type { RunConversation } from '../AgentPipelineService';
 
 export interface AgentStageContext {
   project: AgentProject;
@@ -13,6 +14,8 @@ export interface AgentStageContext {
   role: AgentRole;
   /** Outputs of every previous stage of this run, keyed by stage role name. */
   previousOutputs: Record<string, AgentStageResult>;
+  /** Frozen task discussion and earlier-run results; primaryPrompt is the triggering user message. */
+  conversation: RunConversation;
   log: (level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: Record<string, unknown>) => Promise<void>;
 }
 

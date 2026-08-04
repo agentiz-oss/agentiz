@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentProject } from './AgentProject';
 import { AgentTask } from './AgentTask';
+import { AgentTaskComment } from './AgentTaskComment';
 import { AgentStageExecution } from './AgentStageExecution';
 import { AgentRunLog } from './AgentRunLog';
 import type { AgentRunStatus, AgentRunTrigger, PipelineSpecDef } from '../types/agentiz';
@@ -54,16 +55,26 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @AdminizerField({
     title: 'Trigger',
     type: 'select',
-    isIn: { sync: 'Sync', manual: 'Manual', webhook: 'Webhook', schedule: 'Schedule' },
+    isIn: { sync: 'Sync', manual: 'Manual', webhook: 'Webhook', schedule: 'Schedule', human_comment: 'Human comment' },
     views: { list: true, add: false, edit: false },
   })
   @Default('manual')
   @Column({
-    type: DataType.ENUM('sync', 'manual', 'webhook', 'schedule'),
+    type: DataType.ENUM('sync', 'manual', 'webhook', 'schedule', 'human_comment'),
     allowNull: false,
     defaultValue: 'manual',
   })
   declare trigger: AgentRunTrigger;
+
+  /** Human comment that caused this run, when it was event-triggered. */
+  @ForeignKey(() => AgentTaskComment)
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare triggerCommentId: string | null;
+
+  /** Immediately preceding run for this task when this run was created. */
+  @ForeignKey(() => AgentRun)
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare previousRunId: string | null;
 
   @AdminizerField({ title: 'Pipeline Snapshot', type: 'jsoneditor', views: { list: false, add: false, edit: false } })
   @Column({ type: DataType.JSONB, allowNull: false })

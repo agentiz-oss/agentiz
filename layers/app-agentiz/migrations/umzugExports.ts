@@ -23,6 +23,10 @@ import {
   up as upRepairEmptySpecs,
   down as downRepairEmptySpecs,
 } from './umzug/1785000008000_repair_empty_pipeline_specs';
+import {
+  up as upRunConversationLineage,
+  down as downRunConversationLineage,
+} from './umzug/1785000009000_run_conversation_lineage';
 
 export const umzugExports: Migration[] = [
   {
@@ -78,5 +82,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1785000008000,
     up: upRepairEmptySpecs,
     down: downRepairEmptySpecs,
+  },
+  {
+    name: 'run_conversation_lineage',
+    timestamp: 1785000009000,
+    up: upRunConversationLineage,
+    down: downRunConversationLineage,
   },
 ];

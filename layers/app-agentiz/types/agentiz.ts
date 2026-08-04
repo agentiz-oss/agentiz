@@ -32,7 +32,7 @@ export type AgentTaskCommentOrigin = 'local' | 'remote';
 
 export type AgentRunStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
-export type AgentRunTrigger = 'sync' | 'manual' | 'webhook' | 'schedule';
+export type AgentRunTrigger = 'sync' | 'manual' | 'webhook' | 'schedule' | 'human_comment';
 
 export type AgentStageStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
 
@@ -107,6 +107,12 @@ export interface PipelineFinalActionDef {
   pullRequestTitleTemplate?: string;
 }
 
+/** Events that may create a new run for a task matching this pipeline. */
+export interface PipelineTriggersDef {
+  /** Start a run after a person adds a message to the task thread. Defaults to false. */
+  humanComment?: boolean;
+}
+
 /**
  * The "сложный джейсон" rule specification described by the user: which agent roles run, in what
  * order, what happens on failure, and what the pipeline does once all stages succeed.
@@ -117,6 +123,8 @@ export interface PipelineFinalActionDef {
 export interface PipelineSpecDef {
   stages: PipelineStageDef[];
   finalAction: PipelineFinalActionDef;
+  /** Optional, deliberately opt-in automation for this project's pipeline. */
+  triggers?: PipelineTriggersDef;
 }
 
 export interface AgentProjectRepoConfig {

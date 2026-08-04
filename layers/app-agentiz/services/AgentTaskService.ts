@@ -16,6 +16,7 @@ import {
 import type { CommentResult, NormalizedExternalComment } from '../lib/taskManager';
 import { createGitProviderForTask } from '../lib/git';
 import { TaskSourceSyncService } from './TaskSourceSyncService';
+import { AgentPipelineService } from './AgentPipelineService';
 import type { AgentTaskCommentAuthorKind, AgentTaskPriority, AgentTaskStatus } from '../types/agentiz';
 
 const TASK_STATUSES: AgentTaskStatus[] = [
@@ -362,7 +363,10 @@ export class AgentTaskService {
       externalCreatedAt: null,
       meta: input.meta ?? null,
     });
-    return comment.toJSON();
+    const run = input.authorKind === 'human'
+      ? await AgentPipelineService.runForHumanComment(taskId, comment.id)
+      : null;
+    return { ...comment.toJSON(), triggeredRunId: run?.id ?? null };
   }
 
   static async deleteComment(commentId: string): Promise<void> {
@@ -452,7 +456,7 @@ export class AgentTaskService {
       const externalCreatedAt = item.createdAt ? new Date(item.createdAt) : null;
 
       if (!existing) {
-        await AgentTaskComment.create({
+        const comment = await AgentTaskComment.create({
           taskId,
           // Whoever wrote it upstream is a person as far as we can tell; the tracker does not
           // tell us whether it was a bot, and guessing from the name would be worse than not.
@@ -467,6 +471,7 @@ export class AgentTaskService {
           externalCreatedAt,
           meta: { kind: 'comment.pulled', sourceType: task.sourceType },
         });
+        await AgentPipelineService.runForHumanComment(taskId, comment.id);
         created += 1;
         continue;
       }

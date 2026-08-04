@@ -42,7 +42,7 @@ interface TaskDetails {
   task: TaskListItem & { description?: string | null; remoteExternalId?: string; canPullComments?: boolean };
   project: { id: string; name: string; slug: string } | null;
   source: { id: string; name: string; type: string; isActive: boolean } | null;
-  runs: Array<{ id: string; status: string; trigger: string; createdAt?: string; resultSummary?: string | null; errorMessage?: string | null; commitUrl?: string | null; responseUrl?: string | null }>;
+  runs: Array<{ id: string; status: string; trigger: string; triggerCommentId?: string | null; previousRunId?: string | null; createdAt?: string; resultSummary?: string | null; errorMessage?: string | null; commitUrl?: string | null; responseUrl?: string | null }>;
   latestRun: {
     run: { id: string; status: string };
     stages: Array<{ id: string; stageIndex: number; role: string; status: string; errorMessage?: string | null }>;
@@ -875,6 +875,8 @@ const AgentizTasks: React.FC = () => {
                           <span className="text-muted-foreground">
                             {run.trigger} · {run.createdAt}
                           </span>
+                          {run.triggerCommentId && <span className="text-muted-foreground">после сообщения {run.triggerCommentId.slice(0, 8)}</span>}
+                          {run.previousRunId && <span className="text-muted-foreground">после запуска {run.previousRunId.slice(0, 8)}</span>}
                           {run.status !== "succeeded" && run.status !== "failed" && run.status !== "cancelled" && (
                             <button
                               onClick={async () => {

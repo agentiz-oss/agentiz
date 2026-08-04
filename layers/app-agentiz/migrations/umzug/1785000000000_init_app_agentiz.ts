@@ -132,11 +132,22 @@ export async function up({ context }: { context: QI }) {
       defaultValue: 'pending',
     },
     trigger: {
-      type: DataTypes.ENUM('sync', 'manual', 'webhook', 'schedule'),
+      type: DataTypes.ENUM('sync', 'manual', 'webhook', 'schedule', 'human_comment'),
       allowNull: false,
       defaultValue: 'manual',
     },
     pipelineSnapshot: { type: json, allowNull: false },
+    triggerCommentId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    previousRunId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      references: { model: 'agentiz_runs', key: 'id' },
+      onUpdate: 'CASCADE',
+      onDelete: 'SET NULL',
+    },
     currentStageIndex: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     startedAt: { type: DataTypes.DATE, allowNull: true },
     finishedAt: { type: DataTypes.DATE, allowNull: true },

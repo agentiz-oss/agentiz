@@ -11,7 +11,7 @@ export class StubAgentExecutor extends AgentExecutor {
   readonly kind = 'stub';
 
   async execute(context: AgentStageContext): Promise<AgentStageResult> {
-    const { task, stage, role, previousOutputs } = context;
+    const { task, stage, role, previousOutputs, conversation } = context;
     await context.log('info', `stub executor running role "${role.key}" for stage ${stage.order} (${stage.role})`);
 
     await context.log('debug', `reading task #${task.externalId} "${task.title}" (${(task.description ?? '').length} chars of description)`);
@@ -22,6 +22,12 @@ export class StubAgentExecutor extends AgentExecutor {
       priorSummaries.length > 0
         ? `considering ${priorSummaries.length} prior stage output(s): ${priorSummaries.join('; ')}`
         : 'no prior stage outputs to consider, this is the first stage',
+    );
+    await context.log(
+      'debug',
+      conversation.primaryPrompt
+        ? `using human message ${conversation.primaryPrompt.id} as primary prompt; ${conversation.messages.length} thread message(s), ${conversation.priorRuns.length} prior run(s) in context`
+        : `using task description as primary prompt; ${conversation.messages.length} thread message(s), ${conversation.priorRuns.length} prior run(s) in context`,
     );
 
     await context.log(
@@ -45,6 +51,12 @@ export class StubAgentExecutor extends AgentExecutor {
       `## Prior stages`,
       priorSummaries.length > 0 ? priorSummaries.map((line) => `- ${line}`).join('\n') : '- (none)',
       ``,
+      `## Conversation`,
+      conversation.primaryPrompt ? `Primary prompt: ${conversation.primaryPrompt.body}` : 'Primary prompt: task description',
+      conversation.messages.length > 0
+        ? conversation.messages.map((message) => `- [${message.authorKind}] ${message.authorName ?? 'unknown'}: ${message.body}`).join('\n')
+        : '- (none)',
+      ``,
     ].join('\n');
 
     const reportPath = `.agentiz/${task.externalId}/stage-${stage.order}-${stage.role}.md`;
@@ -59,6 +71,9 @@ export class StubAgentExecutor extends AgentExecutor {
         model: role.model ?? null,
         promptLength: (role.systemPrompt ?? '').length,
         priorStages: Object.keys(previousOutputs),
+        primaryPromptId: conversation.primaryPrompt?.id ?? null,
+        conversationMessages: conversation.messages.length,
+        priorRuns: conversation.priorRuns.length,
       },
       fileChanges: [
         {

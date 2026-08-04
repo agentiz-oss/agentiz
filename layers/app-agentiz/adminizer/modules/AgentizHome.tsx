@@ -74,7 +74,7 @@ interface PipelineSpecConfig {
   id: string;
   name: string;
   isDefault: boolean;
-  spec: { stages: PipelineStageConfig[]; finalAction: Record<string, unknown> };
+  spec: { stages: PipelineStageConfig[]; finalAction: Record<string, unknown>; triggers?: { humanComment?: boolean } };
 }
 
 /** Server-issued secret shown once, together with the command that consumes it. */
@@ -360,6 +360,25 @@ const AgentizHome: React.FC = () => {
     }
   }, [fetchPipelineConfiguration, pipelineSpecs, selectedPipelineSpecId, selectedProjectId]);
 
+  const setHumanCommentTrigger = useCallback(async (enabled: boolean) => {
+    const pipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
+    if (!pipelineSpec) return;
+    const spec = {
+      ...pipelineSpec.spec,
+      triggers: { ...pipelineSpec.spec.triggers, humanComment: enabled },
+    };
+    setBusy(true);
+    setError(null);
+    try {
+      await axios.post(API_URL, { _method: "updatePipelineSpec", specId: pipelineSpec.id, spec });
+      await fetchPipelineConfiguration(selectedProjectId);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось сохранить триггер пайплайна");
+    } finally {
+      setBusy(false);
+    }
+  }, [fetchPipelineConfiguration, pipelineSpecs, selectedPipelineSpecId, selectedProjectId]);
+
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const selectedPipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
 
@@ -448,6 +467,16 @@ const AgentizHome: React.FC = () => {
 
         {selectedPipelineSpec && (
           <div className="mt-4 space-y-2">
+            <label className="flex items-center gap-2 rounded border p-2 text-sm">
+              <input
+                type="checkbox"
+                checked={selectedPipelineSpec.spec.triggers?.humanComment === true}
+                onChange={(event) => setHumanCommentTrigger(event.target.checked)}
+                disabled={busy}
+              />
+              Запускать пайплайн после нового сообщения пользователя
+            </label>
+            <p className="text-xs text-muted-foreground">Сообщение становится основным промтом; весь тред и результаты прошлых запусков передаются как контекст.</p>
             <h3 className="text-sm font-medium">Стадии</h3>
             {selectedPipelineSpec.spec.stages.map((stage, index) => (
               <div key={`${stage.order}-${stage.role}`} className="flex flex-wrap items-center gap-2 rounded border p-2 text-sm">

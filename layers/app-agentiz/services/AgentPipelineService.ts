@@ -13,6 +13,24 @@ import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
 import type { AgentRunTrigger, AgentTaskStatus, PipelineSpecDef } from '../types/agentiz';
 
+export interface RunConversationTurn {
+  id: string;
+  authorKind: string;
+  authorName: string | null;
+  body: string;
+  createdAt: Date;
+  runId: string | null;
+}
+
+export interface RunConversation {
+  /** The new user message that should be treated as the main instruction. */
+  primaryPrompt: RunConversationTurn | null;
+  /** Complete task discussion available when the run was queued, oldest first. */
+  messages: RunConversationTurn[];
+  /** Results of earlier runs, including stage outputs when they exist. */
+  priorRuns: Array<Record<string, unknown>>;
+}
+
 function renderTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => values[key] ?? '');
 }
@@ -33,7 +51,11 @@ export class AgentPipelineService {
    * Creates a run for a task: resolves which spec applies, freezes it into the run, and
    * pre-creates one pending AgentStageExecution per stage. Nothing is executed yet.
    */
-  static async createRun(taskId: string, trigger: AgentRunTrigger = 'manual'): Promise<AgentRun> {
+  static async createRun(
+    taskId: string,
+    trigger: AgentRunTrigger = 'manual',
+    options: { triggerCommentId?: string | null } = {},
+  ): Promise<AgentRun> {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new Error(`AgentTask ${taskId} not found`);
 
@@ -41,11 +63,22 @@ export class AgentPipelineService {
     const snapshot = spec.spec as PipelineSpecDef;
     assertValidSpec(snapshot);
 
+    const [previousRun, latestHumanComment] = await Promise.all([
+      AgentRun.findOne({ where: { taskId: task.id }, order: [['createdAt', 'DESC']] }),
+      // A manually started run after a conversation still continues that conversation.  This
+      // covers projects where the event trigger is disabled or was enabled only later.
+      trigger === 'manual' && options.triggerCommentId === undefined
+        ? AgentTaskComment.findOne({ where: { taskId: task.id, authorKind: 'human' }, order: [['createdAt', 'DESC']] })
+        : Promise.resolve(null),
+    ]);
+    const triggerCommentId = options.triggerCommentId ?? latestHumanComment?.id ?? null;
     const run = await AgentRun.create({
       taskId: task.id,
       projectId: task.projectId,
       status: 'pending',
       trigger,
+      triggerCommentId,
+      previousRunId: previousRun?.id ?? null,
       pipelineSnapshot: snapshot,
       currentStageIndex: 0,
     });
@@ -86,6 +119,11 @@ export class AgentPipelineService {
     const task = await AgentTask.findByPk(run.taskId);
     const project = await AgentProject.findByPk(run.projectId);
     if (!task || !project) throw new Error(`AgentRun ${runId}: task or project is missing`);
+    const job = await AgentRunJob.findOne({ where: { runId: run.id } });
+    // The queue payload is the causal boundary. Local and external workers must see the same
+    // conversation even if somebody writes another message while this run is waiting to start.
+    const conversation = (job?.snapshot?.conversation as RunConversation | undefined)
+      ?? await AgentWorkerJobBuilder.conversationForRun(run);
 
     await run.update({ status: 'running', startedAt: new Date() });
     await task.update({ status: 'running' });
@@ -123,6 +161,7 @@ export class AgentPipelineService {
           stage,
           role,
           previousOutputs,
+          conversation,
           log: (level, message, meta) => writeLog(run.id, run.projectId, execution.id, level, message, meta),
         });
 
@@ -189,10 +228,23 @@ export class AgentPipelineService {
   }
 
   /** Creates the run and queues exactly one durable worker job. Execution happens out of request. */
-  static async runTask(taskId: string, trigger: AgentRunTrigger = 'manual'): Promise<AgentRun> {
-    const run = await this.createRun(taskId, trigger);
+  static async runTask(
+    taskId: string,
+    trigger: AgentRunTrigger = 'manual',
+    options: { triggerCommentId?: string | null } = {},
+  ): Promise<AgentRun> {
+    const run = await this.createRun(taskId, trigger, options);
     await AgentWorkerJobBuilder.enqueueRun(run);
     return run;
+  }
+
+  /** Starts the matching pipeline for a newly written human message when that event is enabled. */
+  static async runForHumanComment(taskId: string, commentId: string): Promise<AgentRun | null> {
+    const task = await AgentTask.findByPk(taskId);
+    if (!task) throw new Error(`AgentTask ${taskId} not found`);
+    const spec = await resolveSpecForTask(task);
+    if (spec.spec.triggers?.humanComment !== true) return null;
+    return this.runTask(taskId, 'human_comment', { triggerCommentId: commentId });
   }
 
   /**
@@ -365,6 +417,7 @@ export class AgentWorkerJobBuilder {
     ]);
     if (!task || !project) throw new Error(`AgentRun ${run.id}: task or project is missing`);
 
+    const conversation = await this.conversationForRun(run);
     const stages = await Promise.all(orderedStages(run.pipelineSnapshot).map(async (stage, index) => {
       const role = await AgentRole.findOne({ where: { projectId: project.id, key: stage.agentRoleKey } });
       const execution = await AgentStageExecution.findOne({ where: { runId: run.id, stageIndex: index } });
@@ -407,6 +460,7 @@ export class AgentWorkerJobBuilder {
     return {
       schemaVersion: 1,
       runId: run.id,
+      lineage: { triggerCommentId: run.triggerCommentId, previousRunId: run.previousRunId },
       repository,
       task: {
         id: task.id,
@@ -416,10 +470,60 @@ export class AgentWorkerJobBuilder {
         tags: task.tags ?? [],
         externalUrl: task.externalUrl,
       },
+      conversation,
       stages,
       finalAction: run.pipelineSnapshot.finalAction,
       validation: { commands: [], timeoutSec: 1800 },
       limits: { jobTimeoutSec: 3600, maxOutputBytes: 10485760 },
     };
+  }
+
+  /**
+   * Freeze the complete thread and prior run results into the worker payload.  A run gets a
+   * stable view at queue time: messages written later belong to a later run, not this one.
+   */
+  static async conversationForRun(run: AgentRun): Promise<RunConversation> {
+    const [comments, priorRuns] = await Promise.all([
+      AgentTaskComment.findAll({ where: { taskId: run.taskId }, order: [['createdAt', 'ASC']] }),
+      AgentRun.findAll({
+        where: { taskId: run.taskId },
+        order: [['createdAt', 'ASC']],
+      }),
+    ]);
+    const triggerComment = run.triggerCommentId
+      ? comments.find((comment) => comment.id === run.triggerCommentId) ?? null
+      : null;
+    const cutoff = triggerComment
+      ? new Date(triggerComment.externalCreatedAt ?? triggerComment.createdAt).getTime()
+      : new Date(run.createdAt).getTime();
+    const messages = comments
+      .filter((comment) => new Date(comment.externalCreatedAt ?? comment.createdAt).getTime() <= cutoff)
+      .sort((a, b) => new Date(a.externalCreatedAt ?? a.createdAt).getTime() - new Date(b.externalCreatedAt ?? b.createdAt).getTime())
+      .map((comment) => ({
+        id: comment.id,
+        authorKind: comment.authorKind,
+        authorName: comment.authorName,
+        body: comment.body,
+        createdAt: comment.externalCreatedAt ?? comment.createdAt,
+        runId: comment.runId,
+      }));
+    const primaryPrompt = run.triggerCommentId
+      ? messages.find((message) => message.id === run.triggerCommentId) ?? null
+      : null;
+    const runsBeforeThis = priorRuns.filter((item) => item.id !== run.id && item.createdAt <= run.createdAt);
+    const runResults = await Promise.all(runsBeforeThis.map(async (item) => {
+      const stages = await AgentStageExecution.findAll({ where: { runId: item.id }, order: [['stageIndex', 'ASC']] });
+      return {
+        id: item.id,
+        previousRunId: item.previousRunId,
+        trigger: item.trigger,
+        triggerCommentId: item.triggerCommentId,
+        status: item.status,
+        resultSummary: item.resultSummary,
+        errorMessage: item.errorMessage,
+        stages: stages.map((stage) => ({ role: stage.role, status: stage.status, output: stage.output, errorMessage: stage.errorMessage })),
+      };
+    }));
+    return { primaryPrompt, messages, priorRuns: runResults };
   }
 }

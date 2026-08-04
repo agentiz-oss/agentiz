@@ -13,7 +13,18 @@
       "description": "Executed strictly in ascending `order`. Each stage receives the outputs of all previous stages as context.",
       "items": { "$ref": "#/$defs/stage" }
     },
-    "finalAction": { "$ref": "#/$defs/finalAction" }
+    "finalAction": { "$ref": "#/$defs/finalAction" },
+    "triggers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Events that start this pipeline. All events are disabled unless explicitly enabled.",
+      "properties": {
+        "humanComment": {
+          "type": "boolean",
+          "description": "Start a run when a human adds a task-thread message. The message becomes the run's primary prompt."
+        }
+      }
+    }
   },
   "$defs": {
     "stage": {
