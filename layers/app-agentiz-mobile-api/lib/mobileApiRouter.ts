@@ -14,6 +14,11 @@ interface AuthedRequest extends Request {
   mobileUser?: Model;
 }
 
+/** A single-value query string param, or undefined for anything absent/repeated/non-string. */
+function stringParam(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 function errorResponse(res: Response, error: unknown) {
   // MobileAuthError and the tracker's TaskServiceError both carry the status they want reported.
   // Matching on the shape rather than the class keeps a validation error from app-agentiz (400,
@@ -136,7 +141,13 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
 
   router.get('/tasks/:id', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.json({ data: await MobileTaskService.detail(req.params.id, ownerOf(req)) });
+      // Cursors from a previous response (`commentsCursor`, `latestRun.logsCursor`): pass them
+      // back to poll for just what changed instead of the whole task every time.
+      const data = await MobileTaskService.detail(req.params.id, ownerOf(req), {
+        commentsAfter: stringParam(req.query.commentsAfter),
+        logsAfter: stringParam(req.query.logsAfter),
+      });
+      res.json({ data });
     } catch (error) {
       errorResponse(res, error);
     }
@@ -160,7 +171,14 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
 
   router.get('/tasks/:taskId/runs/:runId', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.json({ data: await MobileTaskService.runDetailForTask(String(req.params.taskId), String(req.params.runId), ownerOf(req)) });
+      // `logsAfter`: the `logsCursor` from a previous response, to fetch only new log lines.
+      const data = await MobileTaskService.runDetailForTask(
+        String(req.params.taskId),
+        String(req.params.runId),
+        ownerOf(req),
+        { logsAfter: stringParam(req.query.logsAfter) },
+      );
+      res.json({ data });
     } catch (error) {
       errorResponse(res, error);
     }

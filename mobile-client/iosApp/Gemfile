@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+# Pinned so CI can cache the resolved gems instead of re-installing fastlane
+# and its native dependencies on every run.
+gem "fastlane", "~> 2.228"

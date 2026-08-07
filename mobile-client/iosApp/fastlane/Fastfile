@@ -1,0 +1,180 @@
+# Fastlane configuration for the Compose Multiplatform iOS app.
+#
+# The lane is driven entirely by environment variables so the exact same code
+# runs in GitHub Actions (.github/workflows/ios-testflight.yml) and locally.
+#
+# Required:
+#   IOS_DEVELOPMENT_TEAM              Apple Developer Team ID (10 characters)
+#   IOS_PROVISIONING_PROFILE_UUID     UUID of an *installed* App Store profile
+#   IOS_BUNDLE_ID                     Bundle id the profile was issued for
+#   APP_STORE_CONNECT_API_KEY_ID      App Store Connect API key id
+#   APP_STORE_CONNECT_ISSUER_ID       App Store Connect issuer id
+#   APP_STORE_CONNECT_API_KEY_BASE64  base64 of the AuthKey_XXX.p8 file
+#
+# Optional:
+#   IOS_PROJECT_PATH                  defaults to ../iosApp.xcodeproj
+#   IOS_SCHEME / IOS_TARGET           default to "iosApp"
+#   IOS_OUTPUT_DIRECTORY              defaults to ../build
+#   IOS_MARKETING_VERSION             overrides MARKETING_VERSION (e.g. 1.2.0)
+#   BUILD_NUMBER                      lower bound for CURRENT_PROJECT_VERSION
+#   IOS_TESTFLIGHT_GROUPS             comma separated tester groups
+#   IOS_SKIP_WAITING_FOR_BUILD_PROCESSING  "true" to upload and return
+#   IOS_CHANGELOG                     "What to Test" text
+
+default_platform(:ios)
+
+def required_env(name)
+  value = ENV[name].to_s.strip
+  UI.user_error!("Missing required environment variable #{name}") if value.empty?
+  value
+end
+
+def optional_env(name)
+  value = ENV[name].to_s.strip
+  value.empty? ? nil : value
+end
+
+platform :ios do
+  desc "Build the Kotlin/Compose iOS app and upload it to TestFlight"
+  lane :beta do
+    scheme = ENV.fetch("IOS_SCHEME", "iosApp")
+    target = ENV.fetch("IOS_TARGET", "iosApp")
+    project_path = optional_env("IOS_PROJECT_PATH") || File.expand_path("../iosApp.xcodeproj")
+    output_dir = File.expand_path(optional_env("IOS_OUTPUT_DIRECTORY") || "../build")
+
+    bundle_id = required_env("IOS_BUNDLE_ID")
+    team_id = required_env("IOS_DEVELOPMENT_TEAM")
+    profile_uuid = required_env("IOS_PROVISIONING_PROFILE_UUID")
+    profile_name = optional_env("IOS_PROVISIONING_PROFILE_NAME")
+    # "iPhone Distribution" is the generic identity name and also matches modern
+    # "Apple Distribution" certificates; override if your keychain disagrees.
+    signing_identity = optional_env("IOS_CODE_SIGN_IDENTITY") || "iPhone Distribution"
+
+    UI.user_error!("Xcode project not found at #{project_path}") unless Dir.exist?(project_path)
+
+    UI.message("Project:      #{project_path}")
+    UI.message("Scheme:       #{scheme}")
+    UI.message("Bundle id:    #{bundle_id}")
+    UI.message("Team:         #{team_id}")
+    UI.message("Profile UUID: #{profile_uuid}")
+
+    api_key = app_store_connect_api_key(
+      key_id: required_env("APP_STORE_CONNECT_API_KEY_ID"),
+      issuer_id: required_env("APP_STORE_CONNECT_ISSUER_ID"),
+      key_content: required_env("APP_STORE_CONNECT_API_KEY_BASE64"),
+      is_key_content_base64: true,
+      in_house: false
+    )
+
+    # TestFlight rejects duplicate build numbers, so stay ahead of whatever is
+    # already uploaded. Falls back to BUILD_NUMBER when the app has no builds
+    # yet (or App Store Connect cannot be reached).
+    latest = begin
+      latest_testflight_build_number(
+        api_key: api_key,
+        app_identifier: bundle_id,
+        platform: "ios",
+        initial_build_number: 0
+      ).to_i
+    rescue StandardError => e
+      UI.important("Could not read the latest TestFlight build number: #{e.message}")
+      0
+    end
+    build_number = [latest + 1, ENV.fetch("BUILD_NUMBER", "1").to_i].max
+    UI.message("Build number: #{build_number} (latest on TestFlight: #{latest})")
+
+    # Switch the project to manual signing for this build only; the checked-in
+    # project keeps automatic signing so local development is unaffected.
+    disable_automatic_code_signing(
+      path: project_path,
+      team_id: team_id,
+      code_sign_identity: signing_identity,
+      targets: [target]
+    )
+
+    signing_settings = {
+      path: project_path,
+      use_automatic_signing: false,
+      team_id: team_id,
+      code_sign_identity: signing_identity,
+      profile_uuid: profile_uuid,
+      bundle_identifier: bundle_id,
+      targets: [target]
+    }
+    # Sets PROVISIONING_PROFILE_SPECIFIER; PROVISIONING_PROFILE (the UUID) alone
+    # is deprecated and warns on recent Xcode versions.
+    signing_settings[:profile_name] = profile_name if profile_name
+    update_code_signing_settings(signing_settings)
+
+    build_settings = [
+      "CODE_SIGN_IDENTITY='#{signing_identity}'",
+      "CODE_SIGN_STYLE=Manual",
+      "DEVELOPMENT_TEAM='#{team_id}'",
+      "CURRENT_PROJECT_VERSION=#{build_number}"
+    ]
+    marketing_version = optional_env("IOS_MARKETING_VERSION")
+    build_settings << "MARKETING_VERSION=#{marketing_version}" if marketing_version
+
+    # The "Compile Kotlin Framework" build phase shells out to Gradle, so the
+    # archive needs JAVA_HOME/ANDROID_HOME in the environment (CI sets both).
+    gym(
+      scheme: scheme,
+      project: project_path,
+      configuration: "Release",
+      sdk: "iphoneos",
+      destination: "generic/platform=iOS",
+      export_method: "app-store",
+      output_directory: output_dir,
+      output_name: "#{scheme}.ipa",
+      buildlog_path: File.join(output_dir, "logs"),
+      # A CI runner starts from an empty DerivedData, so cleaning only discards
+      # the Kotlin framework the pre-build step just produced. Set IOS_CLEAN_BUILD
+      # to force a clean archive locally or when debugging a stale-build issue.
+      clean: ENV.fetch("IOS_CLEAN_BUILD", "false") == "true",
+      skip_profile_detection: true,
+      codesigning_identity: signing_identity,
+      xcargs: build_settings.join(" "),
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        signingCertificate: signing_identity,
+        teamID: team_id,
+        provisioningProfiles: {
+          bundle_id => profile_uuid
+        },
+        uploadSymbols: true,
+        compileBitcode: false,
+        manageAppVersionAndBuildNumber: false
+      }
+    )
+
+    skip_processing = ENV.fetch("IOS_SKIP_WAITING_FOR_BUILD_PROCESSING", "false") == "true"
+    groups = ENV.fetch("IOS_TESTFLIGHT_GROUPS", "").split(",").map(&:strip).reject(&:empty?)
+
+    testflight_options = {
+      api_key: api_key,
+      app_identifier: bundle_id,
+      ipa: File.join(output_dir, "#{scheme}.ipa"),
+      skip_waiting_for_build_processing: skip_processing,
+      skip_submission: true,
+      distribute_external: false,
+      notify_external_testers: false
+    }
+
+    if skip_processing
+      # Changelog and group assignment both require a processed build.
+      UI.important("Uploading without waiting for processing — testers are assigned in App Store Connect.")
+      UI.important("Ignoring IOS_TESTFLIGHT_GROUPS: #{groups.join(', ')}") unless groups.empty?
+    else
+      testflight_options[:changelog] = ENV.fetch("IOS_CHANGELOG", "Build #{build_number}")
+      unless groups.empty?
+        testflight_options[:groups] = groups
+        UI.message("Distributing to groups: #{groups.join(', ')}")
+      end
+    end
+
+    pilot(testflight_options)
+
+    UI.success("Uploaded build #{build_number} of #{bundle_id} to TestFlight")
+  end
+end

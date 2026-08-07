@@ -1,0 +1,358 @@
+name: Build and Deploy iOS to TestFlight (Fastlane)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      skip_waiting_for_build_processing:
+        description: 'Skip waiting for App Store Connect processing'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_and_deploy:
+    name: Build, Sign and Deploy to TestFlight
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      IOS_DIRECTORY: iosApp
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          IOS_DEVELOPMENT_TEAM: ${{ secrets.IOS_DEVELOPMENT_TEAM }}
+          IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          MISSING=""
+          for NAME in IOS_DEVELOPMENT_TEAM IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
+                      IOS_PROVISIONING_PROFILE_BASE64 APP_STORE_CONNECT_API_KEY_ID \
+                      APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_API_KEY_BASE64; do
+            if [ -z "${!NAME:-}" ]; then
+              MISSING="$MISSING $NAME"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "Missing repository secrets:$MISSING" >&2
+            echo "See .github/workflows/README-ios-testflight.md for how to create them." >&2
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # Only pushes to main refresh the shared cache entry; other runs read it.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Restore Kotlin/Native (Konan) toolchain
+        # ~/.konan holds the Kotlin/Native compiler and the prebuilt iOS platform
+        # libraries (multiple GB). Without this it is re-downloaded every run.
+        # Restore/save are split so the toolchain is cached even when a later
+        # step (e.g. the TestFlight upload) fails: actions/cache only saves on a
+        # fully successful job, which kept this entry from ever being written.
+        id: konan-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-
+
+      - name: Restore Android SDK packages
+        id: android-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/Library/Android/sdk/platforms
+            ~/Library/Android/sdk/build-tools
+            ~/Library/Android/sdk/platform-tools
+          key: android-sdk-${{ runner.os }}-android36-buildtools36
+
+      - name: Set up Android SDK
+        # composeApp applies the Android application plugin, so Gradle needs an
+        # SDK to configure the project even though we only build the iOS target.
+        # sdkmanager skips packages already restored from the cache above.
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Save Android SDK packages
+        if: steps.android-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/Library/Android/sdk/platforms
+            ~/Library/Android/sdk/build-tools
+            ~/Library/Android/sdk/platform-tools
+          key: ${{ steps.android-cache.outputs.cache-primary-key }}
+
+      - name: Select latest Xcode
+        run: |
+          XCODE_APP=$(ls -1 /Applications | grep "^Xcode" | grep -v "beta" | sort -V | tail -n 1)
+          if [ -z "$XCODE_APP" ]; then
+            echo "No Xcode found, using default"
+          else
+            sudo xcode-select -s /Applications/${XCODE_APP}/Contents/Developer
+          fi
+
+      - name: Show tool versions
+        run: |
+          xcodebuild -version
+          java -version
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+
+      - name: Install Fastlane
+        # bundler-cache restores the resolved gems from Gemfile.lock instead of
+        # rebuilding fastlane's native extensions on every run.
+        uses: ruby/setup-ruby@v1
+        with:
+          # The runner's preinstalled Ruby; setup-ruby requires an explicit
+          # version when the repo has no .ruby-version file.
+          ruby-version: '3.3'
+          working-directory: ${{ env.IOS_DIRECTORY }}
+          bundler-cache: true
+
+      - name: Configure bundle id and team in Config.xcconfig
+        id: config
+        env:
+          IOS_DEVELOPMENT_TEAM: ${{ secrets.IOS_DEVELOPMENT_TEAM }}
+          IOS_BUNDLE_ID_OVERRIDE: ${{ vars.IOS_BUNDLE_ID }}
+        run: |
+          set -euo pipefail
+
+          CONFIG="$IOS_DIRECTORY/Configuration/Config.xcconfig"
+          BUNDLE_ID="${IOS_BUNDLE_ID_OVERRIDE:-}"
+          if [ -z "$BUNDLE_ID" ]; then
+            BUNDLE_ID=$(grep '^BUNDLE_ID=' "$CONFIG" | head -1 | cut -d '=' -f 2- | tr -d ' ')
+          fi
+
+          if [ -z "$BUNDLE_ID" ]; then
+            echo "BUNDLE_ID is not set in $CONFIG and the IOS_BUNDLE_ID variable is empty." >&2
+            exit 1
+          fi
+
+          # Config.xcconfig ships with an empty TEAM_ID so the repo stays free of
+          # account data; fill both values in for this build.
+          sed -i '' "s|^TEAM_ID=.*|TEAM_ID=$IOS_DEVELOPMENT_TEAM|" "$CONFIG"
+          sed -i '' "s|^BUNDLE_ID=.*|BUNDLE_ID=$BUNDLE_ID|" "$CONFIG"
+
+          echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+          echo "Bundle id: $BUNDLE_ID"
+          cat "$CONFIG"
+
+      - name: Setup signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-$(uuidgen)}"
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+
+          # Create keychain and keep it unlocked for the whole build
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import the distribution certificate
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > $CERTIFICATE_PATH
+          security import $CERTIFICATE_PATH -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          # Allow codesign to use the key without an interactive prompt
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          echo "Available signing identities:"
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
+
+      - name: Setup provisioning profile
+        id: profile
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          BUNDLE_ID: ${{ steps.config.outputs.bundle_id }}
+        run: |
+          set -euo pipefail
+
+          PP_PATH="$RUNNER_TEMP/build_pp.mobileprovision"
+          PP_INFO_PLIST="$RUNNER_TEMP/build_pp.plist"
+
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PP_PATH" || {
+            echo "Failed to decode IOS_PROVISIONING_PROFILE_BASE64. Verify it is valid base64 of a .mobileprovision file." >&2
+            exit 1
+          }
+
+          security cms -D -i "$PP_PATH" -o "$PP_INFO_PLIST"
+          PP_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$PP_INFO_PLIST" 2>/dev/null || true)
+          PP_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$PP_INFO_PLIST" 2>/dev/null || true)
+          PP_APP_ID=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$PP_INFO_PLIST" 2>/dev/null || true)
+
+          if [ -z "$PP_UUID" ]; then
+            echo "Unable to read the provisioning profile UUID. Ensure IOS_PROVISIONING_PROFILE_BASE64 holds a valid App Store profile." >&2
+            exit 1
+          fi
+
+          # Warn (but do not fail, wildcard profiles are legitimate) when the
+          # profile does not match the bundle id we are about to build.
+          if [ -n "$PP_APP_ID" ] && [ "${PP_APP_ID#*.}" != "$BUNDLE_ID" ]; then
+            echo "::warning::Profile application-identifier '$PP_APP_ID' does not exactly match bundle id '$BUNDLE_ID'"
+          fi
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PP_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PP_UUID.mobileprovision"
+
+          echo "uuid=$PP_UUID" >> "$GITHUB_OUTPUT"
+          echo "name=$PP_NAME" >> "$GITHUB_OUTPUT"
+          echo "Provisioning Profile UUID: $PP_UUID"
+          echo "Provisioning Profile Name: $PP_NAME"
+
+      - name: Restore Kotlin/Native build output
+        # setup-gradle caches ~/.gradle but not the project's own build
+        # directories, where Kotlin/Native keeps the klibs and incremental state
+        # the compile step reuses (~35MB). Linking is not restored from here —
+        # linkRelease* is not a cacheable Gradle task — so the pre-build step
+        # below still pays for it once.
+        id: build-output-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            composeApp/build
+            .gradle
+          key: kn-build-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'composeApp/build.gradle.kts', 'settings.gradle.kts', 'gradle.properties') }}-${{ github.sha }}
+          restore-keys: |
+            kn-build-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'composeApp/build.gradle.kts', 'settings.gradle.kts', 'gradle.properties') }}-
+            kn-build-${{ runner.os }}-
+
+      - name: Pre-build Kotlin framework
+        # Links the framework here so the Xcode build phase below finds it
+        # already built and matches it UP-TO-DATE, which is why that phase costs
+        # ~105s instead of ~400s. Do not narrow this to compileKotlinIosArm64:
+        # measured on run 30733145003, that drops this step to 19s but pushes
+        # linking into the archive and takes the job from 434s to 545s.
+        #
+        # It also keeps Kotlin compile errors legible — they surface here rather
+        # than buried in the xcodebuild log — and hands the Xcode phase a warm
+        # Gradle daemon instead of a cold JVM.
+        run: ./gradlew :composeApp:linkReleaseFrameworkIosArm64 --build-cache
+
+      - name: Save Kotlin/Native (Konan) toolchain
+        # Saved here rather than at job end so the toolchain is preserved even if
+        # the upload below fails.
+        if: steps.konan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.konan
+          key: ${{ steps.konan-cache.outputs.cache-primary-key }}
+
+      - name: Save Kotlin/Native build output
+        # The key embeds github.sha, so this always writes a fresh entry that
+        # the next run picks up through its restore-keys prefix.
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            composeApp/build
+            .gradle
+          key: ${{ steps.build-output-cache.outputs.cache-primary-key }}
+
+      - name: Build and deploy to TestFlight
+        working-directory: ${{ env.IOS_DIRECTORY }}
+        env:
+          IOS_DEVELOPMENT_TEAM: ${{ secrets.IOS_DEVELOPMENT_TEAM }}
+          IOS_PROVISIONING_PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ steps.profile.outputs.name }}
+          IOS_BUNDLE_ID: ${{ steps.config.outputs.bundle_id }}
+          IOS_PROJECT_PATH: ${{ github.workspace }}/iosApp/iosApp.xcodeproj
+          IOS_OUTPUT_DIRECTORY: ${{ github.workspace }}/iosApp/build
+          IOS_SCHEME: iosApp
+          IOS_TARGET: iosApp
+          IOS_CODE_SIGN_IDENTITY: ${{ vars.IOS_CODE_SIGN_IDENTITY }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          IOS_MARKETING_VERSION: ${{ vars.IOS_MARKETING_VERSION }}
+          IOS_TESTFLIGHT_GROUPS: ${{ vars.IOS_TESTFLIGHT_GROUPS }}
+          # Waiting on Apple's processing queue adds minutes of pure idling to
+          # every push and changes nothing about the uploaded binary. Manual
+          # runs can still opt in via the workflow_dispatch input, which is
+          # what group assignment and the changelog need.
+          IOS_SKIP_WAITING_FOR_BUILD_PROCESSING: ${{ github.event.inputs.skip_waiting_for_build_processing || 'true' }}
+          IOS_CHANGELOG: "Build ${{ github.run_number }} from ${{ github.ref_name }} (${{ github.sha }})"
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '180'
+          GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx4g'
+        run: bundle exec fastlane beta
+
+      - name: Upload IPA and dSYMs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-testflight-build
+          path: |
+            iosApp/build/*.ipa
+            iosApp/build/*.dSYM.zip
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs
+          path: |
+            iosApp/build/logs/**
+            ~/Library/Logs/gym/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Create deployment summary
+        if: success()
+        run: |
+          {
+            echo "### iOS TestFlight Deployment Complete :rocket:"
+            echo ""
+            echo "- **Bundle id:** ${{ steps.config.outputs.bundle_id }}"
+            echo "- **Profile:** ${{ steps.profile.outputs.name }}"
+            echo "- **Build Date:** $(date +'%Y-%m-%d %H:%M:%S')"
+            echo "- **Commit:** ${{ github.sha }}"
+            echo "- **Branch:** ${{ github.ref_name }}"
+            echo ""
+            echo "**Next Steps:**"
+            echo "1. Check App Store Connect for build processing status"
+            echo "2. Once processed, add testers to the build"
+            echo "3. Submit for external testing if needed"
+            echo ""
+            echo "[Open App Store Connect](https://appstoreconnect.apple.com)"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+          rm -f $RUNNER_TEMP/certificate.p12 || true
+          rm -f $RUNNER_TEMP/build_pp.mobileprovision || true
+          rm -f $RUNNER_TEMP/build_pp.plist || true
