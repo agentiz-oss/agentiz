@@ -7,6 +7,7 @@ import { AgentTaskSource } from '../models/AgentTaskSource';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentWorkerRegistryService, WorkerRegistryError } from '../services/AgentWorkerRegistryService';
 import { PIPELINE_SPEC_SCHEMA_TOOL } from '../services/PipelineSpecValidation';
+import type { AgentWorkerWorkspace } from '../types/agentiz';
 import {
   maskProjectForUI,
   maskTaskSourceForUI,
@@ -176,13 +177,25 @@ export const manageWorkerTool: IMcpTool = {
   name: 'agentiz.manageWorker',
   group: 'agentiz-actions',
   shortDescription: 'Creates and administers external worker identities safely.',
-  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects for an external worker. Newly issued tokens are returned once only.',
+  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects and declared workspaces for an external worker. A pipeline that runs in a directory instead of a repository needs that directory declared here with setWorkspaces first. Newly issued tokens are returned once only.',
   mode: 'protected',
   inputSchema: {
     type: 'object', required: ['operation'],
     properties: {
-      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects'] },
+      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces'] },
       workerId: { type: 'string' }, name: { type: 'string' }, allowedProjectIds: { type: ['array', 'null'], items: { type: 'string' } },
+      workspaces: {
+        type: ['array', 'null'],
+        description: 'setWorkspaces only. Prepared directories on that machine, which a pipeline then names by key through source.workspace.workspaceKey. This REPLACES the whole list: read the worker\'s current workspaces with agentiz.workerDetails and send them back alongside the new one, or they are dropped. Paths must be absolute.',
+        items: {
+          type: 'object', required: ['key', 'path'],
+          properties: {
+            key: { type: 'string', description: 'Stable identifier a pipeline spec stores. Unique within the worker.' },
+            path: { type: 'string', description: 'Absolute path on the worker machine, e.g. /prj/lyapka-rf.' },
+            label: { type: 'string' }, description: { type: 'string' },
+          },
+        },
+      },
       reason: { type: 'string' }, confirm: { type: 'boolean', description: 'Must be true for delete or revoke.' },
     },
   },
@@ -199,6 +212,13 @@ export const manageWorkerTool: IMcpTool = {
       if (operation === 'pause') return maskWorkerForUI(await AgentWorkerRegistryService.pause(workerId, typeof payload.reason === 'string' ? payload.reason : null));
       if (operation === 'resume') return maskWorkerForUI(await AgentWorkerRegistryService.resume(workerId));
       if (operation === 'setAllowedProjects') return maskWorkerForUI(await AgentWorkerRegistryService.setAllowedProjects(workerId, allowedProjectIds));
+      if (operation === 'setWorkspaces') {
+        // Null and [] both mean "declare nothing"; anything else has to be the full replacement list.
+        if (payload.workspaces !== null && !Array.isArray(payload.workspaces)) {
+          throw new Error('workspaces:array is required for setWorkspaces — it replaces the whole list, so include the entries you want to keep');
+        }
+        return maskWorkerForUI(await AgentWorkerRegistryService.setWorkspaces(workerId, payload.workspaces as AgentWorkerWorkspace[] | null));
+      }
       if (operation === 'rotateToken') {
         const rotated = await AgentWorkerRegistryService.rotateToken(workerId);
         return { worker: maskWorkerForUI(rotated.worker), token: rotated.token };

@@ -77,6 +77,16 @@ export function describeTaskManagers(): Array<{
  */
 export const LOCAL_TASK_SOURCE_TYPE = 'local';
 
+/**
+ * Whether the task has a remote thread to talk to at all. A task created in Agentiz does not: its
+ * discussion lives only here, so "report upstream" is satisfied by the local thread instead of
+ * being an error. An absent type is the same answer for tasks predating the column — everything
+ * mirrored from outside records where it came from (see GitSyncService, TaskSourceSyncService).
+ */
+export function hasUpstreamThread(sourceType: string | null | undefined): boolean {
+  return Boolean(sourceType) && sourceType !== LOCAL_TASK_SOURCE_TYPE;
+}
+
 /** Human label for a task's origin, falling back to the raw type when the layer is not mounted. */
 export function taskManagerTitle(type: string | null | undefined): string {
   if (!type || type === LOCAL_TASK_SOURCE_TYPE) return 'вручную';

@@ -9,6 +9,7 @@ import { AgentTaskSource } from '../models/AgentTaskSource';
 import {
   createTaskManager,
   getTaskManagerAdapter,
+  hasUpstreamThread,
   isTaskSourceAvailable,
   LOCAL_TASK_SOURCE_TYPE,
   taskManagerTitle,
@@ -396,7 +397,7 @@ export class AgentTaskService {
 
   /** A task created in Agentiz has no upstream thread to talk to. */
   private static assertHasUpstream(task: AgentTask): void {
-    if (!task.sourceType || task.sourceType === LOCAL_TASK_SOURCE_TYPE) {
+    if (!hasUpstreamThread(task.sourceType)) {
       throw new TaskServiceError(400, 'Задача создана в Agentiz, у неё нет внешнего трекера');
     }
   }
@@ -496,7 +497,7 @@ export class AgentTaskService {
 
   /** True when the task's origin can hand us its discussion. Drives the UI button. */
   static canPullComments(task: AgentTask): boolean {
-    if (!task.sourceType || task.sourceType === LOCAL_TASK_SOURCE_TYPE) return false;
+    if (!hasUpstreamThread(task.sourceType)) return false;
     const adapter = getTaskManagerAdapter(task.sourceType);
     // No adapter means the task came from the project's own repo or an integration layer, which
     // both go through a GitProvider — and both shipped providers can read comments.

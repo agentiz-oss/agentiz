@@ -15,6 +15,7 @@ import { RepositoryResolverService } from './RepositoryResolverService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
+import { hasUpstreamThread } from '../lib/taskManager';
 import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
@@ -354,6 +355,15 @@ export class AgentPipelineService {
     }
 
     if (action.type === 'comment_only') {
+      // A task created in Agentiz has no upstream thread, and a pipeline that works in a worker
+      // directory is routinely exactly that: a local task, a prepared directory, no git provider
+      // anywhere. reportToTaskThread above already delivered the summary to the only place it can
+      // go, so the action is done — failing here would fail a run whose every stage succeeded.
+      if (!hasUpstreamThread(task.sourceType)) {
+        await writeLog(run.id, run.projectId, null, 'info',
+          'Final action: comment_only, reported in the local task thread — this task has no external tracker');
+        return;
+      }
       // Deliberately the *task's* provider, not the run's code repository: a comment belongs where
       // the task lives, and those are not always the same place.
       const provider = await createGitProviderForTask(task, project);

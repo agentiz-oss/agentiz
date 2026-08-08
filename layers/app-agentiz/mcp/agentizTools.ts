@@ -66,6 +66,9 @@ function workerTeaser(worker: AgentWorker) {
   return {
     id: worker.id, name: worker.name, kind: worker.kind, status: worker.status,
     contactState: worker.contactState(), instanceId: worker.instanceId,
+    // The directories a worker_workspace pipeline can name. Without them a caller can see that a
+    // worker exists but not that it is the one holding the directory the pipeline is about.
+    workspaces: worker.workspaces ?? [],
     allowedProjectIds: worker.allowedProjectIds ?? null, capabilities: worker.capabilities ?? null,
     version: worker.version, hostname: worker.hostname, registeredAt: worker.registeredAt,
     lastSeenAt: worker.lastSeenAt, lastClaimAt: worker.lastClaimAt,
@@ -324,17 +327,21 @@ const pipelineSpecSchemaTool: IMcpTool = {
     ]);
     // A workspace is only reachable if the worker may claim this project's jobs and still exists.
     const usable = workers.filter((worker) => worker.status !== 'revoked' && worker.canClaimProject(projectId));
+    const workspaces = usable.flatMap((worker) => (worker.workspaces ?? []).map((workspace) => ({
+      workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
+      workerContactState: worker.contactState(), workspaceKey: workspace.key,
+      path: workspace.path, label: workspace.label ?? null,
+    })));
     return {
       ...base,
       project: {
         projectId,
         agentRoleKeys: roles.map((role) => role.key),
-        workspaces: usable.flatMap((worker) => (worker.workspaces ?? []).map((workspace) => ({
-          workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
-          workerContactState: worker.contactState(), workspaceKey: workspace.key,
-          path: workspace.path, label: workspace.label ?? null,
-        }))),
+        workspaces,
         workersWithoutWorkspaces: usable.filter((worker) => !(worker.workspaces ?? []).length).map((worker) => ({ id: worker.id, name: worker.name, status: worker.status })),
+        // A directory is not something the spec declares — the worker that owns the machine does.
+        // Said here because an empty list otherwise looks like "this pipeline is impossible".
+        declaringAWorkspace: 'A directory becomes usable by declaring it on the worker that owns the machine: agentiz.manageWorker {operation:"setWorkspaces", workerId, workspaces:[{key:"<key>", path:"/absolute/path"}]}. That call replaces the worker\'s whole list, so include its existing entries. The spec then names it by key, never by path.',
       },
     };
   },

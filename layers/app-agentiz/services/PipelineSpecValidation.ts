@@ -31,6 +31,7 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'stages[].order values are unique and cover 1..N without gaps.',
   'stages[].agentRoleKey must be the `key` of an AgentRole belonging to the same project.',
   'source.kind "worker_workspace" requires source.workspace.workerId and source.workspace.workspaceKey, and forbids source.repositoryId.',
+  'A spec names a directory by key only. The absolute path lives on the AgentWorker record, so a new directory is declared with agentiz.manageWorker {operation:"setWorkspaces"} before a spec can reference it.',
   'source.kind "worker_workspace" allows only finalAction.type "comment_only" or "none" — there is no hosted repository to push to.',
   'source.kind "worker_workspace" requires runtime.mode "host" on every stage; a docker container cannot see the worker\'s directory.',
   `hooks.before/after scripts must be non-empty, must not start with a shebang, and must stay under ${MAX_HOOK_SCRIPT_BYTES} bytes.`,
