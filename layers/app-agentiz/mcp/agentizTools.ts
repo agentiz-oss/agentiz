@@ -311,6 +311,11 @@ const pipelineSpecSchemaTool: IMcpTool = {
         stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
         finalAction: { type: 'comment_only' },
       },
+      workerWorkspacePath: {
+        source: { kind: 'worker_workspace', workspace: { workerId: '<AgentWorker.id>', path: '/absolute/path/on/that/worker', createIfMissing: true } },
+        stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
+        finalAction: { type: 'comment_only' },
+      },
     };
 
     const base = {

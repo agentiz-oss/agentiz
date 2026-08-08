@@ -304,9 +304,14 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
     """Directory every stage of this job runs in.
 
     Without `workspace` in the payload this is the worker's own managed directory, exactly as
-    before. With it, the pipeline is one that works in a prepared directory on this machine, so the
-    directory has to exist already: creating it here would hand the agent an empty tree while the
-    operator believes it is working in their project.
+    before. With it, the pipeline is one that works in a directory on this machine named either by
+    a key declared on this worker (`AgentWorker.workspaces`) or directly by an absolute path in the
+    spec. The declared-key case still requires the directory to exist already: creating it here
+    would hand the agent an empty tree while the operator believes it is working in their project.
+    The direct-path case is spelled out by the spec author instead, and only creates the directory
+    when the spec explicitly opted in with `createIfMissing` — access errors underneath that
+    (permissions, a parent that is actually a file, and so on) still surface as-is rather than being
+    swallowed.
     """
     workspace = job.get("workspace")
     if not isinstance(workspace, dict):
@@ -318,7 +323,11 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
     if not directory.is_absolute():
         raise WorkerError(f"job workspace path must be absolute, got {raw}")
     if not directory.is_dir():
-        raise WorkerError(f"job workspace directory does not exist on this worker: {directory}")
+        if directory.exists():
+            raise WorkerError(f"job workspace path exists on this worker but is not a directory: {directory}")
+        if not workspace.get("createIfMissing"):
+            raise WorkerError(f"job workspace directory does not exist on this worker: {directory}")
+        directory.mkdir(parents=True, exist_ok=True)
     return directory
 
 

@@ -103,7 +103,8 @@ interface PipelineStageConfig {
 
 interface PipelineSourceConfig {
   kind?: "repository" | "worker_workspace";
-  workspace?: { workerId: string; workspaceKey: string };
+  /** Exactly one of workspaceKey (declared on the worker) or path (given directly here) is set. */
+  workspace?: { workerId: string; workspaceKey?: string; path?: string; createIfMissing?: boolean };
   /** Which of the project's repositories this pipeline works on. Empty = the task's own. */
   repositoryId?: string;
 }
@@ -287,6 +288,57 @@ const WorkerWorkspacesEditor: React.FC<{
   );
 };
 
+/**
+ * The path a `worker_workspace` pipeline names directly, instead of a key declared on the worker.
+ * Kept as an uncontrolled draft with an explicit save, like WorkerWorkspacesEditor above, so typing
+ * a path does not fire a spec save (and a validation round trip) on every keystroke.
+ */
+const PipelineWorkspacePathEditor: React.FC<{
+  workerId: string;
+  savedPath: string;
+  savedCreateIfMissing: boolean;
+  busy: boolean;
+  onSave: (path: string, createIfMissing: boolean) => void;
+}> = ({ workerId, savedPath, savedCreateIfMissing, busy, onSave }) => {
+  const [path, setPath] = useState(savedPath);
+  const [createIfMissing, setCreateIfMissing] = useState(savedCreateIfMissing);
+
+  // The spec is the source of truth: switching to a different worker or spec should replace the
+  // draft, not merge with whatever was half-typed for the previous one.
+  useEffect(() => {
+    setPath(savedPath);
+    setCreateIfMissing(savedCreateIfMissing);
+  }, [workerId, savedPath, savedCreateIfMissing]);
+
+  const dirty = path.trim() !== savedPath || createIfMissing !== savedCreateIfMissing;
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <input
+        value={path}
+        onChange={(event) => setPath(event.target.value)}
+        placeholder="/prj/lyapka-rf"
+        className="w-64 rounded border px-2 py-1 text-xs"
+      />
+      <label className="flex items-center gap-1 text-xs">
+        <input
+          type="checkbox"
+          checked={createIfMissing}
+          onChange={(event) => setCreateIfMissing(event.target.checked)}
+        />
+        Создать, если её нет
+      </label>
+      <button
+        onClick={() => onSave(path.trim(), createIfMissing)}
+        disabled={busy || !path.trim() || !dirty}
+        className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+      >
+        Сохранить путь
+      </button>
+    </div>
+  );
+};
+
 const AgentizHome: React.FC = () => {
   const [projects, setProjects] = useState<AgentProject[]>([]);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
@@ -305,6 +357,21 @@ const AgentizHome: React.FC = () => {
   const [roles, setRoles] = useState<AgentRoleConfig[]>([]);
   const [pipelineSpecs, setPipelineSpecs] = useState<PipelineSpecConfig[]>([]);
   const [selectedPipelineSpecId, setSelectedPipelineSpecId] = useState("");
+  /**
+   * How the currently selected worker_workspace pipeline names its directory. Separate from the
+   * spec itself: switching this toggle is a UI intent ("I want to type a path now"), not something
+   * to save before the operator has actually typed anything, or an empty/absent path would fail
+   * the server's "exactly one of workspaceKey or path" check.
+   */
+  const [workspaceNameMode, setWorkspaceNameMode] = useState<"key" | "path">("key");
+  /**
+   * True between picking "worker_workspace" in the kind select and actually saving a worker+path
+   * below, for the case where no worker has any declared directory yet — persisting
+   * {kind:"worker_workspace"} alone would fail the server's "workspaceKey or path" check, so the
+   * kind switch itself waits for the path editor's save instead of firing immediately.
+   */
+  const [pendingWorkerWorkspace, setPendingWorkerWorkspace] = useState(false);
+  const [pendingWorkerId, setPendingWorkerId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -621,9 +688,23 @@ const AgentizHome: React.FC = () => {
   const selectedPipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
   const pipelineSource = selectedPipelineSpec?.spec.source;
   const pipelineSourceKind = pipelineSource?.kind === "worker_workspace" ? "worker_workspace" : "repository";
-  /** Only a worker that actually declares directories can host such a pipeline. */
+  /** Only a worker that actually declares directories can host a "by key" pipeline. */
   const workspaceWorkers = workers.filter((worker) => worker.status !== "revoked" && (worker.workspaces?.length ?? 0) > 0);
+  /** A "by path" pipeline needs no declared directory, so any live worker can host it. */
+  const activeWorkers = workers.filter((worker) => worker.status !== "revoked");
   const sourceWorker = workers.find((worker) => worker.id === pipelineSource?.workspace?.workerId);
+
+  // Follows the spec's own shape when a different pipeline is picked (or one loads with a path
+  // already set); free to diverge from it afterwards while the operator is mid-edit, same as the
+  // hook script drafts above.
+  useEffect(() => {
+    setWorkspaceNameMode(pipelineSource?.workspace?.path ? "path" : "key");
+    setPendingWorkerWorkspace(false);
+    setPendingWorkerId("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPipelineSpecId]);
+
+  const displayedSourceKind = pipelineSourceKind === "worker_workspace" || pendingWorkerWorkspace ? "worker_workspace" : "repository";
 
   return (
     <div className="space-y-6 p-6">
@@ -714,25 +795,39 @@ const AgentizHome: React.FC = () => {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-muted-foreground">С чем работает пайплайн</span>
                 <select
-                  value={pipelineSourceKind}
+                  value={displayedSourceKind}
                   onChange={(event) => {
                     if (event.target.value === "repository") {
+                      setPendingWorkerWorkspace(false);
                       setPipelineSource({ kind: "repository" });
                       return;
                     }
-                    const worker = sourceWorker ?? workspaceWorkers[0];
-                    const workspace = worker?.workspaces?.[0];
-                    if (!worker || !workspace) return;
-                    setPipelineSource({ kind: "worker_workspace", workspace: { workerId: worker.id, workspaceKey: workspace.key } });
+                    if (workspaceWorkers.length > 0) {
+                      const worker = sourceWorker ?? workspaceWorkers[0];
+                      const workspace = worker?.workspaces?.[0];
+                      if (!worker || !workspace) return;
+                      setWorkspaceNameMode("key");
+                      setPendingWorkerWorkspace(false);
+                      setPipelineSource({ kind: "worker_workspace", workspace: { workerId: worker.id, workspaceKey: workspace.key } });
+                      return;
+                    }
+                    // No worker has declared a directory: switch the panel locally and let the
+                    // operator name a path below before anything is saved. Persisting bare
+                    // {kind:"worker_workspace"} would just bounce off the server's "workspaceKey or
+                    // path" check.
+                    if (activeWorkers.length === 0) return;
+                    setWorkspaceNameMode("path");
+                    setPendingWorkerId(sourceWorker?.id ?? activeWorkers[0].id);
+                    setPendingWorkerWorkspace(true);
                   }}
-                  disabled={busy || (pipelineSourceKind === "repository" && workspaceWorkers.length === 0)}
+                  disabled={busy || (displayedSourceKind === "repository" && activeWorkers.length === 0)}
                   className="rounded border px-2 py-1 disabled:opacity-50"
                 >
                   <option value="repository">Репозиторий проекта (GitHub/GitLab)</option>
                   <option value="worker_workspace">Готовая папка на воркере</option>
                 </select>
 
-                {pipelineSourceKind === "repository" && (
+                {displayedSourceKind === "repository" && (
                   <select
                     value={pipelineSource?.repositoryId ?? ""}
                     onChange={(event) => setPipelineRepository(event.target.value)}
@@ -748,7 +843,35 @@ const AgentizHome: React.FC = () => {
                   </select>
                 )}
 
-                {pipelineSourceKind === "worker_workspace" && (
+                {displayedSourceKind === "worker_workspace" && (
+                  <select
+                    value={workspaceNameMode}
+                    onChange={(event) => {
+                      const nextMode = event.target.value as "key" | "path";
+                      if (nextMode === "key") {
+                        if (workspaceWorkers.length === 0) return;
+                        const currentWorkerId = pendingWorkerWorkspace ? pendingWorkerId : sourceWorker?.id;
+                        const worker = workspaceWorkers.find((item) => item.id === currentWorkerId) ?? workspaceWorkers[0];
+                        const workspace = worker.workspaces?.[0];
+                        if (!workspace) return;
+                        setWorkspaceNameMode("key");
+                        setPendingWorkerWorkspace(false);
+                        setPipelineSource({ kind: "worker_workspace", workspace: { workerId: worker.id, workspaceKey: workspace.key } });
+                        return;
+                      }
+                      // Switching to "path" never fails: nothing is saved until the path editor's
+                      // own save button runs, with a real (worker, path) pair in hand.
+                      setWorkspaceNameMode("path");
+                    }}
+                    disabled={busy}
+                    className="rounded border px-2 py-1 disabled:opacity-50"
+                  >
+                    <option value="key" disabled={workspaceWorkers.length === 0}>По ключу, объявленному на воркере</option>
+                    <option value="path">Путь прямо здесь</option>
+                  </select>
+                )}
+
+                {displayedSourceKind === "worker_workspace" && workspaceNameMode === "key" && (
                   <>
                     <select
                       value={pipelineSource?.workspace?.workerId ?? ""}
@@ -782,13 +905,63 @@ const AgentizHome: React.FC = () => {
                     </select>
                   </>
                 )}
+
+                {displayedSourceKind === "worker_workspace" && workspaceNameMode === "path" && (
+                  <select
+                    value={pendingWorkerWorkspace ? pendingWorkerId : (sourceWorker?.id ?? "")}
+                    onChange={(event) => {
+                      if (pendingWorkerWorkspace) {
+                        setPendingWorkerId(event.target.value);
+                        return;
+                      }
+                      const worker = activeWorkers.find((item) => item.id === event.target.value);
+                      if (!worker) return;
+                      setPipelineSource({
+                        kind: "worker_workspace",
+                        workspace: {
+                          workerId: worker.id,
+                          path: pipelineSource?.workspace?.path ?? "",
+                          createIfMissing: pipelineSource?.workspace?.createIfMissing ?? false,
+                        },
+                      });
+                    }}
+                    disabled={busy}
+                    className="rounded border px-2 py-1 disabled:opacity-50"
+                  >
+                    {activeWorkers.map((worker) => <option key={worker.id} value={worker.id}>{worker.name}</option>)}
+                  </select>
+                )}
               </div>
+
+              {displayedSourceKind === "worker_workspace" && workspaceNameMode === "path" && (
+                <PipelineWorkspacePathEditor
+                  workerId={pendingWorkerWorkspace ? pendingWorkerId : (sourceWorker?.id ?? "")}
+                  savedPath={pendingWorkerWorkspace ? "" : (pipelineSource?.workspace?.path ?? "")}
+                  savedCreateIfMissing={pendingWorkerWorkspace ? false : (pipelineSource?.workspace?.createIfMissing ?? false)}
+                  busy={busy}
+                  onSave={(path, createIfMissing) => {
+                    const workerId = pendingWorkerWorkspace ? pendingWorkerId : (sourceWorker?.id ?? activeWorkers[0]?.id);
+                    if (!workerId) return;
+                    setPendingWorkerWorkspace(false);
+                    setPipelineSource({ kind: "worker_workspace", workspace: { workerId, path, createIfMissing } });
+                  }}
+                />
+              )}
 
               {pipelineSourceKind === "worker_workspace" ? (
                 <p className="mt-1 text-xs text-muted-foreground">
                   Запуски этого пайплайна уходят только на выбранного воркера и выполняются прямо в{" "}
-                  <code>{sourceWorker?.workspaces?.find((item) => item.key === pipelineSource?.workspace?.workspaceKey)?.path ?? "—"}</code>.
+                  <code>
+                    {pipelineSource?.workspace?.path
+                      ?? sourceWorker?.workspaces?.find((item) => item.key === pipelineSource?.workspace?.workspaceKey)?.path
+                      ?? "—"}
+                  </code>
+                  {pipelineSource?.workspace?.createIfMissing && " (будет создана, если её ещё нет)"}.
                   Репозиторий не нужен, коммит и PR недоступны, стадии выполняются в режиме Host.
+                </p>
+              ) : pendingWorkerWorkspace ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Ни у одного воркера нет заранее объявленной папки — введите абсолютный путь выше и нажмите «Сохранить путь», чтобы завершить переключение.
                 </p>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -796,7 +969,7 @@ const AgentizHome: React.FC = () => {
                     ? "Код берётся из выбранного репозитория и коммит уезжает обратно в него же. Комментарий по задаче уходит туда, где задача живёт."
                     : "Код берётся из репозитория, из которого пришла задача, и коммит уезжает туда же."}
                   {projectRepositories.length === 0 && " Репозитории проекта настраиваются на экране «Репозитории»."}
-                  {workspaceWorkers.length === 0 && " Готовых папок ни у одного воркера пока не объявлено."}
+                  {workspaceWorkers.length === 0 && activeWorkers.length === 0 && " Ни одного воркера пока нет."}
                 </p>
               )}
             </div>

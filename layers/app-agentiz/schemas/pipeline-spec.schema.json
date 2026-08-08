@@ -97,8 +97,8 @@
         "workspace": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["workerId", "workspaceKey"],
-          "description": "Required when kind is worker_workspace. Only the named worker can claim the run, because only that machine has the directory.",
+          "required": ["workerId"],
+          "description": "Required when kind is worker_workspace. Only the named worker can claim the run, because only that machine has the directory. Names the directory with exactly one of workspaceKey or path — see the cross-field rules from agentiz.pipelineSpecSchema.",
           "properties": {
             "workerId": {
               "type": "string",
@@ -108,7 +108,17 @@
             "workspaceKey": {
               "type": "string",
               "minLength": 1,
-              "description": "Key of an entry in that worker's Workspaces list. The path is resolved at queue time, so correcting the path never invalidates the spec."
+              "description": "Key of an entry in that worker's declared Workspaces list. The path is resolved at queue time, so correcting the path never invalidates the spec. Mutually exclusive with path."
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Absolute path on the worker's machine, given directly by the spec instead of a declared workspaceKey. Mutually exclusive with workspaceKey."
+            },
+            "createIfMissing": {
+              "type": "boolean",
+              "default": false,
+              "description": "Only meaningful with path: create the directory if it does not exist, instead of failing. Ignored (and rejected) with workspaceKey."
             }
           }
         }

@@ -45,9 +45,12 @@ export interface RunConversationTurn {
 export interface RunWorkspaceRef {
   workerId: string;
   workerName: string;
-  key: string;
+  /** null when the spec named the directory with `path` instead of a declared `workspaceKey`. */
+  key: string | null;
   path: string;
   label: string | null;
+  /** Create `path` if it does not exist yet, instead of failing. Only ever true for a `path`-named workspace. */
+  createIfMissing: boolean;
 }
 
 export interface RunConversation {
@@ -793,6 +796,11 @@ export class AgentWorkerJobBuilder {
    * Every failure here is a configuration mistake an operator has to see by name — a job pinned to
    * a worker that no longer offers the directory would otherwise sit in the queue forever, because
    * no other worker is allowed to take it.
+   *
+   * With `path`, the spec names the directory itself and no lookup on the worker record happens —
+   * the worker checks the path (and creates it, if `createIfMissing`) when it actually runs the
+   * job, because this server does not have that machine's filesystem. With `workspaceKey`, the
+   * directory must already be declared via `AgentWorkerRegistryService.setWorkspaces`.
    */
   static async resolveWorkspace(ref: PipelineWorkerWorkspaceDef): Promise<RunWorkspaceRef> {
     const worker = await AgentWorker.findByPk(ref.workerId);
@@ -800,9 +808,19 @@ export class AgentWorkerJobBuilder {
       throw new Error(`Pipeline runs in a worker directory, but worker ${ref.workerId} no longer exists`);
     }
     if (worker.status === 'revoked') {
-      throw new Error(`Worker "${worker.name}" is revoked, so its directory "${ref.workspaceKey}" cannot be used`);
+      throw new Error(`Worker "${worker.name}" is revoked, so its directory cannot be used`);
     }
-    const declared = worker.workspace(ref.workspaceKey);
+    if (ref.path) {
+      return {
+        workerId: worker.id,
+        workerName: worker.name,
+        key: null,
+        path: ref.path.trim(),
+        label: null,
+        createIfMissing: !!ref.createIfMissing,
+      };
+    }
+    const declared = worker.workspace(ref.workspaceKey!);
     if (!declared) {
       const known = (worker.workspaces ?? []).map((item) => item.key).join(', ') || 'none';
       throw new Error(`Worker "${worker.name}" has no directory "${ref.workspaceKey}" (declared: ${known})`);
@@ -816,6 +834,7 @@ export class AgentWorkerJobBuilder {
       key: declared.key,
       path: declared.path.trim(),
       label: declared.label ?? null,
+      createIfMissing: false,
     };
   }
 

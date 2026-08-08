@@ -18,6 +18,11 @@ const workspaceExample = {
   stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
   finalAction: { type: 'comment_only' },
 };
+const workspacePathExample = {
+  source: { kind: 'worker_workspace', workspace: { workerId: 'worker-1', path: '/prj/lyapka-rf', createIfMissing: true } },
+  stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
+  finalAction: { type: 'comment_only' },
+};
 
 function rejection(spec: unknown): PipelineSpecError {
   try {
@@ -32,6 +37,7 @@ describe('pipeline spec examples', () => {
   it('accepts the examples the schema tool advertises', () => {
     expect(() => assertValidSpec(repositoryExample)).not.toThrow();
     expect(() => assertValidSpec(workspaceExample)).not.toThrow();
+    expect(() => assertValidSpec(workspacePathExample)).not.toThrow();
   });
 });
 
@@ -57,6 +63,31 @@ describe('rejection messages', () => {
       ...workspaceExample,
       stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'docker' } }],
     }).message).toContain('use "host"');
+  });
+
+  it('requires exactly one of workspaceKey or path', () => {
+    expect(rejection({
+      ...workspaceExample,
+      source: { kind: 'worker_workspace', workspace: { workerId: 'worker-1' } },
+    }).message).toContain('exactly one of workspaceKey');
+    expect(rejection({
+      ...workspaceExample,
+      source: { kind: 'worker_workspace', workspace: { workerId: 'worker-1', workspaceKey: 'lyapka', path: '/prj/lyapka-rf' } },
+    }).message).toContain('exactly one of workspaceKey');
+  });
+
+  it('rejects a relative workspace path', () => {
+    expect(rejection({
+      ...workspacePathExample,
+      source: { kind: 'worker_workspace', workspace: { workerId: 'worker-1', path: 'lyapka-rf' } },
+    }).message).toContain('must be absolute');
+  });
+
+  it('rejects createIfMissing alongside workspaceKey', () => {
+    expect(rejection({
+      ...workspaceExample,
+      source: { kind: 'worker_workspace', workspace: { workerId: 'worker-1', workspaceKey: 'lyapka', createIfMissing: true } },
+    }).message).toContain('only applies alongside path');
   });
 
   it('rejects stage orders that are not 1..N', () => {

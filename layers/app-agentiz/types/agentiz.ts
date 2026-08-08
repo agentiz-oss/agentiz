@@ -166,10 +166,24 @@ export interface PipelineFinalActionDef {
  */
 export type PipelineSourceKind = 'repository' | 'worker_workspace';
 
-/** Names a directory declared on one worker (AgentWorker.workspaces[].key). */
+/**
+ * Names the directory a `worker_workspace` run works in. Exactly one of `workspaceKey` or `path`
+ * is set: `workspaceKey` looks up a directory the worker operator declared in advance
+ * (`AgentWorker.workspaces[].key`); `path` is an absolute path given directly by the spec, with no
+ * declaration on the worker required.
+ */
 export interface PipelineWorkerWorkspaceDef {
   workerId: string;
-  workspaceKey: string;
+  /** Key of an entry in the worker's declared Workspaces list. Mutually exclusive with `path`. */
+  workspaceKey?: string;
+  /** Absolute path on the worker's machine, given directly by the spec. Mutually exclusive with `workspaceKey`. */
+  path?: string;
+  /**
+   * Only meaningful with `path`: create the directory if it does not exist instead of failing.
+   * Ignored with `workspaceKey` — a declared directory is expected to already exist, so a typo
+   * there should surface as an error rather than a silently created empty tree.
+   */
+  createIfMissing?: boolean;
 }
 
 export interface PipelineSourceDef {

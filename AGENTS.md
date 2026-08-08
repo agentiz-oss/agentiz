@@ -22,11 +22,16 @@
 - Shared mutable registries must live on a `Symbol.for` global: under tsx a module can be
   instantiated twice (ESM + CJS graphs) and plain module state silently splits in two.
 - A pipeline's `spec.source` decides what a run works on: `repository` (default) resolves through a
-  git provider, `worker_workspace` runs in a directory declared on one worker and pins the job to it
-  via `AgentRunJob.requiredWorkerId`. Anything filtering the job queue must be added to **both**
-  claim sites — `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and
-  as a column, not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and
-  JSON filtering differs between the postgres and sqlite deployments.
+  git provider, `worker_workspace` runs in a directory on one worker and pins the job to it via
+  `AgentRunJob.requiredWorkerId`. The directory is named either by `workspaceKey` (declared ahead of
+  time on the worker via `setWorkspaces`, expected to already exist) or by `path` (an absolute path
+  given directly in the spec; `createIfMissing` lets the worker create it — see `resolve_workdir` in
+  `worker/src/agentiz_worker/main.py`). Exactly one of the two is set — validated in
+  `PipelineSpecValidation.ts`, not the JSON schema, since Ajv cannot express "exactly one of".
+  Anything filtering the job queue must be added to **both** claim sites —
+  `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and as a column,
+  not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and JSON filtering
+  differs between the postgres and sqlite deployments.
 - A pipeline's `spec.hooks` runs a bash/node script before the first stage and after the last one,
   in the same directory the agent works in. Values reach a script as `AGENTIZ_*` **environment
   variables**, never substituted into the script text — task titles come from an external tracker,

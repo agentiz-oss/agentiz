@@ -30,8 +30,9 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'spec is a JSON object, never a JSON string.',
   'stages[].order values are unique and cover 1..N without gaps.',
   'stages[].agentRoleKey must be the `key` of an AgentRole belonging to the same project.',
-  'source.kind "worker_workspace" requires source.workspace.workerId and source.workspace.workspaceKey, and forbids source.repositoryId.',
-  'A spec names a directory by key only. The absolute path lives on the AgentWorker record, so a new directory is declared with agentiz.manageWorker {operation:"setWorkspaces"} before a spec can reference it.',
+  'source.kind "worker_workspace" requires source.workspace.workerId and forbids source.repositoryId.',
+  'source.workspace names the directory in exactly one of two ways: workspaceKey (looked up in that worker\'s declared Workspaces list — see agentiz.manageWorker {operation:"setWorkspaces"}) or path (an absolute path given directly in the spec, no prior declaration on the worker needed). Setting both, or neither, is rejected.',
+  'source.workspace.createIfMissing only applies alongside path: the worker creates the directory if it does not exist yet, instead of failing. It is rejected alongside workspaceKey — a declared directory is expected to already exist.',
   'source.kind "worker_workspace" allows only finalAction.type "comment_only" or "none" — there is no hosted repository to push to.',
   'source.kind "worker_workspace" requires runtime.mode "host" on every stage; a docker container cannot see the worker\'s directory.',
   `hooks.before/after scripts must be non-empty, must not start with a shebang, and must stay under ${MAX_HOOK_SCRIPT_BYTES} bytes.`,
@@ -139,8 +140,20 @@ function assertSourceIsConsistent(spec: PipelineSpecDef): void {
   if (spec.source?.repositoryId) {
     throw specError('source.repositoryId is meaningless with source.kind "worker_workspace": the run works in a directory, not in a repository');
   }
-  if (!spec.source?.workspace?.workerId || !spec.source.workspace.workspaceKey) {
-    throw specError('source.kind "worker_workspace" requires source.workspace.workerId and source.workspace.workspaceKey');
+  const workspace = spec.source?.workspace;
+  if (!workspace?.workerId) {
+    throw specError('source.kind "worker_workspace" requires source.workspace.workerId');
+  }
+  const hasKey = !!workspace.workspaceKey;
+  const hasPath = !!workspace.path;
+  if (hasKey === hasPath) {
+    throw specError('source.workspace must set exactly one of workspaceKey (a directory declared on the worker) or path (an absolute path given directly by the spec)');
+  }
+  if (hasPath && !workspace.path!.startsWith('/')) {
+    throw specError(`source.workspace.path must be absolute, got "${workspace.path}"`);
+  }
+  if (workspace.createIfMissing && hasKey) {
+    throw specError('source.workspace.createIfMissing only applies alongside path, not workspaceKey');
   }
   // Nothing to push to: the directory belongs to the worker's machine, not to a git host.
   if (spec.finalAction.type === 'commit_and_pr' || spec.finalAction.type === 'commit') {
