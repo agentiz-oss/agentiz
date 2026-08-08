@@ -24,13 +24,10 @@ import { AgentRepository } from './models/AgentRepository';
 import { AgentProjectRepository } from './models/AgentProjectRepository';
 import { AgentRunDiff } from './models/AgentRunDiff';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
-import { AgentPipelineService } from './services/AgentPipelineService';
-import { AgentWorkerApiService } from './services/AgentWorkerApiService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
-import { AgentWorkerRegistryService, WorkerRegistryError } from './services/AgentWorkerRegistryService';
+import { AgentWorkerRegistryService } from './services/AgentWorkerRegistryService';
 import { GitSyncService } from './services/GitSyncService';
 import { TaskSourceSyncService } from './services/TaskSourceSyncService';
-import { assertValidSpec, PipelineSpecError } from './services/PipelineSpecResolver';
 import { RepositoryResolverService } from './services/RepositoryResolverService';
 import {
     createGitProvider,
@@ -44,26 +41,19 @@ import type { GitProviderAdapter } from './lib/git';
 import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
 import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTaskManager';
 import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerCollection';
-import { taskManagerTitle, type TaskManagerAdapter } from './lib/taskManager';
-import { maskProjectForUI, maskWorkerForUI, restoreMaskedSecrets } from './lib/secrets';
+import type { TaskManagerAdapter } from './lib/taskManager';
+import { maskProjectForUI, restoreMaskedSecrets } from './lib/secrets';
 import { taskRoutes } from './lib/taskRoutes';
 import { repositoryRoutes } from './lib/repositoryRoutes';
+import { pipelineRoutes } from './lib/pipelineRoutes';
+import { workerRoutes } from './lib/workerRoutes';
+import { runRoutes } from './lib/runRoutes';
 import { createWorkerApiRouter, WORKER_API_BASE } from './lib/workerApiRouter';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
 
 /** Sync cadence for every active project. Per-project pollIntervalSec is honoured inside the tick. */
 const SYNC_CRON = process.env.AGENTIZ_SYNC_CRON ?? '*/10 * * * *';
-
-/**
- * Base URL a worker should dial. Behind a proxy the request host is the internal one, so an
- * explicitly configured public origin always wins — the panel pastes this into a copyable command.
- */
-function workerApiUrl(req: any): string {
-    const configured = process.env.AGENTIZ_PUBLIC_URL?.replace(/\/+$/, '');
-    const origin = configured || `${req.protocol}://${req.get('host')}`;
-    return `${origin}${WORKER_API_BASE}`;
-}
 
 export class AppAgentiz extends AbstractApp {
     appId: string = 'app-agentiz';
@@ -127,6 +117,12 @@ export class AppAgentiz extends AbstractApp {
         ...taskRoutes,
         // Connections, mirrored repositories and project links — shared by every platform.
         ...repositoryRoutes,
+        // ACP-agent assignment and pipeline-spec editing.
+        ...pipelineRoutes,
+        // Worker fleet: registration, tokens, allowlists.
+        ...workerRoutes,
+        // One run's stages, logs and diff.
+        ...runRoutes,
         {
             route: '/agentiz',
             method: 'get',
@@ -138,87 +134,50 @@ export class AppAgentiz extends AbstractApp {
                     return res.json({ data: projects.map(maskProjectForUI) });
                 }
 
-                if (method === 'getTasks') {
-                    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
-                    const where = projectId ? { projectId } : {};
-                    const tasks = await AgentTask.findAll({
-                        where,
-                        order: [['updatedAt', 'DESC']],
-                        limit: 200,
-                    });
-                    // sourceTitle resolves the adapter key to its human name, so the list can say
-                    // which task manager each task arrived from.
-                    return res.json({
-                        data: tasks.map((task) => ({
-                            ...task.toJSON(),
-                            sourceTitle: taskManagerTitle(task.sourceType),
-                        })),
-                    });
-                }
-
-                if (method === 'getRuns') {
-                    const taskId = typeof req.query.taskId === 'string' ? req.query.taskId : '';
-                    if (!taskId) return res.status(400).json({ message: 'taskId is required' });
-                    const runs = await AgentRun.findAll({
-                        where: { taskId },
-                        order: [['createdAt', 'DESC']],
-                        limit: 100,
-                    });
-                    return res.json({ data: runs.map((run) => run.toJSON()) });
-                }
-
-                if (method === 'getWorkers') {
-                    const workers = await AgentWorkerRegistryService.list();
-                    return res.json({
-                        data: workers.map(maskWorkerForUI),
-                        // The panel prints a ready-to-run register command, so it needs the URL the
-                        // worker will actually dial — the public origin when one is configured.
-                        meta: {
-                            workerApiEnabled: AgentWorkerApiService.isEnabled(),
-                            workerApiUrl: workerApiUrl(req),
-                        },
-                    });
-                }
-
-                if (method === 'getPipelineConfiguration') {
+                if (method === 'getProjectStats') {
                     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
                     if (!projectId) return res.status(400).json({ message: 'projectId is required' });
-                    const [roles, specs] = await Promise.all([
-                        AgentRole.findAll({ where: { projectId }, order: [['key', 'ASC']] }),
-                        PipelineSpec.findAll({ where: { projectId }, order: [['updatedAt', 'DESC']] }),
-                    ]);
-                    return res.json({
-                        data: {
-                            roles: roles.map((role) => ({
-                                id: role.id, key: role.key, title: role.title, model: role.model,
-                                config: role.config ?? {}, updatedAt: role.updatedAt,
-                            })),
-                            specs: specs.map((spec) => spec.toJSON()),
-                        },
-                    });
-                }
 
-                if (method === 'getRunDetails') {
-                    const runId = typeof req.query.runId === 'string' ? req.query.runId : '';
-                    if (!runId) return res.status(400).json({ message: 'runId is required' });
-                    const run = await AgentRun.findByPk(runId);
-                    if (!run) return res.status(404).json({ message: 'Run not found' });
-                    const stages = await AgentStageExecution.findAll({
-                        where: { runId },
-                        order: [['stageIndex', 'ASC']],
+                    const [taskRows, runRows, pipelineCount, workers] = await Promise.all([
+                        AgentTask.findAll({
+                            where: { projectId },
+                            attributes: ['status', [AgentTask.sequelize!.fn('COUNT', '*'), 'count']],
+                            group: ['status'],
+                            raw: true,
+                        }) as unknown as Promise<Array<{ status: string; count: string }>>,
+                        AgentRun.findAll({
+                            where: { projectId },
+                            attributes: ['status', [AgentRun.sequelize!.fn('COUNT', '*'), 'count']],
+                            group: ['status'],
+                            raw: true,
+                        }) as unknown as Promise<Array<{ status: string; count: string }>>,
+                        PipelineSpec.count({ where: { projectId } }),
+                        AgentWorkerRegistryService.list(),
+                    ]);
+
+                    // A worker is not scoped to a project until an allowlist says so, so "workers
+                    // available here" counts an empty allowlist (= every project) as included.
+                    const projectWorkers = workers.filter(
+                        (worker) => !worker.allowedProjectIds || worker.allowedProjectIds.length === 0
+                            || worker.allowedProjectIds.includes(projectId),
+                    );
+                    const onlineWorkers = projectWorkers.filter(
+                        (worker) => worker.status === 'active' && worker.contactState() === 'online',
+                    ).length;
+
+                    const recentRuns = await AgentRun.findAll({
+                        where: { projectId },
+                        order: [['createdAt', 'DESC']],
+                        limit: 8,
                     });
-                    const logs = await AgentRunLog.findAll({
-                        where: { runId },
-                        order: [['createdAt', 'ASC']],
-                        limit: 500,
-                    });
-                    const diff = await AgentRunDiff.findOne({ where: { runId } });
+
                     return res.json({
                         data: {
-                            run: run.toJSON(),
-                            stages: stages.map((stage) => stage.toJSON()),
-                            logs: logs.map((log) => log.toJSON()),
-                            diff: diff?.toJSON() ?? null,
+                            tasksByStatus: Object.fromEntries(taskRows.map((row) => [row.status, Number(row.count)])),
+                            runsByStatus: Object.fromEntries(runRows.map((row) => [row.status, Number(row.count)])),
+                            pipelineCount,
+                            workers: { total: projectWorkers.length, online: onlineWorkers },
+                            recentRuns: recentRuns.map((run) => run.toJSON()),
                         },
                     });
                 }
@@ -270,149 +229,6 @@ export class AppAgentiz extends AbstractApp {
                     if (method === 'syncAll') {
                         const results = await GitSyncService.syncAllActiveProjects();
                         return res.json({ data: results });
-                    }
-
-                    if (method === 'runTask') {
-                        const taskId = String(req.body?.taskId ?? '');
-                        if (!taskId) return res.status(400).json({ message: 'taskId is required' });
-                        const run = await AgentPipelineService.runTask(taskId, 'manual');
-                        return res.json({ data: run.toJSON() });
-                    }
-
-                    if (method === 'applyRunDiff') {
-                        const runId = String(req.body?.runId ?? '');
-                        if (!runId) return res.status(400).json({ message: 'runId is required' });
-                        const actor = (req as any).session?.UserAP?.login ?? (req as any).user?.login ?? 'admin';
-                        const diff = await AgentPipelineService.applyStoredDiff(runId, String(actor));
-                        return res.json({ data: diff.toJSON() });
-                    }
-
-                    if (method === 'cancelRun') {
-                        const runId = String(req.body?.runId ?? '');
-                        if (!runId) return res.status(400).json({ message: 'runId is required' });
-                        const run = await AgentPipelineService.cancelRun(runId);
-                        return res.json({ data: run.toJSON() });
-                    }
-
-                    if (method === 'updatePipelineSpec') {
-                        const specId = String(req.body?.specId ?? '');
-                        const spec = req.body?.spec;
-                        if (!specId) return res.status(400).json({ message: 'specId is required' });
-                        const pipelineSpec = await PipelineSpec.findByPk(specId);
-                        if (!pipelineSpec) return res.status(404).json({ message: 'Pipeline Spec not found' });
-                        await pipelineSpec.update({ spec });
-                        return res.json({ data: pipelineSpec.toJSON() });
-                    }
-
-                    if (method === 'setRoleAcpProvider') {
-                        const roleId = String(req.body?.roleId ?? '');
-                        const provider = String(req.body?.provider ?? '');
-                        if (!roleId) return res.status(400).json({ message: 'roleId is required' });
-                        const role = await AgentRole.findByPk(roleId);
-                        if (!role) return res.status(404).json({ message: 'Agent role not found' });
-                        const presets: Record<string, string[]> = {
-                            codex: ['npx', '-y', '@agentclientprotocol/codex-acp'],
-                            claude: ['npx', '-y', '@agentclientprotocol/claude-agent-acp'],
-                        };
-                        const acpCommand = presets[provider];
-                        if (!acpCommand) return res.status(400).json({ message: 'provider must be codex or claude' });
-                        await role.update({ config: { executor: 'openhands-acp', provider, acpCommand } });
-                        return res.json({ data: role.toJSON() });
-                    }
-
-                    if (method === 'createWorker') {
-                        try {
-                            const actor = (req as any).session?.UserAP?.login ?? (req as any).user?.login ?? 'admin';
-                            const projectIds = Array.isArray(req.body?.allowedProjectIds)
-                                ? req.body.allowedProjectIds.map((id: unknown) => String(id))
-                                : null;
-                            const created = await AgentWorkerRegistryService.create({
-                                name: String(req.body?.name ?? ''),
-                                allowedProjectIds: projectIds,
-                                createdBy: String(actor),
-                            });
-                            // The token leaves the server exactly once, here: only its hash is stored.
-                            return res.json({
-                                data: {
-                                    worker: maskWorkerForUI(created.worker),
-                                    token: created.token,
-                                    workerApiUrl: workerApiUrl(req),
-                                },
-                            });
-                        } catch (error) {
-                            if (error instanceof WorkerRegistryError) {
-                                return res.status(error.status).json({ message: error.message, code: error.code });
-                            }
-                            throw error;
-                        }
-                    }
-
-                    if (method === 'pauseWorker' || method === 'resumeWorker' || method === 'revokeWorker'
-                        || method === 'deleteWorker' || method === 'rotateWorkerToken' || method === 'setWorkerProjects'
-                        || method === 'setWorkerRepositories' || method === 'setWorkerWorkspaces') {
-                        const workerId = String(req.body?.workerId ?? '');
-                        if (!workerId) return res.status(400).json({ message: 'workerId is required' });
-                        const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
-                        const projectIds = Array.isArray(req.body?.allowedProjectIds)
-                            ? req.body.allowedProjectIds.map((id: unknown) => String(id))
-                            : undefined;
-                        try {
-                            if (method === 'setWorkerWorkspaces') {
-                                const workspaces = Array.isArray(req.body?.workspaces) ? req.body.workspaces : [];
-                                const worker = await AgentWorkerRegistryService.setWorkspaces(workerId, workspaces);
-                                return res.json({ data: maskWorkerForUI(worker) });
-                            }
-                            if (method === 'pauseWorker') {
-                                return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.pause(workerId, reason)) });
-                            }
-                            if (method === 'resumeWorker') {
-                                return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.resume(workerId)) });
-                            }
-                            if (method === 'revokeWorker') {
-                                return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.revoke(workerId, reason)) });
-                            }
-                            if (method === 'deleteWorker') {
-                                await AgentWorkerRegistryService.remove(workerId);
-                                return res.json({ data: { deleted: true } });
-                            }
-                            if (method === 'setWorkerProjects') {
-                                const worker = await AgentWorkerRegistryService.setAllowedProjects(workerId, projectIds ?? null);
-                                return res.json({ data: maskWorkerForUI(worker) });
-                            }
-                            if (method === 'setWorkerRepositories') {
-                                const repositoryIds = Array.isArray(req.body?.allowedRepositoryIds)
-                                    ? req.body.allowedRepositoryIds.map((id: unknown) => String(id))
-                                    : null;
-                                const worker = await AgentWorkerRegistryService.setAllowedRepositories(workerId, repositoryIds);
-                                return res.json({ data: maskWorkerForUI(worker) });
-                            }
-                            // The rotated token is returned exactly once: it is stored only as a hash.
-                            const rotated = await AgentWorkerRegistryService.rotateToken(workerId);
-                            return res.json({
-                                data: {
-                                    worker: maskWorkerForUI(rotated.worker),
-                                    token: rotated.token,
-                                    workerApiUrl: workerApiUrl(req),
-                                },
-                            });
-                        } catch (error) {
-                            if (error instanceof WorkerRegistryError) {
-                                return res.status(error.status).json({ message: error.message, code: error.code });
-                            }
-                            throw error;
-                        }
-                    }
-
-                    if (method === 'validateSpec') {
-                        try {
-                            assertValidSpec(req.body?.spec);
-                            return res.json({ data: { valid: true } });
-                        } catch (error) {
-                            if (error instanceof PipelineSpecError) {
-                                return res.status(400).json({ message: error.message, errors: error.errors });
-                            }
-                            throw error;
-                        }
                     }
 
                     return res.status(400).json({ message: `Unknown _method: ${method ?? '(none)'}` });
