@@ -1,8 +1,7 @@
-import { Table, Column, Model, DataType, HasMany, Default } from 'sequelize-typescript';
+import { Table, Column, Model, DataType, Default } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
-import { GitlabConnection } from './GitlabConnection';
 import type { GitlabOAuthAppSecrets } from '../types/gitlab';
 
 /**
@@ -74,6 +73,6 @@ export class GitlabOAuthApp extends Model<InferAttributes<GitlabOAuthApp>, Infer
   @Column({ type: DataType.DATE, defaultValue: DataType.NOW })
   declare updatedAt: CreationOptional<Date>;
 
-  @HasMany(() => GitlabConnection, 'oauthAppId')
-  declare connections: GitlabConnection[];
+  // No association to the connections it authorized: they are core rows (AgentGitConnection) and
+  // reference this application by an opaque string, so the core never joins through this layer.
 }

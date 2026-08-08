@@ -1,4 +1,5 @@
-import { GitProvider } from '../../app-agentiz/lib/git';
+import { GitProvider, normalizeFileChanges } from '../../app-agentiz/lib/git';
+import { parseTaskExternalId } from '../types/gitlab';
 import type {
   CommentResult,
   CommitChangesParams,
@@ -9,9 +10,13 @@ import type {
   NormalizedExternalTask,
   OpenPullRequestParams,
   PullRequestResult,
+  ResolvedRef,
 } from '../../app-agentiz/lib/git';
 
 const DEFAULT_API_BASE = 'https://gitlab.com';
+
+/** How many "does this path exist" probes are in flight at once while building a commit. */
+const PROBE_CONCURRENCY = 5;
 
 interface GitLabIssue {
   iid: number;
@@ -80,6 +85,18 @@ export class GitLabProvider extends GitProvider {
     return res.json() as Promise<T>;
   }
 
+  /**
+   * Tasks that came from a linked repository carry a namespaced external id
+   * (`gl-<projectId>-<iid>`), because one Agentiz project aggregates repositories. Everything sent
+   * to GitLab has to use the bare iid again.
+   *
+   * Done for every call rather than in a subclass: `parseTaskExternalId` returns null for a plain
+   * iid, so this is a superset of the old behaviour and one class less to keep in sync.
+   */
+  private toIssueIid(externalId: string): string {
+    return parseTaskExternalId(externalId)?.issueIid ?? externalId;
+  }
+
   private normalizeIssue(issue: GitLabIssue): NormalizedExternalTask {
     return {
       externalId: String(issue.iid),
@@ -117,13 +134,14 @@ export class GitLabProvider extends GitProvider {
   }
 
   async getTask(externalId: string): Promise<NormalizedExternalTask> {
-    const issue = await this.request<GitLabIssue>('GET', `/projects/${this.projectPath}/issues/${externalId}`);
+    const iid = this.toIssueIid(externalId);
+    const issue = await this.request<GitLabIssue>('GET', `/projects/${this.projectPath}/issues/${iid}`);
     return this.normalizeIssue(issue);
   }
 
   async updateTaskStatus(externalId: string, status: string): Promise<void> {
     const closedStatuses = new Set(['done', 'cancelled', 'ignored']);
-    await this.request('PUT', `/projects/${this.projectPath}/issues/${externalId}`, {
+    await this.request('PUT', `/projects/${this.projectPath}/issues/${this.toIssueIid(externalId)}`, {
       state_event: closedStatuses.has(status) ? 'close' : 'reopen',
     });
   }
@@ -131,7 +149,7 @@ export class GitLabProvider extends GitProvider {
   async commentOnTask(externalId: string, body: string): Promise<CommentResult> {
     const note = await this.request<{ id: number }>(
       'POST',
-      `/projects/${this.projectPath}/issues/${externalId}/notes`,
+      `/projects/${this.projectPath}/issues/${this.toIssueIid(externalId)}/notes`,
       { body },
     );
     const issue = await this.getTask(externalId);
@@ -141,7 +159,7 @@ export class GitLabProvider extends GitProvider {
   async listComments(externalId: string): Promise<NormalizedExternalComment[]> {
     const notes = await this.request<GitLabNote[]>(
       'GET',
-      `/projects/${this.projectPath}/issues/${externalId}/notes?per_page=100&sort=asc&order_by=created_at`,
+      `/projects/${this.projectPath}/issues/${this.toIssueIid(externalId)}/notes?per_page=100&sort=asc&order_by=created_at`,
     );
     // GitLab mixes activity records into the same endpoint ("changed the description",
     // "assigned to @user"). They carry `system: true` and are not discussion — importing them
@@ -159,6 +177,15 @@ export class GitLabProvider extends GitProvider {
     }));
   }
 
+  async resolveRef(ref: string): Promise<ResolvedRef> {
+    // Branch, tag and SHA all resolve through the same endpoint on GitLab too.
+    const commit = await this.request<{ id: string }>(
+      'GET',
+      `/projects/${this.projectPath}/repository/commits/${encodeURIComponent(ref)}`,
+    );
+    return { ref, sha: commit.id };
+  }
+
   async commitChanges(params: CommitChangesParams): Promise<CommitResult> {
     const baseBranch = params.baseBranch || this.repo.defaultBranch || 'main';
 
@@ -169,22 +196,58 @@ export class GitLabProvider extends GitProvider {
       branchExists = false;
     }
 
-    // On an existing branch a "create" action fails if the file is already there, so probe each path.
-    const actions = [];
-    for (const change of params.changes) {
-      let action: 'create' | 'update' = 'create';
-      if (branchExists) {
+    const ops = normalizeFileChanges(params.changes);
+
+    // On an existing branch a "create" action fails when the file is already there, so every
+    // upserted path has to be probed. The probes run a few at a time: strictly sequential makes a
+    // three-hundred-file diff three hundred round trips end to end, and unbounded opens three
+    // hundred connections to one instance at once.
+    const probePaths = branchExists
+      ? [...new Set(ops.filter((op) => op.op === 'upsert').map((op) => (op as { path: string }).path))]
+      : [];
+    const existing = new Set<string>();
+    for (let index = 0; index < probePaths.length; index += PROBE_CONCURRENCY) {
+      const batch = probePaths.slice(index, index + PROBE_CONCURRENCY);
+      const found = await Promise.all(batch.map(async (path) => {
         try {
           await this.request(
             'GET',
-            `/projects/${this.projectPath}/repository/files/${encodeURIComponent(change.path)}?ref=${encodeURIComponent(params.branch)}`,
+            `/projects/${this.projectPath}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(params.branch)}`,
           );
-          action = 'update';
+          return path;
         } catch {
-          action = 'create';
+          // A 404 is the answer, not a failure: the file simply is not there yet.
+          return null;
         }
+      }));
+      for (const path of found) if (path) existing.add(path);
+    }
+
+    const actions: Array<Record<string, unknown>> = [];
+    for (const op of ops) {
+      if (op.op === 'delete') {
+        actions.push({ action: 'delete', file_path: op.path });
+        continue;
       }
-      actions.push({ action, file_path: change.path, content: change.content });
+      if (op.op === 'rename') {
+        // `move` carries content only when the file also changed; without it GitLab keeps the blob.
+        actions.push({
+          action: 'move',
+          previous_path: op.from,
+          file_path: op.to,
+          ...(op.content !== undefined ? { content: op.content, encoding: op.encoding ?? 'text' } : {}),
+        });
+        if (op.mode) actions.push({ action: 'chmod', file_path: op.to, execute_filemode: op.mode === '100755' });
+        continue;
+      }
+      actions.push({
+        action: existing.has(op.path) ? 'update' : 'create',
+        file_path: op.path,
+        content: op.content,
+        // GitLab spells the text encoding `text`, not `utf-8`.
+        encoding: op.encoding === 'base64' ? 'base64' : 'text',
+      });
+      if (op.mode) actions.push({ action: 'chmod', file_path: op.path, execute_filemode: op.mode === '100755' });
     }
 
     const commit = await this.request<{ id: string; web_url: string }>(
@@ -224,4 +287,9 @@ export class GitLabProvider extends GitProvider {
 export const gitlabProviderAdapter: GitProviderAdapter = {
   type: 'gitlab',
   create: (repo, credentials) => new GitLabProvider('gitlab', repo, credentials),
+  // Only this layer knows what a GitLab task id looks like; the core asks instead of parsing.
+  parseTaskExternalId: (externalId) => {
+    const parsed = parseTaskExternalId(externalId);
+    return parsed ? { externalRepoId: parsed.gitlabProjectId, issueId: parsed.issueIid } : null;
+  },
 };

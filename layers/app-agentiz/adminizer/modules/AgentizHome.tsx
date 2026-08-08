@@ -39,6 +39,14 @@ interface AgentRun {
   createdAt?: string;
 }
 
+/** A prepared directory on the worker's machine that a pipeline can run in. */
+interface WorkerWorkspace {
+  key: string;
+  path: string;
+  label?: string;
+  description?: string;
+}
+
 interface AgentWorker {
   id: string;
   name: string;
@@ -52,6 +60,28 @@ interface AgentWorker {
   registeredAt?: string | null;
   claimedJobsCount?: number;
   allowedProjectIds?: string[] | null;
+  allowedRepositoryIds?: string[] | null;
+  workspaces?: WorkerWorkspace[] | null;
+}
+
+/** Mirror of AgentRepository, only what the allowlist selector needs. */
+interface RepositoryOption {
+  id: string;
+  provider: string;
+  pathWithNamespace: string;
+  connectionId: string;
+}
+
+/** What the agent changed in a run, as stored by AgentRunDiff. */
+interface RunDiff {
+  id: string;
+  baseSha: string | null;
+  patch: string | null;
+  ops: Array<Record<string, any>> | null;
+  stats: { files?: number; insertions?: number; deletions?: number } | null;
+  truncated: boolean;
+  appliedAt: string | null;
+  appliedCommitSha: string | null;
 }
 
 interface AgentRoleConfig {
@@ -70,11 +100,31 @@ interface PipelineStageConfig {
   runtime?: { mode?: "host" | "docker" };
 }
 
+interface PipelineSourceConfig {
+  kind?: "repository" | "worker_workspace";
+  workspace?: { workerId: string; workspaceKey: string };
+  /** Which of the project's repositories this pipeline works on. Empty = the task's own. */
+  repositoryId?: string;
+}
+
+/** A repository linked to the selected project, as the repositories screen returns it. */
+interface ProjectRepositoryOption {
+  id: string;
+  repositoryId: string;
+  role: string;
+  repository: { id: string; provider: string; pathWithNamespace: string } | null;
+}
+
 interface PipelineSpecConfig {
   id: string;
   name: string;
   isDefault: boolean;
-  spec: { stages: PipelineStageConfig[]; finalAction: Record<string, unknown>; triggers?: { humanComment?: boolean } };
+  spec: {
+    stages: PipelineStageConfig[];
+    finalAction: Record<string, unknown>;
+    triggers?: { humanComment?: boolean };
+    source?: PipelineSourceConfig;
+  };
 }
 
 /** Server-issued secret shown once, together with the command that consumes it. */
@@ -149,6 +199,84 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   );
 };
 
+/**
+ * Directories on the worker's own machine that pipelines may run in.
+ *
+ * The draft key/path live here rather than in the page so that typing into one worker's form does
+ * not re-render every other worker card while a job list is refreshing.
+ */
+const WorkerWorkspacesEditor: React.FC<{
+  worker: AgentWorker;
+  busy: boolean;
+  onSave: (workspaces: WorkerWorkspace[]) => void;
+}> = ({ worker, busy, onSave }) => {
+  const [key, setKey] = useState("");
+  const [path, setPath] = useState("");
+  const workspaces = worker.workspaces ?? [];
+
+  const add = () => {
+    const trimmedKey = key.trim();
+    const trimmedPath = path.trim();
+    if (!trimmedKey || !trimmedPath) return;
+    onSave([...workspaces.filter((item) => item.key !== trimmedKey), { key: trimmedKey, path: trimmedPath }]);
+    setKey("");
+    setPath("");
+  };
+
+  return (
+    <div className="mt-2 rounded border p-2">
+      <div className="text-xs font-medium">Готовые папки для пайплайнов</div>
+      {workspaces.length === 0 ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Пока нет. Укажите папку на машине воркера — пайплайн сможет работать прямо в ней, без репозитория.
+        </p>
+      ) : (
+        <ul className="mt-1 space-y-1">
+          {workspaces.map((workspace) => (
+            <li key={workspace.key} className="flex flex-wrap items-center gap-2 text-xs">
+              <code className="rounded border px-1">{workspace.key}</code>
+              <span className="text-muted-foreground">{workspace.path}</span>
+              <button
+                onClick={() => onSave(workspaces.filter((item) => item.key !== workspace.key))}
+                disabled={busy}
+                className="rounded border px-1.5 py-0.5 disabled:opacity-50"
+                style={{ borderColor: "#fca5a5", color: "#b91c1c" }}
+              >
+                Убрать
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <input
+          value={key}
+          onChange={(event) => setKey(event.target.value)}
+          placeholder="ключ, напр. monorepo"
+          className="rounded border px-2 py-1 text-xs"
+        />
+        <input
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+          placeholder="/home/dev/projects/monorepo"
+          className="w-64 rounded border px-2 py-1 text-xs"
+        />
+        <button
+          onClick={add}
+          disabled={busy || !key.trim() || !path.trim()}
+          className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+        >
+          Добавить папку
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Путь абсолютный и должен существовать на машине воркера: воркер работает в готовом окружении и сам его не создаёт.
+        Ключ — то, на что ссылается пайплайн, поэтому менять путь можно, а ключ лучше сохранять.
+      </p>
+    </div>
+  );
+};
+
 const AgentizHome: React.FC = () => {
   const [projects, setProjects] = useState<AgentProject[]>([]);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
@@ -160,6 +288,10 @@ const AgentizHome: React.FC = () => {
   const [newWorkerName, setNewWorkerName] = useState("");
   /** An issued token is returned by the server exactly once — keep it on screen until dismissed. */
   const [issuedToken, setIssuedToken] = useState<IssuedToken | null>(null);
+  const [repositoryOptions, setRepositoryOptions] = useState<RepositoryOption[]>([]);
+  const [projectRepositories, setProjectRepositories] = useState<ProjectRepositoryOption[]>([]);
+  const [openDiffRunId, setOpenDiffRunId] = useState<string>("");
+  const [runDiff, setRunDiff] = useState<RunDiff | null>(null);
   const [roles, setRoles] = useState<AgentRoleConfig[]>([]);
   const [pipelineSpecs, setPipelineSpecs] = useState<PipelineSpecConfig[]>([]);
   const [selectedPipelineSpecId, setSelectedPipelineSpecId] = useState("");
@@ -212,6 +344,64 @@ const AgentizHome: React.FC = () => {
       setError(e?.response?.data?.message ?? "Не удалось загрузить воркеров");
     }
   }, []);
+
+  /** Options for the worker repository allowlist; the shared repositories screen owns the rest. */
+  const fetchRepositoryOptions = useCallback(async () => {
+    try {
+      const url = `${(window as any).routePrefix ?? "/dashboard"}/agentiz-repos`;
+      const res = await axios.get(url, { params: { _method: "getRepositories" } });
+      setRepositoryOptions(res.data?.data ?? []);
+    } catch {
+      // Not fatal: the allowlist selector simply stays empty.
+      setRepositoryOptions([]);
+    }
+  }, []);
+
+  /** Repositories the selected project may work with — the pipeline can only pick among these. */
+  const fetchProjectRepositories = useCallback(async (projectId: string) => {
+    if (!projectId) {
+      setProjectRepositories([]);
+      return;
+    }
+    try {
+      const url = `${(window as any).routePrefix ?? "/dashboard"}/agentiz-repos`;
+      const res = await axios.get(url, { params: { _method: "getProjectRepositories", projectId } });
+      setProjectRepositories(res.data?.data ?? []);
+    } catch {
+      setProjectRepositories([]);
+    }
+  }, []);
+
+  const openDiff = useCallback(async (runId: string) => {
+    if (openDiffRunId === runId) {
+      setOpenDiffRunId("");
+      setRunDiff(null);
+      return;
+    }
+    try {
+      const res = await axios.get(API_URL, { params: { _method: "getRunDetails", runId } });
+      setRunDiff(res.data?.data?.diff ?? null);
+      setOpenDiffRunId(runId);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось загрузить дифф запуска");
+    }
+  }, [openDiffRunId]);
+
+  const applyRunDiff = useCallback(async (runId: string) => {
+    if (!window.confirm("Применить изменения в репозиторий? Повторно это сделать нельзя.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await axios.post(API_URL, { _method: "applyRunDiff", runId });
+      await fetchRuns(selectedTaskId);
+      const res = await axios.get(API_URL, { params: { _method: "getRunDetails", runId } });
+      setRunDiff(res.data?.data?.diff ?? null);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось применить изменения");
+    } finally {
+      setBusy(false);
+    }
+  }, [fetchRuns, selectedTaskId]);
 
   const fetchPipelineConfiguration = useCallback(async (projectId: string) => {
     if (!projectId) {
@@ -282,14 +472,16 @@ const AgentizHome: React.FC = () => {
   useEffect(() => {
     fetchProjects();
     fetchWorkers();
-  }, [fetchProjects, fetchWorkers]);
+    fetchRepositoryOptions();
+  }, [fetchProjects, fetchWorkers, fetchRepositoryOptions]);
 
   useEffect(() => {
     fetchTasks(selectedProjectId);
     fetchPipelineConfiguration(selectedProjectId);
+    fetchProjectRepositories(selectedProjectId);
     setSelectedTaskId("");
     setRuns([]);
-  }, [selectedProjectId, fetchTasks, fetchPipelineConfiguration]);
+  }, [selectedProjectId, fetchTasks, fetchPipelineConfiguration, fetchProjectRepositories]);
 
   useEffect(() => {
     fetchRuns(selectedTaskId);
@@ -341,46 +533,73 @@ const AgentizHome: React.FC = () => {
     }
   }, [fetchPipelineConfiguration, selectedProjectId]);
 
-  const saveStage = useCallback(async (stageIndex: number, patch: Partial<PipelineStageConfig>) => {
+  /**
+   * The spec is stored as one document, so every editor on this page writes the whole thing.
+   * `failure` names the edit rather than the endpoint: "не удалось сохранить стадию" is what the
+   * person was actually doing.
+   */
+  const savePipelineSpec = useCallback(async (
+    build: (current: PipelineSpecConfig["spec"]) => PipelineSpecConfig["spec"],
+    failure: string,
+  ) => {
     const pipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
     if (!pipelineSpec) return;
-    const spec = {
-      ...pipelineSpec.spec,
-      stages: pipelineSpec.spec.stages.map((stage, index) => index === stageIndex ? { ...stage, ...patch } : stage),
-    };
     setBusy(true);
     setError(null);
     try {
-      await axios.post(API_URL, { _method: "updatePipelineSpec", specId: pipelineSpec.id, spec });
+      await axios.post(API_URL, { _method: "updatePipelineSpec", specId: pipelineSpec.id, spec: build(pipelineSpec.spec) });
       await fetchPipelineConfiguration(selectedProjectId);
     } catch (e: any) {
-      setError(e?.response?.data?.message ?? "Не удалось сохранить стадию пайплайна");
+      setError(e?.response?.data?.message ?? failure);
     } finally {
       setBusy(false);
     }
   }, [fetchPipelineConfiguration, pipelineSpecs, selectedPipelineSpecId, selectedProjectId]);
 
-  const setHumanCommentTrigger = useCallback(async (enabled: boolean) => {
-    const pipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
-    if (!pipelineSpec) return;
-    const spec = {
-      ...pipelineSpec.spec,
-      triggers: { ...pipelineSpec.spec.triggers, humanComment: enabled },
-    };
-    setBusy(true);
-    setError(null);
-    try {
-      await axios.post(API_URL, { _method: "updatePipelineSpec", specId: pipelineSpec.id, spec });
-      await fetchPipelineConfiguration(selectedProjectId);
-    } catch (e: any) {
-      setError(e?.response?.data?.message ?? "Не удалось сохранить триггер пайплайна");
-    } finally {
-      setBusy(false);
-    }
-  }, [fetchPipelineConfiguration, pipelineSpecs, selectedPipelineSpecId, selectedProjectId]);
+  const saveStage = useCallback((stageIndex: number, patch: Partial<PipelineStageConfig>) => {
+    void savePipelineSpec((current) => ({
+      ...current,
+      stages: current.stages.map((stage, index) => index === stageIndex ? { ...stage, ...patch } : stage),
+    }), "Не удалось сохранить стадию пайплайна");
+  }, [savePipelineSpec]);
+
+  const setHumanCommentTrigger = useCallback((enabled: boolean) => {
+    void savePipelineSpec((current) => ({
+      ...current,
+      triggers: { ...current.triggers, humanComment: enabled },
+    }), "Не удалось сохранить триггер пайплайна");
+  }, [savePipelineSpec]);
+
+  /**
+   * Switches the pipeline between "работать с репозиторием проекта" and "работать в готовой папке
+   * на воркере". A worker directory has nothing to push to, so a pipeline that used to open a PR is
+   * moved to a comment — the server rejects the combination outright, and silently failing every
+   * later run would be worse than saying so here.
+   */
+  /** Keeps the rest of `source` intact: kind, workspace and branch are edited separately. */
+  const setPipelineRepository = useCallback((repositoryId: string) => {
+    void savePipelineSpec((current) => ({
+      ...current,
+      source: { ...(current.source ?? {}), kind: "repository", repositoryId: repositoryId || undefined },
+    }), "Не удалось сохранить репозиторий пайплайна");
+  }, [savePipelineSpec]);
+
+  const setPipelineSource = useCallback((source: PipelineSourceConfig) => {
+    void savePipelineSpec((current) => {
+      const finalAction = source.kind === "worker_workspace" && current.finalAction?.type === "commit_and_pr"
+        ? { ...current.finalAction, type: "comment_only" }
+        : current.finalAction;
+      return { ...current, source, finalAction };
+    }, "Не удалось сохранить источник пайплайна");
+  }, [savePipelineSpec]);
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const selectedPipelineSpec = pipelineSpecs.find((spec) => spec.id === selectedPipelineSpecId);
+  const pipelineSource = selectedPipelineSpec?.spec.source;
+  const pipelineSourceKind = pipelineSource?.kind === "worker_workspace" ? "worker_workspace" : "repository";
+  /** Only a worker that actually declares directories can host such a pipeline. */
+  const workspaceWorkers = workers.filter((worker) => worker.status !== "revoked" && (worker.workspaces?.length ?? 0) > 0);
+  const sourceWorker = workers.find((worker) => worker.id === pipelineSource?.workspace?.workerId);
 
   return (
     <div className="space-y-6 p-6">
@@ -467,6 +686,97 @@ const AgentizHome: React.FC = () => {
 
         {selectedPipelineSpec && (
           <div className="mt-4 space-y-2">
+            <div className="rounded border p-2 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">С чем работает пайплайн</span>
+                <select
+                  value={pipelineSourceKind}
+                  onChange={(event) => {
+                    if (event.target.value === "repository") {
+                      setPipelineSource({ kind: "repository" });
+                      return;
+                    }
+                    const worker = sourceWorker ?? workspaceWorkers[0];
+                    const workspace = worker?.workspaces?.[0];
+                    if (!worker || !workspace) return;
+                    setPipelineSource({ kind: "worker_workspace", workspace: { workerId: worker.id, workspaceKey: workspace.key } });
+                  }}
+                  disabled={busy || (pipelineSourceKind === "repository" && workspaceWorkers.length === 0)}
+                  className="rounded border px-2 py-1 disabled:opacity-50"
+                >
+                  <option value="repository">Репозиторий проекта (GitHub/GitLab)</option>
+                  <option value="worker_workspace">Готовая папка на воркере</option>
+                </select>
+
+                {pipelineSourceKind === "repository" && (
+                  <select
+                    value={pipelineSource?.repositoryId ?? ""}
+                    onChange={(event) => setPipelineRepository(event.target.value)}
+                    disabled={busy}
+                    className="rounded border px-2 py-1 disabled:opacity-50"
+                  >
+                    <option value="">Репозиторий задачи</option>
+                    {projectRepositories.map((link) => (
+                      <option key={link.id} value={link.repositoryId}>
+                        {link.repository?.pathWithNamespace ?? link.repositoryId}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {pipelineSourceKind === "worker_workspace" && (
+                  <>
+                    <select
+                      value={pipelineSource?.workspace?.workerId ?? ""}
+                      onChange={(event) => {
+                        const worker = workspaceWorkers.find((item) => item.id === event.target.value);
+                        const workspace = worker?.workspaces?.[0];
+                        if (!worker || !workspace) return;
+                        setPipelineSource({ kind: "worker_workspace", workspace: { workerId: worker.id, workspaceKey: workspace.key } });
+                      }}
+                      disabled={busy}
+                      className="rounded border px-2 py-1 disabled:opacity-50"
+                    >
+                      {workspaceWorkers.map((worker) => <option key={worker.id} value={worker.id}>{worker.name}</option>)}
+                      {sourceWorker && !workspaceWorkers.some((worker) => worker.id === sourceWorker.id) && (
+                        <option value={sourceWorker.id}>{sourceWorker.name} (папок нет)</option>
+                      )}
+                    </select>
+                    <select
+                      value={pipelineSource?.workspace?.workspaceKey ?? ""}
+                      onChange={(event) => {
+                        const workerId = pipelineSource?.workspace?.workerId;
+                        if (!workerId) return;
+                        setPipelineSource({ kind: "worker_workspace", workspace: { workerId, workspaceKey: event.target.value } });
+                      }}
+                      disabled={busy || !sourceWorker}
+                      className="rounded border px-2 py-1 disabled:opacity-50"
+                    >
+                      {(sourceWorker?.workspaces ?? []).map((workspace) => (
+                        <option key={workspace.key} value={workspace.key}>{workspace.label ?? workspace.key}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
+              </div>
+
+              {pipelineSourceKind === "worker_workspace" ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Запуски этого пайплайна уходят только на выбранного воркера и выполняются прямо в{" "}
+                  <code>{sourceWorker?.workspaces?.find((item) => item.key === pipelineSource?.workspace?.workspaceKey)?.path ?? "—"}</code>.
+                  Репозиторий не нужен, коммит и PR недоступны, стадии выполняются в режиме Host.
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {pipelineSource?.repositoryId
+                    ? "Код берётся из выбранного репозитория и коммит уезжает обратно в него же. Комментарий по задаче уходит туда, где задача живёт."
+                    : "Код берётся из репозитория, из которого пришла задача, и коммит уезжает туда же."}
+                  {projectRepositories.length === 0 && " Репозитории проекта настраиваются на экране «Репозитории»."}
+                  {workspaceWorkers.length === 0 && " Готовых папок ни у одного воркера пока не объявлено."}
+                </p>
+              )}
+            </div>
+
             <label className="flex items-center gap-2 rounded border p-2 text-sm">
               <input
                 type="checkbox"
@@ -497,7 +807,8 @@ const AgentizHome: React.FC = () => {
                 >
                   <option value="" disabled>Workspace</option>
                   <option value="host">Host</option>
-                  <option value="docker">Docker</option>
+                  {/* A container has its own filesystem, so it cannot see the worker's directory. */}
+                  <option value="docker" disabled={pipelineSourceKind === "worker_workspace"}>Docker</option>
                 </select>
               </div>
             ))}
@@ -614,6 +925,12 @@ const AgentizHome: React.FC = () => {
                       .map((id) => projects.find((p) => p.id === id)?.name ?? id)
                       .join(", ")
                   : "все"}
+                {" · репозитории: "}
+                {worker.allowedRepositoryIds?.length
+                  ? worker.allowedRepositoryIds
+                      .map((id) => repositoryOptions.find((r) => r.id === id)?.pathWithNamespace ?? id)
+                      .join(", ")
+                  : "все разрешённых проектов"}
               </div>
               {worker.version && (
                 <div className="mt-1 text-xs text-muted-foreground">
@@ -698,7 +1015,37 @@ const AgentizHome: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                <select
+                  value=""
+                  disabled={busy || worker.status === "revoked" || repositoryOptions.length === 0}
+                  hidden={worker.status === "revoked"}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (!value) return;
+                    const next =
+                      value === "__all__"
+                        ? []
+                        : Array.from(new Set([...(worker.allowedRepositoryIds ?? []), value]));
+                    workerAction("setWorkerRepositories", worker, { allowedRepositoryIds: next });
+                  }}
+                  className="rounded border px-2 py-1 text-xs"
+                >
+                  <option value="">Доступ к репозиториям…</option>
+                  <option value="__all__">Все репозитории</option>
+                  {repositoryOptions.map((repository) => (
+                    <option key={repository.id} value={repository.id}>
+                      + {repository.pathWithNamespace}
+                    </option>
+                  ))}
+                </select>
               </div>
+              {worker.status !== "revoked" && (
+                <WorkerWorkspacesEditor
+                  worker={worker}
+                  busy={busy}
+                  onSave={(workspaces) => workerAction("setWorkerWorkspaces", worker, { workspaces })}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -776,7 +1123,7 @@ const AgentizHome: React.FC = () => {
                   <pre className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{run.resultSummary}</pre>
                 )}
                 {run.errorMessage && <div className="mt-2 text-xs" style={{ color: "#dc2626" }}>{run.errorMessage}</div>}
-                <div className="mt-2 flex gap-3 text-xs">
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
                   {run.commitUrl && (
                     <a href={run.commitUrl} target="_blank" rel="noreferrer" className="underline">
                       Коммит
@@ -787,7 +1134,63 @@ const AgentizHome: React.FC = () => {
                       Ответ в трекере
                     </a>
                   )}
+                  <button onClick={() => openDiff(run.id)} className="underline">
+                    {openDiffRunId === run.id ? "Скрыть дифф" : "Дифф"}
+                  </button>
                 </div>
+
+                {openDiffRunId === run.id && (
+                  <div className="mt-2 rounded border p-2">
+                    {!runDiff ? (
+                      <p className="text-xs text-muted-foreground">Этот запуск ничего не менял в коде.</p>
+                    ) : (
+                      <>
+                        <div className="text-xs text-muted-foreground">
+                          от <code>{(runDiff.baseSha ?? "—").slice(0, 12)}</code>
+                          {" · "}
+                          {runDiff.stats?.files ?? runDiff.ops?.length ?? 0} файл(ов),{" "}
+                          +{runDiff.stats?.insertions ?? 0} −{runDiff.stats?.deletions ?? 0}
+                          {runDiff.appliedAt
+                            ? ` · применено ${new Date(runDiff.appliedAt).toLocaleString()}, коммит ${(runDiff.appliedCommitSha ?? "").slice(0, 12)}`
+                            : " · в репозиторий не отправлено"}
+                        </div>
+                        <ul className="mt-2 space-y-0.5 text-xs">
+                          {(runDiff.ops ?? []).map((op, index) => (
+                            <li key={index}>
+                              {/* One glyph per operation: the list is scanned, not read. */}
+                              <span className="mr-1 font-mono">
+                                {op.op === "delete" ? "−" : op.op === "rename" ? "→" : "~"}
+                              </span>
+                              <code>{op.op === "rename" ? `${op.from} → ${op.to}` : op.path}</code>
+                              {op.mode && <span className="ml-1 text-muted-foreground">{op.mode}</span>}
+                            </li>
+                          ))}
+                        </ul>
+                        {runDiff.truncated && (
+                          <div className="mt-2 text-xs" style={{ color: "#b45309" }}>
+                            Патч обрезан по лимиту размера. Операции сохранены полностью — применяются именно они.
+                          </div>
+                        )}
+                        {runDiff.patch && (
+                          <pre className="mt-2 max-h-96 overflow-auto rounded border p-2 text-xs" style={{ backgroundColor: "#f8fafc" }}>
+                            {runDiff.patch}
+                          </pre>
+                        )}
+                        {/* Only offered while the change is still held: applying twice is refused
+                            by the server, and a button that always fails is worse than no button. */}
+                        {!runDiff.appliedAt && (runDiff.ops?.length ?? 0) > 0 && (
+                          <button
+                            onClick={() => applyRunDiff(run.id)}
+                            disabled={busy}
+                            className="mt-2 rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                          >
+                            Применить в репозиторий
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

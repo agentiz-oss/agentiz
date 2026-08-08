@@ -2,7 +2,13 @@
 
 - Run the server with `npm run dev` (TSX).
 - Run `npm run build` after TypeScript changes.
-- Local application layers: `layers/app-agentiz` and `layers/app-agentiz-gitlab-integration`.
+- Local application layers: `layers/app-agentiz` (core), `layers/app-agentiz-gitlab-integration`,
+  `layers/app-agentiz-github-integration`, `layers/app-agentiz-mobile-api`.
+- Repositories are a **core** concept: `AgentGitConnection` / `AgentRepository` /
+  `AgentProjectRepository` live in `app-agentiz`, and a provider layer supplies only the OAuth
+  dialect plus a `GitConnectionAuthority` (token renewal + repository mirroring). Do not add
+  per-platform repository tables — a repository id has to mean the same thing to the runner
+  allowlist, the job snapshot and the stored diff.
 - A new layer must be added to `tsconfig.json` **and** `tsconfig.runtime.json` includes — tsx only
   applies `experimentalDecorators` to files matched by the runtime config, otherwise the app fails
   to load with "Decorators are not valid here".
@@ -15,6 +21,12 @@
   lives) and `taskManagers` (where tasks come from). A project can mix them freely.
 - Shared mutable registries must live on a `Symbol.for` global: under tsx a module can be
   instantiated twice (ESM + CJS graphs) and plain module state silently splits in two.
+- A pipeline's `spec.source` decides what a run works on: `repository` (default) resolves through a
+  git provider, `worker_workspace` runs in a directory declared on one worker and pins the job to it
+  via `AgentRunJob.requiredWorkerId`. Anything filtering the job queue must be added to **both**
+  claim sites — `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and
+  as a column, not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and
+  JSON filtering differs between the postgres and sqlite deployments.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

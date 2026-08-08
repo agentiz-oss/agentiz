@@ -6,12 +6,24 @@ import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
 import { AgentTaskComment } from '../models/AgentTaskComment';
-import { createGitProviderForTask, resolveTaskRepository } from '../lib/git';
-import type { FileChange } from '../lib/git';
-import { assertValidSpec, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
+import { AgentWorker } from '../models/AgentWorker';
+import { AgentRunDiff } from '../models/AgentRunDiff';
+import { AgentGitConnection } from '../models/AgentGitConnection';
+import { AgentProjectRepository } from '../models/AgentProjectRepository';
+import { AgentRepository } from '../models/AgentRepository';
+import { RepositoryResolverService } from './RepositoryResolverService';
+import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
+import type { FileChange, FileOp } from '../lib/git';
+import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
-import type { AgentRunTrigger, AgentTaskStatus, PipelineSpecDef } from '../types/agentiz';
+import type {
+  AgentRunTrigger,
+  AgentTaskStatus,
+  PipelineFinalActionDef,
+  PipelineSpecDef,
+  PipelineWorkerWorkspaceDef,
+} from '../types/agentiz';
 
 export interface RunConversationTurn {
   id: string;
@@ -20,6 +32,19 @@ export interface RunConversationTurn {
   body: string;
   createdAt: Date;
   runId: string | null;
+}
+
+/**
+ * The directory a `worker_workspace` run executes in, resolved from the pipeline's
+ * `source.workspace` at queue time. The path is resolved here rather than stored in the spec so
+ * that correcting a path on the worker record fixes every pipeline pointing at it.
+ */
+export interface RunWorkspaceRef {
+  workerId: string;
+  workerName: string;
+  key: string;
+  path: string;
+  label: string | null;
 }
 
 export interface RunConversation {
@@ -130,7 +155,9 @@ export class AgentPipelineService {
 
     const stages = orderedStages(run.pipelineSnapshot);
     const previousOutputs: Record<string, AgentStageResult> = {};
-    const changesByPath = new Map<string, FileChange>();
+    // An ordered list, not a per-path map: delete after upsert collapses, and a rename touches two
+    // paths at once, so sequence carries information a map would throw away.
+    let fileOps: FileOp[] = [];
     let failed = false;
     let failureMessage: string | null = null;
 
@@ -166,9 +193,7 @@ export class AgentPipelineService {
         });
 
         previousOutputs[stage.role] = result;
-        for (const change of result.fileChanges ?? []) {
-          changesByPath.set(change.path, change);
-        }
+        fileOps = mergeFileOps(fileOps, normalizeFileChanges(result.fileChanges));
 
         await execution.update({
           status: 'succeeded',
@@ -207,7 +232,7 @@ export class AgentPipelineService {
         run,
         task,
         project,
-        changes: [...changesByPath.values()],
+        changes: fileOps,
         summary,
       });
     } catch (error) {
@@ -219,8 +244,7 @@ export class AgentPipelineService {
     }
 
     await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null });
-    const finalTaskStatus: AgentTaskStatus =
-      run.pipelineSnapshot.finalAction.type === 'commit_and_pr' ? 'waiting_review' : 'done';
+    const finalTaskStatus: AgentTaskStatus = this.taskStatusAfter(run.pipelineSnapshot.finalAction);
     await task.update({ status: finalTaskStatus });
     await writeLog(run.id, run.projectId, null, 'info', `Run succeeded, task moved to "${finalTaskStatus}"`);
 
@@ -234,7 +258,18 @@ export class AgentPipelineService {
     options: { triggerCommentId?: string | null } = {},
   ): Promise<AgentRun> {
     const run = await this.createRun(taskId, trigger, options);
-    await AgentWorkerJobBuilder.enqueueRun(run);
+    try {
+      await AgentWorkerJobBuilder.enqueueRun(run);
+    } catch (error) {
+      // Building the payload resolves the repository or the worker directory, so it fails on a
+      // misconfiguration. Without this the run would stay `pending` and the task `queued` forever,
+      // with the real reason visible only to whoever made the request.
+      const message = error instanceof Error ? error.message : String(error);
+      await run.update({ status: 'failed', finishedAt: new Date(), errorMessage: message });
+      await AgentTask.update({ status: 'failed' }, { where: { id: run.taskId } });
+      await writeLog(run.id, run.projectId, null, 'error', `Run could not be queued: ${message}`);
+      throw error;
+    }
     return run;
   }
 
@@ -276,14 +311,28 @@ export class AgentPipelineService {
     }
   }
 
+  /**
+   * Where the task ends up once the run succeeded.
+   *
+   * `waiting_review` means a person still has to look: either a PR is open upstream, or the change
+   * is held in Agentiz by `requireApproval` and nothing has been pushed at all.
+   */
+  static taskStatusAfter(action: PipelineFinalActionDef): AgentTaskStatus {
+    if (action.requireApproval && (action.type === 'commit' || action.type === 'commit_and_pr')) return 'waiting_review';
+    return action.type === 'commit_and_pr' ? 'waiting_review' : 'done';
+  }
+
   static async applyFinalAction(params: {
     run: AgentRun;
     task: AgentTask;
     project: AgentProject;
-    changes: FileChange[];
+    changes: Array<FileChange | FileOp>;
     summary: string;
+    /** Stored diff, when the caller already wrote one; used to hold the change back. */
+    diff?: AgentRunDiff | null;
   }): Promise<void> {
-    const { run, task, project, changes, summary } = params;
+    const { run, task, project, summary, diff } = params;
+    const changes = normalizeFileChanges(params.changes);
     const action = run.pipelineSnapshot.finalAction;
     const templateValues = {
       taskId: task.id,
@@ -302,10 +351,10 @@ export class AgentPipelineService {
       return;
     }
 
-    // Resolved per task: with integrations a project can span several repositories.
-    const provider = await createGitProviderForTask(task, project);
-
     if (action.type === 'comment_only') {
+      // Deliberately the *task's* provider, not the run's code repository: a comment belongs where
+      // the task lives, and those are not always the same place.
+      const provider = await createGitProviderForTask(task, project);
       const body = `Agentiz run \`${run.id}\` finished.\n\n${summary}`;
       const comment = await provider.commentOnTask(task.externalId, body);
       await run.update({ responseUrl: comment.url });
@@ -314,32 +363,157 @@ export class AgentPipelineService {
     }
 
     if (changes.length === 0) {
-      throw new Error('Final action commit_and_pr requested but no stage produced file changes');
+      throw new Error(`Final action ${action.type} requested but no stage produced file changes`);
     }
 
-    const branch = `${action.branchPrefix ?? 'agentiz/'}${task.externalId}`;
+    // Nothing reaches the repository: the diff is already stored, and somebody applies it later
+    // through applyStoredDiff. Not an error — this is what the pipeline was configured to do.
+    if (action.requireApproval) {
+      await writeLog(run.id, run.projectId, null, 'info',
+        `Final action: ${action.type} held for approval, ${changes.length} operation(s) waiting in Agentiz`,
+        { diffId: diff?.id ?? null });
+      return;
+    }
+
+    await this.pushChanges({ run, task, project, action, changes, summary, templateValues, diff: diff ?? null });
+  }
+
+  /**
+   * Commits the operations and, for `commit_and_pr`, opens the pull request.
+   *
+   * Shared by the automatic path and by `applyStoredDiff`, so an approved change goes through
+   * exactly the same code as an unattended one.
+   */
+  private static async pushChanges(params: {
+    run: AgentRun;
+    task: AgentTask;
+    project: AgentProject;
+    action: PipelineFinalActionDef;
+    changes: FileOp[];
+    summary: string;
+    templateValues: Record<string, string>;
+    diff: AgentRunDiff | null;
+  }): Promise<void> {
+    const { run, task, project, action, changes, summary, templateValues, diff } = params;
+    // The repository the code was taken from — the commit goes back into it, not into whichever
+    // repository the task happened to arrive from.
+    const provider = await this.providerForRunCode(run, task, project);
+    const baseBranch = run.baseRef ?? project.repoConfig?.defaultBranch;
+
+    // `commit` pushes onto the target branch itself; `commit_and_pr` keeps the work on its own
+    // branch so the pull request has something to compare against.
+    const branch = action.type === 'commit'
+      ? (action.branch?.trim() || baseBranch || 'main')
+      : `${action.branchPrefix ?? 'agentiz/'}${task.externalId}`;
+
     const message = renderTemplate(
       action.commitMessageTemplate ?? 'agentiz: {{title}} (#{{externalId}})',
       templateValues,
     );
 
-    const commit = await provider.commitChanges({
-      branch,
-      baseBranch: project.repoConfig?.defaultBranch,
-      message,
-      changes,
-    });
+    const commit = await provider.commitChanges({ branch, baseBranch, message, changes });
     await run.update({ commitSha: commit.sha, commitUrl: commit.url });
-    await writeLog(run.id, run.projectId, null, 'info', `Committed ${changes.length} file(s) to ${branch}: ${commit.url}`);
+    if (diff) await diff.update({ appliedAt: new Date(), appliedCommitSha: commit.sha });
+    await writeLog(run.id, run.projectId, null, 'info', `Committed ${changes.length} operation(s) to ${branch}: ${commit.url}`);
+
+    if (action.type === 'commit') return;
 
     const pr = await provider.openPullRequest({
       branch,
-      baseBranch: project.repoConfig?.defaultBranch,
+      baseBranch,
       title: renderTemplate(action.pullRequestTitleTemplate ?? 'agentiz: {{title}}', templateValues),
       body: `Automated by agentiz run \`${run.id}\` for task #${task.externalId}.\n\n${summary}`,
     });
     await run.update({ responseUrl: pr.url });
     await writeLog(run.id, run.projectId, null, 'info', `Opened pull request ${pr.url}`);
+  }
+
+  /**
+   * Pushes a diff that `requireApproval` held back.
+   *
+   * Refuses a second application rather than producing a second commit: the panel button is easy to
+   * press twice, and `appliedAt` is the only thing standing between that and a duplicate.
+   */
+  static async applyStoredDiff(runId: string, actor = 'admin'): Promise<AgentRunDiff> {
+    const diff = await AgentRunDiff.findOne({ where: { runId } });
+    if (!diff) throw new Error(`Run ${runId} has no stored diff`);
+    if (diff.appliedAt) {
+      throw new Error(`Run ${runId} was already applied at ${diff.appliedAt.toISOString()} (commit ${diff.appliedCommitSha ?? 'unknown'})`);
+    }
+
+    const run = await AgentRun.findByPk(runId);
+    if (!run) throw new Error(`AgentRun ${runId} not found`);
+    const [task, project] = await Promise.all([AgentTask.findByPk(run.taskId), AgentProject.findByPk(run.projectId)]);
+    if (!task || !project) throw new Error(`AgentRun ${runId}: task or project is missing`);
+
+    const action = run.pipelineSnapshot.finalAction;
+    const changes = normalizeFileChanges(diff.ops ?? []);
+    if (changes.length === 0) throw new Error(`Run ${runId} stored no file operations to apply`);
+
+    await this.pushChanges({
+      run,
+      task,
+      project,
+      action,
+      changes,
+      summary: run.resultSummary ?? '',
+      templateValues: { taskId: task.id, externalId: task.externalId, title: task.title, summary: run.resultSummary ?? '' },
+      diff,
+    });
+
+    await task.update({ status: action.type === 'commit_and_pr' ? 'waiting_review' : 'done' });
+    await writeLog(run.id, run.projectId, null, 'info', `Stored diff applied by ${actor}`, { diffId: diff.id });
+    return diff;
+  }
+
+  /**
+   * The repository this pipeline pinned, if it pinned one.
+   *
+   * Only a repository already linked to the same project is accepted: a pipeline naming an
+   * arbitrary `AgentRepository.id` must not become a way to reach a repository the project was
+   * never given.
+   */
+  static async pinnedRepository(
+    spec: PipelineSpecDef,
+    project: AgentProject,
+  ): Promise<{ repository: AgentRepository; connection: AgentGitConnection; link: AgentProjectRepository } | null> {
+    const repositoryId = spec.source?.repositoryId?.trim();
+    if (!repositoryId || isWorkspaceSource(spec.source)) return null;
+
+    const link = await AgentProjectRepository.findOne({
+      where: { projectId: project.id, repositoryId, isActive: true },
+    });
+    if (!link) {
+      throw new Error(
+        `Pipeline points at repository ${repositoryId}, which is not linked to project ${project.slug} (or the link is disabled)`,
+      );
+    }
+    const [repository, connection] = await Promise.all([
+      AgentRepository.findByPk(link.repositoryId),
+      AgentGitConnection.findByPk(link.connectionId),
+    ]);
+    if (!repository || !connection) {
+      throw new Error(`Pipeline repository ${repositoryId} has lost its repository or connection row`);
+    }
+    return { repository, connection, link };
+  }
+
+  /**
+   * The provider the run's **code** goes through — for checkout and for the commit alike.
+   *
+   * One repository per run, used at both ends: the code is committed back where it was taken from.
+   * Note that this is not always the same provider as the task's — a task can arrive from one
+   * place while the code being changed lives in another, which is exactly what pinning is for.
+   * Comments go to the task's provider, not to this one.
+   */
+  static async providerForRunCode(run: AgentRun, task: AgentTask, project: AgentProject) {
+    const pinned = await this.pinnedRepository(run.pipelineSnapshot, project);
+    if (!pinned) return createGitProviderForTask(task, project);
+    return RepositoryResolverService.providerFor(
+      pinned.repository,
+      pinned.connection,
+      run.baseRef ?? pinned.link.config?.defaultBranch,
+    );
   }
 
   static async cancelRun(runId: string, reason = 'Cancelled by user'): Promise<AgentRun> {
@@ -382,6 +556,12 @@ export class AgentPipelineService {
 export class AgentWorkerJobBuilder {
   static async enqueueRun(run: AgentRun): Promise<AgentRunJob> {
     const snapshot = await this.buildSnapshot(run);
+    // Only the machine holding the directory can run such a job, so the restriction is recorded on
+    // the job itself and enforced by every claim query rather than checked after the fact.
+    const workspace = snapshot.workspace as RunWorkspaceRef | null;
+    const requiredWorkerId = workspace?.workerId ?? null;
+    // Mirrored out of the snapshot for the same reason: the claim query has to filter on it in SQL.
+    const repositoryId = (snapshot.repository as { repositoryId?: string } | null)?.repositoryId ?? null;
     const [job, created] = await AgentRunJob.findOrCreate({
       where: { runId: run.id },
       defaults: {
@@ -391,6 +571,8 @@ export class AgentWorkerJobBuilder {
         priority: 100,
         attempt: 0,
         workerId: null,
+        repositoryId,
+        requiredWorkerId,
         leaseTokenHash: null,
         lockedUntil: null,
         availableAt: new Date(),
@@ -402,10 +584,13 @@ export class AgentWorkerJobBuilder {
       },
     });
     if (!created && job.status === 'released') {
-      await job.update({ status: 'queued', availableAt: new Date(), snapshot });
+      await job.update({ status: 'queued', availableAt: new Date(), snapshot, repositoryId, requiredWorkerId });
     }
     if (created) {
-      await writeLog(run.id, run.projectId, null, 'info', 'Worker job queued', { jobId: job.id });
+      await writeLog(run.id, run.projectId, null, 'info', 'Worker job queued', {
+        jobId: job.id,
+        ...(workspace ? { workerId: workspace.workerId, workspace: workspace.key, path: workspace.path } : {}),
+      });
     }
     return job;
   }
@@ -439,22 +624,50 @@ export class AgentWorkerJobBuilder {
       };
     }));
 
+    // A pipeline whose source is a worker directory has no hosted repository by definition: the
+    // environment already exists on that machine, so nothing is resolved through a git provider.
+    const source = run.pipelineSnapshot.source;
+    const workspace = isWorkspaceSource(source)
+      ? await this.resolveWorkspace(source!.workspace as PipelineWorkerWorkspaceDef)
+      : null;
+
     // finalAction 'none' never touches git (see finalize()), so a task-manager-only project with
     // no repository at all — neither its own repoConfig nor an integration — must still be able to
     // queue a job instead of failing before the first stage even runs.
     const finalAction = run.pipelineSnapshot.finalAction;
     let repository: Record<string, unknown> | null = null;
-    if (finalAction.type !== 'none') {
-      const resolved = await resolveTaskRepository(task, project);
+    if (!workspace && finalAction.type !== 'none') {
+      // The pipeline's own repository wins when it names one; otherwise the task decides, as before.
+      const pinned = await AgentPipelineService.pinnedRepository(run.pipelineSnapshot, project);
+      const resolved = pinned
+        ? {
+            provider: pinned.repository.provider,
+            baseUrl: pinned.connection.baseUrl ?? undefined,
+            owner: pinned.repository.owner,
+            repo: pinned.repository.repo,
+            defaultBranch: pinned.link.config?.defaultBranch ?? pinned.repository.defaultBranch ?? undefined,
+            repositoryId: pinned.repository.id,
+            cloneUrl: pinned.repository.cloneUrl ?? undefined,
+          }
+        : await resolveTaskRepository(task, project);
       const baseHost = resolved.baseUrl
         ? resolved.baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
         : resolved.provider === 'gitlab' ? 'gitlab.com' : 'github.com';
+      const baseRef = this.resolveBaseRef(task, run.pipelineSnapshot, resolved.defaultBranch);
+      const baseSha = await this.resolveBaseSha(run, task, project, baseRef, resolved);
+      // Recorded on the run so the final action does not resolve the branch a second time, and so
+      // the run card can show which commit the work started from.
+      await run.update({ baseRef, baseSha });
       repository = {
+        repositoryId: resolved.repositoryId ?? null,
         provider: resolved.provider,
-        cloneUrl: `https://${baseHost}/${resolved.owner}/${resolved.repo}.git`,
+        // The platform's own clone URL when the repository came from a connection; assembled from
+        // the host only for a project's plain repoConfig, which carries no URL of its own.
+        cloneUrl: resolved.cloneUrl ?? `https://${baseHost}/${resolved.owner}/${resolved.repo}.git`,
         owner: resolved.owner,
         repo: resolved.repo,
-        baseRef: resolved.defaultBranch ?? 'main',
+        baseRef,
+        baseSha,
       };
     }
     return {
@@ -462,6 +675,8 @@ export class AgentWorkerJobBuilder {
       runId: run.id,
       lineage: { triggerCommentId: run.triggerCommentId, previousRunId: run.previousRunId },
       repository,
+      // Present only for a worker-directory pipeline; the worker runs every stage in `path`.
+      workspace,
       task: {
         id: task.id,
         externalId: task.externalId,
@@ -475,6 +690,85 @@ export class AgentWorkerJobBuilder {
       finalAction: run.pipelineSnapshot.finalAction,
       validation: { commands: [], timeoutSec: 1800 },
       limits: { jobTimeoutSec: 3600, maxOutputBytes: 10485760 },
+    };
+  }
+
+  /**
+   * Which branch this run works on, most specific first:
+   *
+   *   1. `AgentTask.branchRef`      — a branch somebody set on the task itself;
+   *   2. tag `branch:<ref>`         — a branch set in the tracker, where there is no such field;
+   *   3. `spec.source.branch`       — the pipeline's default;
+   *   4. the repository's own default branch;
+   *   5. `main`.
+   *
+   * Steps 1 and 2 are skipped when `source.allowTaskOverride` is explicitly false — that is for a
+   * project which must always build from one branch, whatever a task asks for.
+   */
+  static resolveBaseRef(task: AgentTask, spec: PipelineSpecDef, repositoryDefault?: string | null): string {
+    const source = spec.source;
+    if (source?.allowTaskOverride !== false) {
+      const fromTask = task.branchRef?.trim();
+      if (fromTask) return fromTask;
+      const fromTag = branchFromTags(task.tags);
+      if (fromTag) return fromTag;
+    }
+    return source?.branch?.trim() || repositoryDefault?.trim() || 'main';
+  }
+
+  /**
+   * The commit that branch points at right now.
+   *
+   * A failure here stops the run before the job is queued. Queueing with `baseSha: null` and
+   * letting the worker fail on checkout would surface the same mistake five minutes later, in
+   * somebody else's context, with a worker-side message instead of "branch X not found in Y".
+   */
+  private static async resolveBaseSha(
+    run: AgentRun,
+    task: AgentTask,
+    project: AgentProject,
+    baseRef: string,
+    repository: { owner: string; repo: string },
+  ): Promise<string> {
+    // Resolved in the repository the code actually comes from, which is not necessarily the task's.
+    const provider = await AgentPipelineService.providerForRunCode(run, task, project);
+    try {
+      return (await provider.resolveRef(baseRef)).sha;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not resolve branch "${baseRef}" in ${repository.owner}/${repository.repo}: ${message}`);
+    }
+  }
+
+  /**
+   * Turns `source.workspace` into the concrete directory the worker will use.
+   *
+   * Every failure here is a configuration mistake an operator has to see by name — a job pinned to
+   * a worker that no longer offers the directory would otherwise sit in the queue forever, because
+   * no other worker is allowed to take it.
+   */
+  static async resolveWorkspace(ref: PipelineWorkerWorkspaceDef): Promise<RunWorkspaceRef> {
+    const worker = await AgentWorker.findByPk(ref.workerId);
+    if (!worker) {
+      throw new Error(`Pipeline runs in a worker directory, but worker ${ref.workerId} no longer exists`);
+    }
+    if (worker.status === 'revoked') {
+      throw new Error(`Worker "${worker.name}" is revoked, so its directory "${ref.workspaceKey}" cannot be used`);
+    }
+    const declared = worker.workspace(ref.workspaceKey);
+    if (!declared) {
+      const known = (worker.workspaces ?? []).map((item) => item.key).join(', ') || 'none';
+      throw new Error(`Worker "${worker.name}" has no directory "${ref.workspaceKey}" (declared: ${known})`);
+    }
+    if (!declared.path?.trim()) {
+      throw new Error(`Directory "${ref.workspaceKey}" on worker "${worker.name}" has an empty path`);
+    }
+    return {
+      workerId: worker.id,
+      workerName: worker.name,
+      key: declared.key,
+      path: declared.path.trim(),
+      label: declared.label ?? null,
     };
   }
 

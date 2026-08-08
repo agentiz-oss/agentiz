@@ -7,6 +7,30 @@
 
 export type GitProviderType = 'github' | 'gitlab';
 
+/**
+ * Lifecycle of one authorized account at a hosting platform. `expired` means the stored token is
+ * past its lifetime and could not be refreshed, `revoked` that it was deliberately withdrawn —
+ * both need a fresh authorization, but only the second one is somebody's decision.
+ */
+export type GitConnectionStatus = 'active' | 'expired' | 'revoked' | 'error';
+
+export interface GitConnectionSecrets {
+  accessToken?: string;
+  refreshToken?: string;
+}
+
+/** What a repository linked to a project is used for inside the pipeline. */
+export type ProjectRepositoryRole = 'source' | 'target' | 'both';
+
+export interface ProjectRepositoryConfig {
+  /** Minimum seconds between task syncs of this link; 0/absent = every scheduled tick. */
+  pollIntervalSec?: number;
+  /** Raw passthrough filter for the platform's issue listing (state, labels, milestone, ...). */
+  query?: Record<string, unknown>;
+  /** Branch commits are based on; falls back to the repository's own default branch. */
+  defaultBranch?: string;
+}
+
 /** Internal lifecycle of a synced tracker task, independent from the tracker's own status field. */
 export type AgentTaskStatus =
   | 'new'
@@ -73,6 +97,21 @@ export interface AgentWorkerCapabilities {
   [key: string]: unknown;
 }
 
+/**
+ * A prepared directory on the worker's own machine, declared by an admin on the worker record.
+ *
+ * This is what makes a pipeline able to work "in place" instead of against a hosted repository:
+ * the environment (dependencies, .env files, a git checkout somebody maintains by hand) already
+ * exists on that host, and the pipeline only names it. `key` is what a pipeline stores, so it must
+ * stay stable when the path is corrected.
+ */
+export interface AgentWorkerWorkspace {
+  key: string;
+  path: string;
+  label?: string;
+  description?: string;
+}
+
 /** What happens to the run when a stage fails. */
 export type StageFailurePolicy = 'stop' | 'continue';
 
@@ -98,13 +137,66 @@ export interface PipelineStageDef {
   runtime: PipelineStageRuntimeDef;
 }
 
-export type PipelineFinalActionType = 'commit_and_pr' | 'comment_only' | 'none';
+/**
+ * `commit` pushes straight onto the target branch without opening anything for review;
+ * `commit_and_pr` keeps the agent's work on its own branch and opens a PR/MR from it.
+ */
+export type PipelineFinalActionType = 'commit_and_pr' | 'commit' | 'comment_only' | 'none';
 
 export interface PipelineFinalActionDef {
   type: PipelineFinalActionType;
   branchPrefix?: string;
+  /** Target branch for `commit`. Defaults to the branch the run took its code from. */
+  branch?: string;
   commitMessageTemplate?: string;
   pullRequestTitleTemplate?: string;
+  /**
+   * Hold the change in Agentiz instead of pushing it. The diff is stored either way (see
+   * AgentRunDiff); with this on, nothing reaches the repository until somebody applies it.
+   */
+  requireApproval?: boolean;
+}
+
+/**
+ * Where the code a run works on comes from.
+ *
+ * `repository` is the historical behaviour: the project's git provider decides what the run sees.
+ * `worker_workspace` skips hosting entirely — the run is pinned to one worker and executes in a
+ * directory that already exists on that machine.
+ */
+export type PipelineSourceKind = 'repository' | 'worker_workspace';
+
+/** Names a directory declared on one worker (AgentWorker.workspaces[].key). */
+export interface PipelineWorkerWorkspaceDef {
+  workerId: string;
+  workspaceKey: string;
+}
+
+export interface PipelineSourceDef {
+  /** Absent means `repository`, so every spec written before this field keeps its meaning. */
+  kind?: PipelineSourceKind;
+  /** Required when kind is `worker_workspace`, ignored otherwise. */
+  workspace?: PipelineWorkerWorkspaceDef;
+  /**
+   * Which of the project's repositories this pipeline works on (`AgentRepository.id`).
+   *
+   * Absent = the repository the task itself came from, which is the historical behaviour and the
+   * right default for a project whose tasks and code live together. Setting it is for the case
+   * where they do not: tasks arrive from one place, the code being changed is somewhere else.
+   *
+   * Only a repository already linked to the same project is accepted — a pipeline must not be able
+   * to reach a repository the project was never given.
+   */
+  repositoryId?: string;
+  /**
+   * Default branch for this pipeline. Absent = the repository's own default branch.
+   *
+   * Only the *default* lives here: a task may carry its own branch (`AgentTask.branchRef` or a
+   * `branch:<ref>` tag), which wins unless `allowTaskOverride` is explicitly false — that is for a
+   * project which must always build from one branch.
+   */
+  branch?: string;
+  allowTaskOverride?: boolean;
 }
 
 /** Events that may create a new run for a task matching this pipeline. */
@@ -125,6 +217,8 @@ export interface PipelineSpecDef {
   finalAction: PipelineFinalActionDef;
   /** Optional, deliberately opt-in automation for this project's pipeline. */
   triggers?: PipelineTriggersDef;
+  /** Absent = work against the project's repository, as every pre-existing spec does. */
+  source?: PipelineSourceDef;
 }
 
 export interface AgentProjectRepoConfig {

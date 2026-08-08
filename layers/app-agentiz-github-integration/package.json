@@ -1,0 +1,12 @@
+{
+  "name": "@agentiz/app-agentiz-github-integration",
+  "appId": "app-agentiz-github-integration",
+  "appName": "App Agentiz GitHub Integration",
+  "version": "1.0.0",
+  "description": "GitHub OAuth integration for Agentiz: authorizes against a GitHub OAuth application, mirrors the repositories that token can reach into AgentRepository and lets many of them be linked to one Agentiz project.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-adminizer": "*",
+    "app-agentiz": "*"
+  }
+}

@@ -40,4 +40,36 @@ export function assertValidSpec(spec: unknown): asserts spec is PipelineSpecDef 
   if (sorted.some((value, index) => value !== index + 1)) {
     throw new PipelineSpecError(`Pipeline spec stage orders must be 1..N without gaps, got [${sorted.join(', ')}]`);
   }
+
+  assertSourceIsConsistent(spec as PipelineSpecDef);
+}
+
+/**
+ * Cross-field rules the JSON schema deliberately does not express: they read better as messages
+ * than as `if/then` branches, and both are about a combination that would only fail at run time.
+ */
+function assertSourceIsConsistent(spec: PipelineSpecDef): void {
+  if (!isWorkspaceSource(spec.source)) return;
+
+  // Both name where the code comes from, and they cannot both be right.
+  if (spec.source?.repositoryId) {
+    throw new PipelineSpecError('source.repositoryId is meaningless with source.kind "worker_workspace": the run works in a directory, not in a repository');
+  }
+  if (!spec.source?.workspace?.workerId || !spec.source.workspace.workspaceKey) {
+    throw new PipelineSpecError('source.kind "worker_workspace" requires source.workspace.workerId and source.workspace.workspaceKey');
+  }
+  // Nothing to push to: the directory belongs to the worker's machine, not to a git host.
+  if (spec.finalAction.type === 'commit_and_pr' || spec.finalAction.type === 'commit') {
+    throw new PipelineSpecError(`finalAction "${spec.finalAction.type}" is not available for source.kind "worker_workspace"; use "comment_only" or "none"`);
+  }
+  // docker starts a fresh container, so the host directory this pipeline is about would not be in it.
+  const dockerStage = spec.stages.find((stage) => stage.runtime?.mode === 'docker');
+  if (dockerStage) {
+    throw new PipelineSpecError(`Stage ${dockerStage.order} (${dockerStage.role}) uses runtime.mode "docker", which cannot see a worker directory; use "host" for source.kind "worker_workspace"`);
+  }
+}
+
+/** Single place that decides what "this pipeline works in a worker directory" means. */
+export function isWorkspaceSource(source: PipelineSpecDef['source']): boolean {
+  return source?.kind === 'worker_workspace';
 }

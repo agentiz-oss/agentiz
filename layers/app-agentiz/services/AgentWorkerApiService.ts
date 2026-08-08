@@ -8,14 +8,27 @@ import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentRunResultDedup } from '../models/AgentRunResultDedup';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
+import { AgentGitConnection } from '../models/AgentGitConnection';
+import { AgentRepository } from '../models/AgentRepository';
 import type { AgentRunLogLevel, AgentTaskStatus } from '../types/agentiz';
-import type { FileChange } from '../lib/git';
+import type { FileChange, FileOp } from '../lib/git';
+import { normalizeFileChanges, requireGitConnectionAuthority } from '../lib/git';
+import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
 import type { AgentWorker } from '../models/AgentWorker';
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_LEASE_MS = 60_000;
+
+/**
+ * Username each platform expects in a token-authenticated HTTPS clone. The password is the OAuth
+ * access token in both cases; only the username differs.
+ */
+const CLONE_USERNAME: Record<string, string> = {
+  gitlab: 'oauth2',
+  github: 'x-access-token',
+};
 
 type WorkerEvent = {
   eventId: string;
@@ -36,7 +49,13 @@ type WorkerResult = {
   status: 'succeeded' | 'failed' | 'cancelled';
   summary?: string;
   errorMessage?: string;
+  /** Legacy shape; `fileOps` is the current one. Both are accepted. */
   fileChanges?: FileChange[];
+  fileOps?: FileOp[];
+  /** Raw `git diff` of the worker's tree against `baseSha`, stored as-is. */
+  patch?: string;
+  baseSha?: string;
+  diffStats?: { files?: number; insertions?: number; deletions?: number };
   stageOutputs?: Array<{
     executionId: string;
     status: 'succeeded' | 'failed' | 'skipped';
@@ -97,6 +116,9 @@ export class AgentWorkerApiService {
     // The allowlist is enforced in the claim query itself: a worker cannot even see a snapshot of
     // a project it was not granted.
     const allowedProjectIds = worker.allowedProjectIds?.length ? worker.allowedProjectIds : null;
+    // Second axis of the same rule: a worker must not even see the snapshot of a repository it was
+    // not granted — it carries task text, prompts and repository coordinates.
+    const allowedRepositoryIds = worker.allowedRepositoryIds?.length ? worker.allowedRepositoryIds : null;
 
     const job = await sequelize.transaction(async (transaction) => {
       const candidate = await AgentRunJob.findOne({
@@ -104,6 +126,14 @@ export class AgentWorkerApiService {
           status: 'queued',
           availableAt: { [Op.lte]: new Date() },
           ...(allowedProjectIds ? { projectId: { [Op.in]: allowedProjectIds } } : {}),
+          // A job with no repository (finalAction: none) is never restricted, or a worker with a
+          // narrow allowlist could not run a pipeline that never touches git.
+          ...(allowedRepositoryIds
+            ? { [Op.and]: [{ [Op.or]: [{ repositoryId: null }, { repositoryId: { [Op.in]: allowedRepositoryIds } }] }] }
+            : {}),
+          // A job pinned to a worker directory belongs to that machine alone; everyone else must
+          // not even see it, or it would be claimed and then fail for a missing path.
+          [Op.or]: [{ requiredWorkerId: null }, { requiredWorkerId: workerId }],
         },
         order: [['priority', 'ASC'], ['createdAt', 'ASC']],
         transaction,
@@ -208,16 +238,21 @@ export class AgentWorkerApiService {
 
     const summary = payload.summary ?? '';
     if (payload.status === 'succeeded') {
+      // Written before anything is pushed, and that ordering is the requirement: a failed push used
+      // to take the agent's entire work product with it.
+      const ops = normalizeFileChanges(payload.fileOps ?? payload.fileChanges);
+      const diff = await this.storeRunDiff(job, run, ops, payload);
       try {
         await AgentPipelineService.applyFinalAction({
           run,
           task,
           project,
-          changes: payload.fileChanges ?? [],
+          changes: ops,
           summary,
+          diff,
         });
         await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null });
-        const finalTaskStatus: AgentTaskStatus = run.pipelineSnapshot.finalAction.type === 'commit_and_pr' ? 'waiting_review' : 'done';
+        const finalTaskStatus: AgentTaskStatus = AgentPipelineService.taskStatusAfter(run.pipelineSnapshot.finalAction);
         await task.update({ status: finalTaskStatus });
         await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null });
         await AgentPipelineService.log(run.id, run.projectId, null, 'info', `Worker job succeeded, task moved to "${finalTaskStatus}"`);
@@ -244,6 +279,107 @@ export class AgentWorkerApiService {
     }
 
     return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: (await AgentRun.findByPk(job.runId))?.status ?? null };
+  }
+
+  /**
+   * Stores what the agent changed. Called for every successful result, before the final action, so
+   * the diff survives whatever happens next — including a push that fails.
+   *
+   * The patch is cut at AGENTIZ_MAX_PATCH_BYTES rather than dropped: a truncated patch still shows
+   * what was going on, and the operations, which are what actually gets applied, are kept whole.
+   */
+  private static async storeRunDiff(
+    job: AgentRunJob,
+    run: AgentRun,
+    ops: FileOp[],
+    payload: WorkerResult,
+  ): Promise<AgentRunDiff | null> {
+    if (ops.length === 0 && !payload.patch) return null;
+
+    const limit = Number(process.env.AGENTIZ_MAX_PATCH_BYTES ?? 5 * 1024 * 1024);
+    const rawPatch = payload.patch ?? '';
+    const truncated = Buffer.byteLength(rawPatch, 'utf8') > limit;
+    const patch = truncated ? rawPatch.slice(0, limit) : rawPatch;
+
+    const [diff] = await AgentRunDiff.upsert({
+      runId: run.id,
+      projectId: run.projectId,
+      repositoryId: job.repositoryId,
+      baseSha: payload.baseSha ?? run.baseSha ?? null,
+      patch: patch || null,
+      ops,
+      stats: {
+        files: payload.diffStats?.files ?? ops.length,
+        insertions: payload.diffStats?.insertions ?? 0,
+        deletions: payload.diffStats?.deletions ?? 0,
+      },
+      truncated,
+      appliedAt: null,
+      appliedCommitSha: null,
+    });
+    await AgentPipelineService.log(run.id, run.projectId, null, 'info', `Stored run diff: ${ops.length} operation(s)`, {
+      diffId: diff.id,
+      truncated,
+    });
+    return diff;
+  }
+
+  /**
+   * Short-lived repository credentials for the job the caller currently holds.
+   *
+   * A separate endpoint rather than a field in `AgentRunJob.snapshot` on purpose: the snapshot is
+   * persisted forever, handed out in full on every claim including retries, and ends up in dumps
+   * and in the admin panel. A token cannot live there.
+   *
+   * The clone URL is returned clean, with username and password beside it, so the worker can feed
+   * them through GIT_ASKPASS and they never settle in `.git/config`.
+   */
+  static async issueSecrets(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
+    const payload = objectBody(body);
+    // Same gate as heartbeat/result: the lease must be current, and the worker id comes from the
+    // authenticated identity rather than from the request body.
+    const job = await this.requireLeasedJob(jobId, payload, worker);
+
+    // Second line of defence behind the claim filter: even if a job somehow reached the wrong
+    // worker, it does not get the credentials.
+    if (!worker.canClaimRepository(job.repositoryId)) {
+      throw new WorkerApiError(403, 'This worker is not allowed to access the job repository');
+    }
+
+    if (!job.repositoryId) {
+      // A pipeline that never touches git (finalAction: none, or a worker-directory source) has
+      // nothing to hand out. Not an error — the worker asks unconditionally.
+      return { schemaVersion: SCHEMA_VERSION, repository: null };
+    }
+
+    const repository = await AgentRepository.findByPk(job.repositoryId);
+    if (!repository) throw new WorkerApiError(404, 'Job repository no longer exists');
+    const connection = await AgentGitConnection.findByPk(repository.connectionId);
+    if (!connection) throw new WorkerApiError(404, 'Repository connection no longer exists');
+
+    const authority = requireGitConnectionAuthority(repository.provider);
+    // Refreshes the token transparently when it is about to expire.
+    const token = await authority.accessToken(connection);
+
+    await AgentPipelineService.log(job.runId, job.projectId, null, 'info', `Issued repository credentials to ${worker.name}`, {
+      jobId: job.id,
+      workerId: worker.id,
+      repositoryId: repository.id,
+      // Deliberately no token, no username: this line is an audit record, not a copy of the secret.
+    });
+
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      repository: {
+        repositoryId: repository.id,
+        provider: repository.provider,
+        cloneUrl: repository.cloneUrl,
+        username: CLONE_USERNAME[repository.provider],
+        password: token,
+        expiresAt: connection.expiresAt?.toISOString() ?? null,
+      },
+    };
   }
 
   static async release(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {

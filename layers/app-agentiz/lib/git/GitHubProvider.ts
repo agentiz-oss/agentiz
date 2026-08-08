@@ -1,4 +1,5 @@
 import { GitProvider } from './GitProvider';
+import { normalizeFileChanges } from './GitProvider';
 import type {
   CommentResult,
   CommitChangesParams,
@@ -8,6 +9,7 @@ import type {
   NormalizedExternalTask,
   OpenPullRequestParams,
   PullRequestResult,
+  ResolvedRef,
 } from './GitProvider';
 
 const DEFAULT_API_BASE = 'https://api.github.com';
@@ -66,6 +68,18 @@ export class GitHubProvider extends GitProvider {
     return res.json() as Promise<T>;
   }
 
+  /**
+   * A task that came from a linked repository carries a namespaced external id
+   * (`gh-<repoId>-<number>`), because one Agentiz project aggregates repositories. Everything sent
+   * to GitHub has to use the bare issue number again.
+   *
+   * A plain number does not match and passes through unchanged, so this is a superset of the old
+   * behaviour — the same approach as GitLabProvider.toIssueIid.
+   */
+  private toIssueNumber(externalId: string): string {
+    return /^gh-(\d+)-(\d+)$/.exec(externalId)?.[2] ?? externalId;
+  }
+
   private normalizeIssue(issue: GitHubIssue): NormalizedExternalTask {
     return {
       externalId: String(issue.number),
@@ -106,14 +120,14 @@ export class GitHubProvider extends GitProvider {
   async getTask(externalId: string): Promise<NormalizedExternalTask> {
     const issue = await this.request<GitHubIssue>(
       'GET',
-      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${externalId}`,
+      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${this.toIssueNumber(externalId)}`,
     );
     return this.normalizeIssue(issue);
   }
 
   async updateTaskStatus(externalId: string, status: string): Promise<void> {
     const closedStatuses = new Set(['done', 'cancelled', 'ignored']);
-    await this.request('PATCH', `/repos/${this.repo.owner}/${this.repo.repo}/issues/${externalId}`, {
+    await this.request('PATCH', `/repos/${this.repo.owner}/${this.repo.repo}/issues/${this.toIssueNumber(externalId)}`, {
       state: closedStatuses.has(status) ? 'closed' : 'open',
     });
   }
@@ -121,7 +135,7 @@ export class GitHubProvider extends GitProvider {
   async commentOnTask(externalId: string, body: string): Promise<CommentResult> {
     const comment = await this.request<{ id: number; html_url: string }>(
       'POST',
-      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${externalId}/comments`,
+      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${this.toIssueNumber(externalId)}/comments`,
       { body },
     );
     return { id: String(comment.id), url: comment.html_url };
@@ -130,7 +144,7 @@ export class GitHubProvider extends GitProvider {
   async listComments(externalId: string): Promise<NormalizedExternalComment[]> {
     const comments = await this.request<GitHubIssueComment[]>(
       'GET',
-      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${externalId}/comments?per_page=100`,
+      `/repos/${this.repo.owner}/${this.repo.repo}/issues/${this.toIssueNumber(externalId)}/comments?per_page=100`,
     );
     return comments.map((comment) => ({
       externalId: String(comment.id),
@@ -140,6 +154,16 @@ export class GitHubProvider extends GitProvider {
       createdAt: comment.created_at ?? null,
       raw: comment,
     }));
+  }
+
+  async resolveRef(ref: string): Promise<ResolvedRef> {
+    // /commits/{ref} accepts a branch, a tag and a SHA alike, so one call covers every form
+    // `source.branch` may take.
+    const commit = await this.request<{ sha: string }>(
+      'GET',
+      `/repos/${this.repo.owner}/${this.repo.repo}/commits/${encodeURIComponent(ref)}`,
+    );
+    return { ref, sha: commit.sha };
   }
 
   async commitChanges(params: CommitChangesParams): Promise<CommitResult> {
@@ -171,13 +195,41 @@ export class GitHubProvider extends GitProvider {
       `/repos/${owner}/${repo}/git/commits/${branchHeadSha}`,
     );
 
-    const treeEntries = [];
-    for (const change of params.changes) {
+    // `base_tree` below patches the existing tree incrementally, which is exactly what makes
+    // `sha: null` mean "remove this path" rather than "empty file".
+    const treeEntries: Array<Record<string, unknown>> = [];
+    const upsert = async (path: string, content: string, encoding: 'utf-8' | 'base64', mode?: string) => {
       const blob = await this.request<{ sha: string }>('POST', `/repos/${owner}/${repo}/git/blobs`, {
-        content: change.content,
-        encoding: 'utf-8',
+        content,
+        encoding,
       });
-      treeEntries.push({ path: change.path, mode: '100644', type: 'blob', sha: blob.sha });
+      treeEntries.push({ path, mode: mode ?? '100644', type: 'blob', sha: blob.sha });
+    };
+    const remove = (path: string) => {
+      treeEntries.push({ path, mode: '100644', type: 'blob', sha: null });
+    };
+
+    for (const op of normalizeFileChanges(params.changes)) {
+      if (op.op === 'upsert') {
+        await upsert(op.path, op.content, op.encoding, op.mode);
+        continue;
+      }
+      if (op.op === 'delete') {
+        remove(op.path);
+        continue;
+      }
+      // A rename is a delete plus an upsert in the same tree. Without new content GitHub has no
+      // blob to point the new path at, so the old one is read first.
+      remove(op.from);
+      if (op.content !== undefined) {
+        await upsert(op.to, op.content, op.encoding ?? 'utf-8', op.mode);
+      } else {
+        const existing = await this.request<{ content: string; encoding: string }>(
+          'GET',
+          `/repos/${owner}/${repo}/contents/${encodeURIComponent(op.from)}?ref=${encodeURIComponent(branchHeadSha)}`,
+        );
+        await upsert(op.to, existing.content.replace(/\n/g, ''), 'base64', op.mode);
+      }
     }
 
     const tree = await this.request<{ sha: string }>('POST', `/repos/${owner}/${repo}/git/trees`, {

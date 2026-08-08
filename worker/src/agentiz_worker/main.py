@@ -1,8 +1,12 @@
 """Stage-0 Agentiz worker: authenticated API transport plus OpenHands ACP execution.
 
-`host` passes the fixture checkout directly to Conversation. `docker` replaces that workspace
+`host` passes a local directory directly to Conversation. `docker` replaces that workspace
 with DockerWorkspace; OpenHands owns Agent Server startup, readiness and teardown in its context
 manager. No worker code talks to Agentiz's database or invokes `docker run` itself.
+
+The directory is normally the worker's own managed workspace. A job may instead carry a
+`workspace` block, which means its pipeline is configured to work in a prepared directory on this
+machine — that job is only ever handed to this worker, and the directory must already exist.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import argparse
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import os
+import shutil
 import socket
 import subprocess
 import shlex
@@ -23,6 +28,10 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from .changes import collect_changes
+from .redaction import Redactor
+from .repository import prepare_checkout
 
 SCHEMA_VERSION = 1
 HEARTBEAT_INTERVAL_SEC = 20
@@ -43,6 +52,9 @@ class Settings:
     workspace: Path
     server_image: str
     once: bool
+    #: Leaves the job directory behind when something failed, for post-mortem. Off by default and
+    #: not meant for production: checkouts contain the customer's source tree.
+    keep_workspace_on_failure: bool = False
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any], once: bool) -> "Settings":
@@ -56,7 +68,8 @@ class Settings:
         workspace = Path(str(data.get("workspace", ""))).expanduser().resolve()
         if not str(data.get("workspace", "")):
             raise WorkerError("Worker profile must contain workspace; run `agentiz-worker configure`")
-        return cls(api_url, token, str(data.get("instanceId") or f"agentiz-{socket.gethostname()}"), workspace, image, once)
+        return cls(api_url, token, str(data.get("instanceId") or f"agentiz-{socket.gethostname()}"), workspace, image, once,
+                   os.environ.get("AGENTIZ_KEEP_WORKSPACE_ON_FAILURE", "").lower() == "true")
 
     @classmethod
     def from_env(cls, once: bool) -> "Settings":
@@ -70,7 +83,8 @@ class Settings:
         if image and "@sha256:" not in image:
             raise WorkerError("AGENTIZ_OPENHANDS_SERVER_IMAGE must be pinned by @sha256 digest")
         return cls(api_url, token, os.environ.get("AGENTIZ_WORKER_ID", f"dev-{socket.gethostname()}"),
-                   Path(os.environ.get("AGENTIZ_WORKER_WORKSPACE", os.getcwd())).resolve(), image, once)
+                   Path(os.environ.get("AGENTIZ_WORKER_WORKSPACE", os.getcwd())).resolve(), image, once,
+                   os.environ.get("AGENTIZ_KEEP_WORKSPACE_ON_FAILURE", "").lower() == "true")
 
 
 def default_config_path() -> Path:
@@ -234,6 +248,11 @@ class Client:
     def heartbeat(self, job: dict[str, Any]) -> Any:
         return self.post(f"/jobs/{job['jobId']}/heartbeat", job, {})
 
+    def secrets(self, job: dict[str, Any]) -> Any:
+        """Repository credentials for this job. Never part of the job payload — see the server's
+        AgentWorkerApiService.issueSecrets for why."""
+        return self.post(f"/jobs/{job['jobId']}/secrets", job, {})
+
 
 def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str]]:
     runtime = stage.get("runtime")
@@ -280,13 +299,35 @@ def agent_message_text(event: Any) -> str | None:
     return text[:MAX_AGENT_MESSAGE_CHARS] + ("…" if len(text) > MAX_AGENT_MESSAGE_CHARS else "")
 
 
-def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, on_agent_message: Any) -> tuple[str, str | None]:
+def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
+    """Directory every stage of this job runs in.
+
+    Without `workspace` in the payload this is the worker's own managed directory, exactly as
+    before. With it, the pipeline is one that works in a prepared directory on this machine, so the
+    directory has to exist already: creating it here would hand the agent an empty tree while the
+    operator believes it is working in their project.
+    """
+    workspace = job.get("workspace")
+    if not isinstance(workspace, dict):
+        return settings.workspace
+    raw = str(workspace.get("path") or "").strip()
+    if not raw:
+        raise WorkerError("job workspace has no path")
+    directory = Path(raw).expanduser()
+    if not directory.is_absolute():
+        raise WorkerError(f"job workspace path must be absolute, got {raw}")
+    if not directory.is_dir():
+        raise WorkerError(f"job workspace directory does not exist on this worker: {directory}")
+    return directory
+
+
+def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, workdir: Path, on_agent_message: Any) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
     from openhands.sdk.conversation import Conversation
     if mode == "host":
-        workspace: Any = str(settings.workspace)
+        workspace: Any = str(workdir)
         context = None
     else:
         if not settings.server_image:
@@ -322,10 +363,10 @@ def run_openhands(mode: str, acp_command: list[str], message: str, settings: Set
             context.__exit__(None, None, None)
 
 
-def run_bash_fixture(mode: str, command: list[str], settings: Settings) -> str:
+def run_bash_fixture(mode: str, command: list[str], settings: Settings, workdir: Path) -> str:
     """Deterministic stage-0 probe; Docker still goes through OpenHands DockerWorkspace."""
     if mode == "host":
-        result = subprocess.run(command, cwd=settings.workspace, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        result = subprocess.run(command, cwd=workdir, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
         if result.returncode:
             raise WorkerError(result.stdout or f"bash fixture exited {result.returncode}")
         return result.stdout.strip()
@@ -358,40 +399,99 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
     outputs: list[dict[str, Any]] = []
     heartbeat_stop = threading.Event()
     heartbeat_failure: list[Exception] = []
+    # Everything sent back to Agentiz goes through this: the clone token is in this process only
+    # because the checkout needs it, and it must not reach a stored log or summary.
+    redact = Redactor()
+
     def emit(kind: str, stage_id: str | None, message: str, level: str = "info") -> None:
         nonlocal sequence
         sequence += 1
         client.post(f"/jobs/{job['jobId']}/events:batch", job, {"events": [{"eventId": str(uuid.uuid4()), "sequence": sequence,
-            "type": kind, "stageExecutionId": stage_id, "level": level, "message": message}]})
+            "type": kind, "stageExecutionId": stage_id, "level": level, "message": redact(message)}]})
+
+    # Started before the checkout on purpose: cloning a large repository takes longer than a lease.
     heartbeat = threading.Thread(target=maintain_lease, args=(client, job, heartbeat_stop, heartbeat_failure), daemon=True)
     heartbeat.start()
+
+    repository = job.get("repository") if isinstance(job.get("repository"), dict) else None
+    job_root: Path | None = None
+    failed = False
     try:
+        pinned = isinstance(job.get("workspace"), dict)
+        if repository:
+            # One disposable checkout per job, under the managed workspace root.
+            job_root = settings.workspace / str(job["jobId"])
+            job_root.mkdir(parents=True, exist_ok=True)
+            credentials = (client.secrets(job) or {}).get("repository")
+            if credentials and credentials.get("password"):
+                redact.add(str(credentials["password"]))
+            workdir = prepare_checkout(repository, credentials, job_root, log=lambda message: emit("workspace.progress", None, message))
+            emit("workspace.ready", None, f"Чекаут {repository.get('owner')}/{repository.get('repo')} на {str(repository.get('baseSha'))[:12]}")
+            # Cancellation during a long clone must be honoured before the agent starts.
+            if heartbeat_failure:
+                raise heartbeat_failure[0]
+        else:
+            workdir = resolve_workdir(job, settings)
+            if pinned:
+                emit("job.workspace", None, f"Работа идёт в готовой папке воркера: {workdir}")
+
         for stage in job.get("stages", []):
             if heartbeat_failure:
                 raise heartbeat_failure[0]
             stage_id = stage.get("executionId")
             mode, kind, command = stage_config(stage)
+            # A container gets its own filesystem, so it would not contain the prepared directory
+            # this pipeline exists for. The server rejects the combination too; this is the guard on
+            # the side that actually owns the path.
+            if pinned and mode == "docker":
+                raise WorkerError(f"stage runtime.mode 'docker' cannot use the worker directory {workdir}; configure the stage as 'host'")
+            # Same reason, for a checkout: it was made on this host and DockerWorkspace starts a
+            # container with its own tree. Delivering the checkout into the container (bind mount or
+            # file upload) is unverified against openhands-workspace, and running the agent in an
+            # empty container while the operator believes it has the code would be worse than
+            # refusing. See .ai-notes/multi-repo-oauth/06-worker-checkout-and-diff.md §6.3.
+            if repository and mode == "docker":
+                raise WorkerError("stage runtime.mode 'docker' cannot see the repository checkout yet; configure the stage as 'host'")
             emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
             if kind == "bash-fixture":
-                status, agent_response = run_bash_fixture(mode, command, settings), None
+                status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
             else:
                 status, agent_response = run_openhands(
-                    mode, command, prompt(stage, job), settings,
+                    mode, command, prompt(stage, job), settings, workdir,
                     lambda text: emit("stage.event", stage_id, text),
                 )
             if heartbeat_failure:
                 raise heartbeat_failure[0]
-            summary = agent_response or status
+            summary = redact(agent_response or status)
             outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
-                "output": {"workspaceMode": mode, "executionStatus": status, "agentResponse": agent_response}})
+                "output": {"workspaceMode": mode, "workdir": str(workdir), "executionStatus": status, "agentResponse": redact(agent_response) if agent_response else None}})
             emit("stage.completed", stage_id, summary)
-        client.post(f"/jobs/{job['jobId']}/result", job, {"resultId": str(uuid.uuid4()), "status": "succeeded",
-            "summary": "\n".join(f"- {item['summary']}" for item in outputs), "stageOutputs": outputs, "fileChanges": []})
+
+        result: dict[str, Any] = {"resultId": str(uuid.uuid4()), "status": "succeeded",
+            "summary": redact("\n".join(f"- {item['summary']}" for item in outputs)), "stageOutputs": outputs}
+        if repository:
+            changes = collect_changes(workdir, str(repository.get("baseSha") or ""),
+                                      int(job.get("limits", {}).get("maxPatchBytes") or 5 * 1024 * 1024))
+            result.update({
+                "baseSha": changes["baseSha"],
+                "fileOps": changes["ops"],
+                "patch": redact(changes["patch"]),
+                "diffStats": changes["stats"],
+                "patchTruncated": changes["truncated"],
+            })
+            emit("changes.collected", None,
+                 f"{len(changes['ops'])} операц(ий), +{changes['stats']['insertions']} −{changes['stats']['deletions']}")
+        client.post(f"/jobs/{job['jobId']}/result", job, result)
     except Exception as error:
-        client.post(f"/jobs/{job['jobId']}/result", job, {"resultId": str(uuid.uuid4()), "status": "failed", "errorMessage": str(error), "stageOutputs": outputs})
+        failed = True
+        client.post(f"/jobs/{job['jobId']}/result", job, {"resultId": str(uuid.uuid4()), "status": "failed",
+            "errorMessage": redact(str(error)), "stageOutputs": outputs})
     finally:
         heartbeat_stop.set()
         heartbeat.join(timeout=1)
+        # The only thing keeping the disk from filling up with checkouts.
+        if job_root and job_root.exists() and not (failed and settings.keep_workspace_on_failure):
+            shutil.rmtree(job_root, ignore_errors=True)
 
 
 def main() -> None:

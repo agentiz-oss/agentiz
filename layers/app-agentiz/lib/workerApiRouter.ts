@@ -83,6 +83,16 @@ export function createWorkerApiRouter(): Router {
     }
   });
 
+  // Repository credentials for the job this worker currently holds. Deliberately not part of the
+  // job snapshot — see AgentWorkerApiService.issueSecrets.
+  router.post('/jobs/:jobId/secrets', async (req, res) => {
+    try {
+      res.json(await AgentWorkerApiService.issueSecrets(req.params.jobId, req.body, req.header('authorization') ?? '', req.ip ?? null));
+    } catch (error) {
+      workerErrorResponse(res, error);
+    }
+  });
+
   router.post('/jobs/:jobId/result', async (req, res) => {
     try {
       res.json(await AgentWorkerApiService.applyResult(req.params.jobId, req.body, req.header('authorization') ?? '', req.ip ?? null));

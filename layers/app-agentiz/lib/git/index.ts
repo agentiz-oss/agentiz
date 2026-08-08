@@ -6,17 +6,30 @@ import type { AgentTask } from '../../models/AgentTask';
 import type { AgentProjectRepoConfig, GitProviderType } from '../../types/agentiz';
 
 export { GitProvider, GitHubProvider };
+export { mergeFileOps, normalizeFileChanges } from './GitProvider';
+export {
+  getGitConnectionAuthority,
+  listGitConnectionProviders,
+  registerGitConnectionAuthority,
+  requireGitConnectionAuthority,
+  unregisterGitConnectionAuthority,
+} from './connections';
+export type { GitConnectionAuthority, RepositorySyncResult } from './connections';
 export type {
   GitCredentials,
   NormalizedExternalTask,
   NormalizedExternalComment,
   CommentResult,
   FileChange,
+  FileMode,
+  FileOp,
+  StageChangeSet,
   CommitResult,
   PullRequestResult,
   ListTasksParams,
   CommitChangesParams,
   OpenPullRequestParams,
+  ResolvedRef,
 } from './GitProvider';
 
 /**
@@ -30,6 +43,14 @@ export type {
 export interface GitProviderAdapter {
   type: GitProviderType;
   create(repo: AgentProjectRepoConfig, credentials: GitCredentials): GitProvider;
+  /**
+   * Reads a namespaced `AgentTask.externalId` back into "which repository, which issue".
+   *
+   * One Agentiz project aggregates repositories, so an issue number alone is not unique and each
+   * platform namespaces it its own way (`gl-<projectId>-<iid>`, `gh-<repoId>-<number>`). Only the
+   * layer knows its format, so the core asks instead of parsing; returning null means "not mine".
+   */
+  parseTaskExternalId?(externalId: string): { externalRepoId: string; issueId: string } | null;
 }
 
 /**
@@ -98,6 +119,15 @@ export function createGitProvider(project: AgentProject): GitProvider {
 export const githubProviderAdapter: GitProviderAdapter = {
   type: 'github',
   create: (repo, credentials) => new GitHubProvider('github', repo, credentials),
+  /**
+   * `gh-<repoId>-<number>`, written by the GitHub integration layer when a task comes from a linked
+   * repository. A bare issue number is not namespaced and returns null, which is correct: such a
+   * task belongs to the project's own repoConfig.
+   */
+  parseTaskExternalId: (externalId) => {
+    const match = /^gh-(\d+)-(\d+)$/.exec(externalId);
+    return match ? { externalRepoId: match[1], issueId: match[2] } : null;
+  },
 };
 
 /**
@@ -111,7 +141,18 @@ export type TaskGitProviderResolver = (
   project: AgentProject,
 ) => Promise<GitProvider | null> | GitProvider | null;
 
-const taskProviderResolvers = new Map<string, TaskGitProviderResolver>();
+/**
+ * Parked on a global symbol for the same reason as the adapter map above: under tsx this file can
+ * be instantiated twice (once through the ESM graph, once through CJS), and plain module state
+ * would then split in two — a resolver registered by app-agentiz would be invisible to
+ * createGitProviderForTask, which silently falls back to the project's own repoConfig and reports
+ * "task has no repository" for a task that has one.
+ */
+const PROVIDER_RESOLVERS_KEY = Symbol.for('agentiz.taskGitProviderResolvers');
+const resolverScope = globalThis as unknown as Record<symbol, Map<string, any> | undefined>;
+const taskProviderResolvers: Map<string, TaskGitProviderResolver> =
+  (resolverScope[PROVIDER_RESOLVERS_KEY] as Map<string, TaskGitProviderResolver> | undefined)
+  ?? (resolverScope[PROVIDER_RESOLVERS_KEY] = new Map());
 
 export function registerTaskGitProviderResolver(appId: string, resolver: TaskGitProviderResolver): void {
   taskProviderResolvers.set(appId, resolver);
@@ -134,6 +175,20 @@ export async function createGitProviderForTask(task: AgentTask, project: AgentPr
   return createGitProvider(project);
 }
 
+/**
+ * Branch declared by a task tag: `branch:feature/x`. The first one wins.
+ *
+ * The prefix is matched case-insensitively, the branch name is not — git is case sensitive, and
+ * lowercasing `feature/JIRA-12` would produce a ref that does not exist.
+ */
+export function branchFromTags(tags: string[] | null | undefined): string | null {
+  for (const tag of tags ?? []) {
+    const match = /^branch:(.+)$/i.exec(String(tag).trim());
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return null;
+}
+
 /** Where a task's code lives — what the worker has to clone. */
 export interface TaskRepositoryRef {
   provider: GitProviderType;
@@ -141,6 +196,10 @@ export interface TaskRepositoryRef {
   owner: string;
   repo: string;
   defaultBranch?: string;
+  /** `AgentRepository.id` when the task resolved through a linked repository. */
+  repositoryId?: string;
+  /** Clone URL as the platform reports it; absent for a project's own repoConfig. */
+  cloneUrl?: string;
 }
 
 export type TaskRepositoryResolver = (
@@ -148,7 +207,10 @@ export type TaskRepositoryResolver = (
   project: AgentProject,
 ) => Promise<TaskRepositoryRef | null> | TaskRepositoryRef | null;
 
-const taskRepositoryResolvers = new Map<string, TaskRepositoryResolver>();
+const REPOSITORY_RESOLVERS_KEY = Symbol.for('agentiz.taskRepositoryResolvers');
+const taskRepositoryResolvers: Map<string, TaskRepositoryResolver> =
+  (resolverScope[REPOSITORY_RESOLVERS_KEY] as Map<string, TaskRepositoryResolver> | undefined)
+  ?? (resolverScope[REPOSITORY_RESOLVERS_KEY] = new Map());
 
 export function registerTaskRepositoryResolver(appId: string, resolver: TaskRepositoryResolver): void {
   taskRepositoryResolvers.set(appId, resolver);

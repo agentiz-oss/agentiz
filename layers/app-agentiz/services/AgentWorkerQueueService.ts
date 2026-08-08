@@ -75,12 +75,18 @@ export class AgentWorkerQueueService {
     const sequelize = AgentRunJob.sequelize;
     if (!sequelize) throw new Error('Sequelize is not initialized');
     const allowedProjectIds = worker.allowedProjectIds?.length ? worker.allowedProjectIds : null;
+    const allowedRepositoryIds = worker.allowedRepositoryIds?.length ? worker.allowedRepositoryIds : null;
     return sequelize.transaction(async (transaction) => {
       const job = await AgentRunJob.findOne({
         where: {
           status: 'queued',
           availableAt: { [Op.lte]: new Date() },
           ...(allowedProjectIds ? { projectId: { [Op.in]: allowedProjectIds } } : {}),
+          ...(allowedRepositoryIds
+            ? { [Op.and]: [{ [Op.or]: [{ repositoryId: null }, { repositoryId: { [Op.in]: allowedRepositoryIds } }] }] }
+            : {}),
+          // Same rule as the remote claim: a job tied to one machine's directory stays there.
+          [Op.or]: [{ requiredWorkerId: null }, { requiredWorkerId: worker.id }],
         },
         order: [['priority', 'ASC'], ['createdAt', 'ASC']],
         transaction,

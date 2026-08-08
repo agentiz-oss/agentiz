@@ -2,7 +2,12 @@ import { createHash, randomBytes } from 'crypto';
 import { Op } from 'sequelize';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
-import type { AgentWorkerCapabilities, AgentWorkerKind, AgentWorkerStatus } from '../types/agentiz';
+import type {
+  AgentWorkerCapabilities,
+  AgentWorkerKind,
+  AgentWorkerStatus,
+  AgentWorkerWorkspace,
+} from '../types/agentiz';
 
 const SCHEMA_VERSION = 1;
 const TOKEN_PREFIX = 'agw_';
@@ -55,6 +60,7 @@ export interface RegisterWorkerResult {
   status: AgentWorkerStatus;
   tokenPrefix: string | null;
   allowedProjectIds: string[] | null;
+  allowedRepositoryIds: string[] | null;
   message: string;
 }
 
@@ -179,6 +185,8 @@ export class AgentWorkerRegistryService {
       status: worker.status,
       tokenPrefix: worker.tokenPrefix,
       allowedProjectIds: worker.allowedProjectIds ?? null,
+      // Reported to the worker so its own log can say what it is allowed to take.
+      allowedRepositoryIds: worker.allowedRepositoryIds ?? null,
       message,
     };
   }
@@ -246,6 +254,42 @@ export class AgentWorkerRegistryService {
   static async setAllowedProjects(workerId: string, allowedProjectIds: string[] | null): Promise<AgentWorker> {
     const worker = await this.require(workerId);
     await worker.update({ allowedProjectIds: allowedProjectIds?.length ? allowedProjectIds : null });
+    return worker;
+  }
+
+  /** Empty list means "not restricted", exactly like the project allowlist above. */
+  static async setAllowedRepositories(workerId: string, allowedRepositoryIds: string[] | null): Promise<AgentWorker> {
+    const worker = await this.require(workerId);
+    await worker.update({ allowedRepositoryIds: allowedRepositoryIds?.length ? allowedRepositoryIds : null });
+    return worker;
+  }
+
+  /**
+   * Declares which prepared directories on this machine a pipeline may run in.
+   *
+   * Keys are what pipelines store, so they are validated here: a duplicate or empty key would make
+   * `source.workspace.workspaceKey` ambiguous or unresolvable at queue time. Paths are checked for
+   * being absolute only — this server does not have the worker's filesystem, so existence is the
+   * worker's own check.
+   */
+  static async setWorkspaces(workerId: string, workspaces: AgentWorkerWorkspace[] | null): Promise<AgentWorker> {
+    const worker = await this.require(workerId);
+    const cleaned: AgentWorkerWorkspace[] = [];
+    for (const item of workspaces ?? []) {
+      const key = String(item?.key ?? '').trim();
+      const path = String(item?.path ?? '').trim();
+      if (!key || !path) throw new WorkerRegistryError(400, 'Every workspace needs a key and a path', 'invalid_workspace');
+      if (!path.startsWith('/')) {
+        throw new WorkerRegistryError(400, `Workspace "${key}": path must be absolute, got "${path}"`, 'invalid_workspace');
+      }
+      if (cleaned.some((existing) => existing.key === key)) {
+        throw new WorkerRegistryError(400, `Duplicate workspace key "${key}"`, 'invalid_workspace');
+      }
+      const label = String(item?.label ?? '').trim();
+      const description = String(item?.description ?? '').trim();
+      cleaned.push({ key, path, ...(label ? { label } : {}), ...(description ? { description } : {}) });
+    }
+    await worker.update({ workspaces: cleaned.length ? cleaned : null });
     return worker;
   }
 

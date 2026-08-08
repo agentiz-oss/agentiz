@@ -44,49 +44,98 @@ export interface CommentResult {
   url: string;
 }
 
+/** A ref as it was asked for, plus the commit it pointed at when it was resolved. */
+export interface ResolvedRef {
+  /** Branch, tag or SHA, exactly as requested. */
+  ref: string;
+  sha: string;
+}
+
 export interface FileChange {
   /** Repo-relative path. */
   path: string;
   content: string;
 }
 
-/*
- * ПРЕДЛОЖЕНИЕ (worker/IMPLEMENTATION_PLAN.md, этап 1): расширить формат изменений.
+/** Permission/type of an entry in a git tree. GitHub takes these same values in `mode`. */
+export type FileMode = '100644' | '100755' | '120000';
+
+/**
+ * One change an agent made, in a form both platforms can commit through their REST API without a
+ * local git checkout: GitHub's Git Data API (delete = `sha: null` in the tree, `mode`, base64
+ * content) and GitLab's commit actions (create/update/delete/move/chmod) cover all of it natively.
  *
- * Текущий `FileChange { path, content }` умеет только текстовый create/update и не может выразить
- * delete / rename / mode / binary — а реальный OpenHands-агент делает `rm`, `mv`, `chmod +x` и
- * правит бинарники. Ниже — размеченный union операций. Формат — operations (а не сырой patch),
- * потому что оба провайдера коммитят через REST API без локального git-checkout, и оба API
- * нативно покрывают весь набор: GitHub Git Data API (delete = `sha: null` в дереве, `mode`,
- * base64-контент) и GitLab commit actions (create/update/delete/move/chmod).
- *
- *   export type FileOp =
- *     | { op: 'upsert'; path: string; content: string; encoding: 'utf-8' | 'base64'; mode?: FileMode }
- *     | { op: 'delete'; path: string }
- *     | { op: 'rename'; from: string; to: string; content?: string; encoding?: 'utf-8' | 'base64'; mode?: FileMode };
- *
- *   // Права/тип entry в git-дереве. GitHub принимает эти же значения в поле `mode`.
- *   export type FileMode = '100644' | '100755' | '120000'; // обычный | исполняемый | симлинк
- *
- * Семантика для merge между стадиями (AgentPipelineService.changesByPath):
- * - upsert по существующему пути перезаписывает; delete по несозданному пути — no-op;
- * - delete после upsert по тому же пути схлопывается в delete;
- * - rename = delete(from) + upsert(to); при коллизии путей между стадиями порядок операций важен,
- *   поэтому merge должен хранить последовательность, а не только «последний по пути».
- *
- * ОБЯЗАТЕЛЬНО: рядом с operations всегда сохраняем сырой git-patch как артефакт — точную копию
- * того, что сделал агент. Он не участвует в применении (коммит собирают провайдеры из операций),
- * но нужен для аудита, диагностики и как fallback-источник истины при расхождении.
- *
- *   export interface StageChangeSet {
- *     ops: FileOp[];
- *     patch: string;      // git diff рабочего дерева относительно baseRef (обязателен)
- *     baseRef: string;    // SHA, относительно которого построены ops и patch
- *   }
- *
- * Затрагивает: этот тип, GitHubProvider.commitChanges, GitLabProvider.commitChanges,
- * AgentPipelineService (merge), AgentExecutor (тип результата стадии) и Python-контракты worker'а.
+ * A plain `FileChange { path, content }` could only express a text create/update, while a real
+ * agent runs `rm`, `mv`, `chmod +x` and edits binaries.
  */
+export type FileOp =
+  | { op: 'upsert'; path: string; content: string; encoding: 'utf-8' | 'base64'; mode?: FileMode }
+  | { op: 'delete'; path: string }
+  | { op: 'rename'; from: string; to: string; content?: string; encoding?: 'utf-8' | 'base64'; mode?: FileMode };
+
+/**
+ * What one stage produced. The raw patch is kept **beside** the operations, always: the commit is
+ * assembled from the operations, but the patch is the exact record of what the agent did and the
+ * source of truth when the two disagree.
+ */
+export interface StageChangeSet {
+  ops: FileOp[];
+  /** `git diff` of the working tree against `baseRef`. */
+  patch: string;
+  /** SHA the ops and the patch were built against. */
+  baseRef: string;
+}
+
+/**
+ * Merges operations of consecutive stages, keeping their order.
+ *
+ * Order matters and "last write per path" is not enough: `delete` after `upsert` of the same path
+ * collapses into a single `delete`, `delete` of a path this run created is a no-op, and a `rename`
+ * is a `delete` plus an `upsert` whose paths may collide with what another stage did.
+ */
+export function mergeFileOps(previous: FileOp[], next: FileOp[]): FileOp[] {
+  const merged = [...previous];
+
+  const dropPath = (path: string) => {
+    for (let index = merged.length - 1; index >= 0; index -= 1) {
+      const existing = merged[index];
+      const owns = existing.op === 'rename' ? existing.to === path : existing.path === path;
+      if (owns) merged.splice(index, 1);
+    }
+  };
+
+  for (const op of next) {
+    if (op.op === 'delete') {
+      // Everything this run had done to the path is undone by deleting it; only the delete has to
+      // reach the repository, and only if the path was not created by this run in the first place.
+      let createdHere = false;
+      for (const existing of merged) {
+        if (existing.op === 'upsert' && existing.path === op.path) createdHere = true;
+        if (existing.op === 'rename' && existing.to === op.path) createdHere = true;
+      }
+      dropPath(op.path);
+      if (!createdHere) merged.push(op);
+      continue;
+    }
+    if (op.op === 'rename') {
+      dropPath(op.to);
+      merged.push(op);
+      continue;
+    }
+    dropPath(op.path);
+    merged.push(op);
+  }
+
+  return merged;
+}
+
+/** Accepts the legacy shape so an older worker and the stub executor keep working. */
+export function normalizeFileChanges(changes: Array<FileChange | FileOp> | null | undefined): FileOp[] {
+  return (changes ?? []).map((change) => {
+    if ('op' in change) return change;
+    return { op: 'upsert' as const, path: change.path, content: change.content, encoding: 'utf-8' as const };
+  });
+}
 
 export interface CommitResult {
   sha: string;
@@ -109,7 +158,8 @@ export interface CommitChangesParams {
   branch: string;
   baseBranch?: string;
   message: string;
-  changes: FileChange[];
+  /** Legacy `FileChange[]` is still accepted; normalizeFileChanges turns it into upserts. */
+  changes: Array<FileChange | FileOp>;
 }
 
 export interface OpenPullRequestParams {
@@ -160,6 +210,17 @@ export abstract class GitProvider {
   }
 
   /** Creates (or reuses) `branch` and commits `changes` onto it in a single atomic operation. */
+  /**
+   * Turns a branch name into the commit it currently points at.
+   *
+   * The worker is given a SHA rather than a branch name because a branch moves: between queueing a
+   * job and a worker claiming it — or between the first attempt and a retry — somebody pushes, and
+   * two attempts at the same job must still see the same code.
+   *
+   * Tags and raw SHAs are accepted too, so `source.branch: "v1.2.0"` works.
+   */
+  abstract resolveRef(ref: string): Promise<ResolvedRef>;
+
   abstract commitChanges(params: CommitChangesParams): Promise<CommitResult>;
 
   abstract openPullRequest(params: OpenPullRequestParams): Promise<PullRequestResult>;

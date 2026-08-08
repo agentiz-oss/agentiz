@@ -14,6 +14,7 @@
       "items": { "$ref": "#/$defs/stage" }
     },
     "finalAction": { "$ref": "#/$defs/finalAction" },
+    "source": { "$ref": "#/$defs/source" },
     "triggers": {
       "type": "object",
       "additionalProperties": false,
@@ -27,6 +28,51 @@
     }
   },
   "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where the run gets its code. Absent means repository, which is what every spec written before this field does: the project's git provider decides what the run sees. worker_workspace pins the run to one worker and runs it in a directory that already exists on that machine.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["repository", "worker_workspace"],
+          "default": "repository"
+        },
+        "repositoryId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AgentRepository.id this pipeline works on. Must be linked to the same project. Absent = the repository the task came from. Ignored for kind worker_workspace."
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Branch the worker takes the code from. Absent = the repository's own default branch. Ignored for kind worker_workspace."
+        },
+        "allowTaskOverride": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let a task override the branch through AgentTask.branchRef or a branch:<ref> tag."
+        },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workerId", "workspaceKey"],
+          "description": "Required when kind is worker_workspace. Only the named worker can claim the run, because only that machine has the directory.",
+          "properties": {
+            "workerId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AgentWorker.id that owns the directory."
+            },
+            "workspaceKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Key of an entry in that worker's Workspaces list. The path is resolved at queue time, so correcting the path never invalidates the spec."
+            }
+          }
+        }
+      }
+    },
     "stage": {
       "type": "object",
       "additionalProperties": false,
@@ -68,11 +114,21 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
-      "description": "What the run does after the last stage. commit_and_pr pushes the accumulated file changes and opens a PR/MR; comment_only just posts the summary back to the tracker; none finishes silently.",
+      "description": "What the run does after the last stage. commit_and_pr pushes the accumulated file changes and opens a PR/MR; comment_only just posts the summary back to the tracker; none finishes silently. commit pushes straight onto the target branch without opening anything. commit_and_pr and commit both require source.kind = repository: a worker workspace has no hosted repository to push to.",
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["commit_and_pr", "comment_only", "none"]
+          "enum": ["commit_and_pr", "commit", "comment_only", "none"]
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target branch for type commit. Defaults to the branch the run took its code from."
+        },
+        "requireApproval": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hold the change in Agentiz instead of pushing it. The diff is stored either way; with this on the run ends in waiting_review and nothing reaches the repository until somebody applies it."
         },
         "branchPrefix": {
           "type": "string",

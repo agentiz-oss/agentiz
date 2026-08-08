@@ -9,6 +9,8 @@
     "layers/app-agentiz/**/*.tsx",
     "layers/app-agentiz-gitlab-integration/**/*.ts",
     "layers/app-agentiz-gitlab-integration/**/*.tsx",
+    "layers/app-agentiz-github-integration/**/*.ts",
+    "layers/app-agentiz-github-integration/**/*.tsx",
     "layers/app-agentiz-mobile-api/**/*.ts",
     "local_modules/**/*.ts"
   ]

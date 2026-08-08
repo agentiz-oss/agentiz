@@ -3,7 +3,7 @@ import { AgentTask } from '../models/AgentTask';
 import type { PipelineSpecDef } from '../types/agentiz';
 import { assertValidSpec, PipelineSpecError } from './PipelineSpecValidation';
 
-export { assertValidSpec, PipelineSpecError } from './PipelineSpecValidation';
+export { assertValidSpec, isWorkspaceSource, PipelineSpecError } from './PipelineSpecValidation';
 
 /** Stages sorted by `order`, so callers never depend on the array's stored ordering. */
 export function orderedStages(spec: PipelineSpecDef) {

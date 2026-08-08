@@ -2,7 +2,7 @@ import type { AgentProject } from '../../models/AgentProject';
 import type { AgentRole } from '../../models/AgentRole';
 import type { AgentRun } from '../../models/AgentRun';
 import type { AgentTask } from '../../models/AgentTask';
-import type { FileChange } from '../../lib/git';
+import type { FileChange, FileOp } from '../../lib/git';
 import type { PipelineStageDef } from '../../types/agentiz';
 import type { RunConversation } from '../AgentPipelineService';
 
@@ -24,8 +24,14 @@ export interface AgentStageResult {
   summary: string;
   /** Arbitrary structured payload persisted to AgentStageExecution.output. */
   output: Record<string, unknown>;
-  /** File edits this stage proposes. Accumulated across stages and pushed by the final action. */
-  fileChanges?: FileChange[];
+  /**
+   * File edits this stage proposes, accumulated across stages and pushed by the final action.
+   *
+   * Either shape: the legacy `FileChange` (text create/update) or a full `FileOp`, so an in-process
+   * executor can express a delete or a rename just like a remote worker does. `normalizeFileChanges`
+   * turns the first into the second.
+   */
+  fileChanges?: Array<FileChange | FileOp>;
 }
 
 /**

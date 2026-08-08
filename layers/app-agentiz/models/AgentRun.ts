@@ -93,6 +93,19 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @Column({ type: DataType.TEXT, allowNull: true })
   declare resultSummary: string | null;
 
+  /**
+   * What the run started from: the branch that was asked for and the commit it resolved to when the
+   * job was queued. Kept on the run so the final action does not have to resolve it a second time,
+   * and so the run card can say which commit the work was based on.
+   */
+  @AdminizerField({ title: 'Base ref', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare baseRef: string | null;
+
+  @AdminizerField({ title: 'Base commit', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare baseSha: string | null;
+
   @Column({ type: DataType.STRING, allowNull: true })
   declare commitSha: string | null;
 

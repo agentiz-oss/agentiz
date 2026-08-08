@@ -32,6 +32,19 @@ export function maskWorkerForUI(worker: any): any {
   return copy;
 }
 
+/**
+ * A git connection holds the OAuth token pair. It is never shown, not even masked per key: the UI
+ * only needs to know whether the connection has credentials at all, which `hasSecrets` says.
+ */
+export function maskConnectionForUI(connection: any): any {
+  if (!connection) return null;
+  const raw = typeof connection?.toJSON === 'function' ? connection.toJSON() : connection;
+  const copy = JSON.parse(JSON.stringify(raw ?? {}));
+  copy.hasSecrets = Boolean(copy.secrets?.accessToken);
+  delete copy.secrets;
+  return copy;
+}
+
 export function restoreMaskedSecrets(newSecrets: any, oldSecrets: any): any {
   const merged = JSON.parse(JSON.stringify(newSecrets ?? {}));
   for (const key of SECRET_KEYS) {

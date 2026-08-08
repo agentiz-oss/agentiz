@@ -14,6 +14,7 @@ export interface GitlabProject {
   name: string;
   path_with_namespace: string;
   web_url: string;
+  http_url_to_repo?: string | null;
   description: string | null;
   default_branch: string | null;
   visibility: string | null;
@@ -97,7 +98,7 @@ export class GitlabApiClient {
     return projects;
   }
 
-  async listIssues(gitlabProjectId: number, params: { updatedAfter?: Date; query?: Record<string, unknown> } = {}): Promise<GitlabIssue[]> {
+  async listIssues(gitlabProjectId: number | string, params: { updatedAfter?: Date; query?: Record<string, unknown> } = {}): Promise<GitlabIssue[]> {
     const search = new URLSearchParams({ per_page: '100', scope: 'all' });
     if (params.updatedAfter) search.set('updated_after', params.updatedAfter.toISOString());
     for (const [key, value] of Object.entries(params.query ?? {})) {

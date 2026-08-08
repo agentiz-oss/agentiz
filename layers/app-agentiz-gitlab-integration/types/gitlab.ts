@@ -1,35 +1,17 @@
 /**
  * Shared domain types for app-agentiz-gitlab-integration.
  *
- * The layer is built around three nested things:
- *   GitlabOAuthApp  — the OAuth *application* registered in a GitLab instance (client id/secret);
- *   GitlabConnection — one authorized GitLab account (access/refresh token) of such an application;
- *   GitlabRepository — a GitLab project reachable through that connection.
- * AgentProjectIntegration then links any number of repositories (from any number of connections
- * and instances) to a single Agentiz project.
+ * What is left here after the repository model moved into app-agentiz is exactly the part that is
+ * GitLab-shaped: the OAuth *application* registered in a GitLab instance, and the conventions for
+ * naming GitLab issues inside Agentiz.
+ *
+ * The authorized account (`AgentGitConnection`), the mirrored repository (`AgentRepository`) and the
+ * project link (`AgentProjectRepository`) are core models — a repository id has to mean the same
+ * thing to the runner allowlist, the job snapshot and the stored diff, whichever platform it is on.
  */
-
-export type GitlabConnectionStatus = 'active' | 'expired' | 'revoked' | 'error';
-
-/** What a linked repository is used for inside the pipeline. */
-export type IntegrationRole = 'source' | 'target' | 'both';
 
 export interface GitlabOAuthAppSecrets {
   clientSecret?: string;
-}
-
-export interface GitlabConnectionSecrets {
-  accessToken?: string;
-  refreshToken?: string;
-}
-
-export interface AgentProjectIntegrationConfig {
-  /** Minimum seconds between issue syncs of this link; 0/absent = every scheduled tick. */
-  pollIntervalSec?: number;
-  /** Raw passthrough filter for GET /projects/:id/issues (state, labels, milestone, ...). */
-  query?: Record<string, unknown>;
-  /** Branch commits are based on; falls back to the repository's default branch. */
-  defaultBranch?: string;
 }
 
 export const DEFAULT_GITLAB_BASE_URL = 'https://gitlab.com';
@@ -56,11 +38,10 @@ export function parseTaskExternalId(externalId: string): ParsedTaskExternalId | 
 }
 
 /**
- * Marker written into AgentTask.raw so the task can be traced back to the integration (and
- * therefore to the repository and token) it came from, without touching the app-agentiz schema.
+ * Marker written into `AgentTask.raw` under the core's `TASK_REPOSITORY_RAW_KEY` so a task can be
+ * traced back to the link it came from. `integrationId` is the `AgentProjectRepository.id`; the
+ * name is historical and is read from tasks synced long before that model existed.
  */
-export const TASK_INTEGRATION_RAW_KEY = 'agentizIntegration';
-
 export interface TaskIntegrationRef {
   provider: 'gitlab';
   integrationId: string;
@@ -68,13 +49,6 @@ export interface TaskIntegrationRef {
   repositoryId: string;
   gitlabProjectId: number;
   issueIid: number;
-}
-
-export function readTaskIntegrationRef(raw: unknown): TaskIntegrationRef | null {
-  const ref = (raw as Record<string, unknown> | null | undefined)?.[TASK_INTEGRATION_RAW_KEY];
-  if (!ref || typeof ref !== 'object') return null;
-  const candidate = ref as Partial<TaskIntegrationRef>;
-  return candidate.integrationId && candidate.repositoryId ? (candidate as TaskIntegrationRef) : null;
 }
 
 /** `group/subgroup/repo` -> owner `group/subgroup`, repo `repo` (GitLab allows nested groups). */

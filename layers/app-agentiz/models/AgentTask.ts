@@ -53,6 +53,19 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
   @Column({ type: DataType.JSONB, allowNull: true })
   declare tags: string[] | null;
 
+  /**
+   * Which branch this task is worked on. A person's decision, not a property of the upstream issue,
+   * so no synchroniser ever writes it — see GitSyncService/GitlabIssueSyncService, which list the
+   * fields they overwrite explicitly.
+   */
+  @AdminizerField({
+    title: 'Branch',
+    tooltip: 'Ветка, с которой работать по этой задаче. Пусто = ветка из пайплайна или default репозитория.',
+    views: { list: false, add: true, edit: true },
+  })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare branchRef: string | null;
+
   @AdminizerField({ title: 'External Status', views: { list: true, add: false, edit: false } })
   @Column({ type: DataType.STRING, allowNull: true })
   declare externalStatus: string | null;

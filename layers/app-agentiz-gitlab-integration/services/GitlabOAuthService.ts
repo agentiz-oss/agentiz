@@ -1,7 +1,7 @@
 import { Op } from 'sequelize';
 import { GitlabOAuthApp } from '../models/GitlabOAuthApp';
 import { GitlabOAuthState } from '../models/GitlabOAuthState';
-import { GitlabConnection } from '../models/GitlabConnection';
+import { AgentGitConnection } from '../../app-agentiz/models/AgentGitConnection';
 import { GitlabApiClient } from '../lib/GitlabApiClient';
 import {
   buildAuthorizeUrl,
@@ -22,8 +22,12 @@ export class GitlabOAuthError extends Error {}
 
 /**
  * Drives the authorization-code flow and keeps connection tokens usable:
- * start() -> GitLab consent screen -> handleCallback() -> GitlabConnection, then getAccessToken()
+ * start() -> GitLab consent screen -> handleCallback() -> AgentGitConnection, then getAccessToken()
  * transparently refreshes whenever the stored access token is about to expire.
+ *
+ * The connection row itself belongs to app-agentiz (`AgentGitConnection`) so that a repository id
+ * means the same thing across the whole application. What stays here is everything GitLab-shaped:
+ * the OAuth application, PKCE, and the refresh endpoint.
  */
 export class GitlabOAuthService {
   static scopesFor(app: GitlabOAuthApp): string[] {
@@ -80,7 +84,7 @@ export class GitlabOAuthService {
   static async handleCallback(params: {
     code: string;
     state: string;
-  }): Promise<{ connection: GitlabConnection; returnTo: string | null }> {
+  }): Promise<{ connection: AgentGitConnection; returnTo: string | null }> {
     const pending = await GitlabOAuthState.findOne({ where: { state: params.state } });
     if (!pending) throw new GitlabOAuthError('Unknown or already consumed OAuth state');
     if (pending.usedAt) throw new GitlabOAuthError('This OAuth state has already been used');
@@ -106,7 +110,10 @@ export class GitlabOAuthService {
 
     const expiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000) : null;
     const attributes = {
-      gitlabUserId: user.id,
+      // Denormalized from the OAuth app: the core builds API and clone URLs without reading a
+      // table owned by this layer.
+      baseUrl: app.baseUrl,
+      externalUserId: String(user.id),
       username: user.username,
       displayName: user.name,
       avatarUrl: user.avatar_url,
@@ -118,12 +125,12 @@ export class GitlabOAuthService {
       ownerId: pending.ownerId,
     };
 
-    const existing = await GitlabConnection.findOne({
-      where: { oauthAppId: app.id, gitlabUserId: user.id },
+    const existing = await AgentGitConnection.findOne({
+      where: { provider: 'gitlab', oauthAppId: app.id, externalUserId: String(user.id) },
     });
     const connection = existing
       ? await existing.update(attributes)
-      : await GitlabConnection.create({ oauthAppId: app.id, ...attributes });
+      : await AgentGitConnection.create({ provider: 'gitlab', oauthAppId: app.id, ...attributes });
 
     await pending.update({ usedAt: new Date() });
 
@@ -132,9 +139,10 @@ export class GitlabOAuthService {
 
   /**
    * Returns a usable access token, refreshing it first when it is expired or about to expire.
-   * Every GitLab call in this layer goes through here.
+   * Every GitLab call in this layer goes through here, and so does the core through
+   * `gitlabConnectionAuthority`.
    */
-  static async getAccessToken(connection: GitlabConnection): Promise<string> {
+  static async getAccessToken(connection: AgentGitConnection): Promise<string> {
     const accessToken = connection.secrets?.accessToken;
     if (!accessToken) {
       await connection.update({ status: 'revoked', lastError: 'No access token stored' });
@@ -152,8 +160,7 @@ export class GitlabOAuthService {
       throw new GitlabOAuthError(`GitLab connection ${connection.id} expired, re-authorize it`);
     }
 
-    const app = await GitlabOAuthApp.findByPk(connection.oauthAppId);
-    if (!app) throw new GitlabOAuthError(`GitLab OAuth app ${connection.oauthAppId} not found`);
+    const app = await this.appFor(connection);
 
     try {
       const token = await refreshAccessToken({
@@ -182,17 +189,23 @@ export class GitlabOAuthService {
     }
   }
 
-  static async apiClientFor(connection: GitlabConnection): Promise<GitlabApiClient> {
-    const app = await GitlabOAuthApp.findByPk(connection.oauthAppId);
-    if (!app) throw new GitlabOAuthError(`GitLab OAuth app ${connection.oauthAppId} not found`);
-    return new GitlabApiClient(app.baseUrl, await this.getAccessToken(connection));
+  /** The OAuth application a connection was authorized through; `oauthAppId` is opaque to the core. */
+  static async appFor(connection: AgentGitConnection): Promise<GitlabOAuthApp> {
+    const app = connection.oauthAppId ? await GitlabOAuthApp.findByPk(connection.oauthAppId) : null;
+    if (!app) throw new GitlabOAuthError(`GitLab OAuth app ${connection.oauthAppId ?? '(none)'} not found`);
+    return app;
+  }
+
+  static async apiClientFor(connection: AgentGitConnection): Promise<GitlabApiClient> {
+    const baseUrl = connection.baseUrl ?? (await this.appFor(connection)).baseUrl;
+    return new GitlabApiClient(baseUrl, await this.getAccessToken(connection));
   }
 
   /** Revokes the token upstream (best effort) and marks the connection revoked locally. */
-  static async disconnect(connectionId: string): Promise<GitlabConnection> {
-    const connection = await GitlabConnection.findByPk(connectionId);
+  static async disconnect(connectionId: string): Promise<AgentGitConnection> {
+    const connection = await AgentGitConnection.findByPk(connectionId);
     if (!connection) throw new GitlabOAuthError(`GitLab connection ${connectionId} not found`);
-    const app = await GitlabOAuthApp.findByPk(connection.oauthAppId);
+    const app = connection.oauthAppId ? await GitlabOAuthApp.findByPk(connection.oauthAppId) : null;
 
     const token = connection.secrets?.accessToken;
     if (app && token) {

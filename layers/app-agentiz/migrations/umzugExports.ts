@@ -27,6 +27,26 @@ import {
   up as upRunConversationLineage,
   down as downRunConversationLineage,
 } from './umzug/1785000009000_run_conversation_lineage';
+import {
+  up as upPipelineWorkerWorkspace,
+  down as downPipelineWorkerWorkspace,
+} from './umzug/1785000010000_pipeline_worker_workspace';
+import {
+  up as upGenericRepositories,
+  down as downGenericRepositories,
+} from './umzug/1787000000000_generic_repositories';
+import {
+  up as upWorkerRepositoryScope,
+  down as downWorkerRepositoryScope,
+} from './umzug/1787000100000_worker_repository_scope';
+import {
+  up as upTaskBranchRef,
+  down as downTaskBranchRef,
+} from './umzug/1787000200000_task_branch_ref';
+import {
+  up as upRunDiffs,
+  down as downRunDiffs,
+} from './umzug/1787000300000_run_diffs';
 
 export const umzugExports: Migration[] = [
   {
@@ -88,5 +108,36 @@ export const umzugExports: Migration[] = [
     timestamp: 1785000009000,
     up: upRunConversationLineage,
     down: downRunConversationLineage,
+  },
+  {
+    name: 'pipeline_worker_workspace',
+    timestamp: 1785000010000,
+    up: upPipelineWorkerWorkspace,
+    down: downPipelineWorkerWorkspace,
+  },
+  // Deliberately numbered after the GitLab layer's 1786000000000: it copies that layer's data.
+  {
+    name: 'generic_repositories',
+    timestamp: 1787000000000,
+    up: upGenericRepositories,
+    down: downGenericRepositories,
+  },
+  {
+    name: 'worker_repository_scope',
+    timestamp: 1787000100000,
+    up: upWorkerRepositoryScope,
+    down: downWorkerRepositoryScope,
+  },
+  {
+    name: 'task_branch_ref',
+    timestamp: 1787000200000,
+    up: upTaskBranchRef,
+    down: downTaskBranchRef,
+  },
+  {
+    name: 'run_diffs',
+    timestamp: 1787000300000,
+    up: upRunDiffs,
+    down: downRunDiffs,
   },
 ];

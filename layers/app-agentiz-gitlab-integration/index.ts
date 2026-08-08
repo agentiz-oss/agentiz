@@ -4,25 +4,19 @@ import { AdminizerRouteMiddleware, generateAdminizerModelConfig } from '@nodekni
 import cron, { type ScheduledTask } from 'node-cron';
 import { migrations } from './migrations';
 import { GitlabOAuthApp } from './models/GitlabOAuthApp';
-import { GitlabConnection } from './models/GitlabConnection';
-import { GitlabRepository } from './models/GitlabRepository';
-import { AgentProjectIntegration } from './models/AgentProjectIntegration';
 import { GitlabOAuthState } from './models/GitlabOAuthState';
 import { GitlabOAuthService, GitlabOAuthError } from './services/GitlabOAuthService';
-import { GitlabRepositorySyncService } from './services/GitlabRepositorySyncService';
+import { GitlabRepositorySyncService, gitlabConnectionAuthority } from './services/GitlabRepositorySyncService';
 import { GitlabIssueSyncService } from './services/GitlabIssueSyncService';
-import { IntegrationResolverService } from './services/IntegrationResolverService';
 import { maskModelForUI, restoreMaskedSecrets } from './lib/secrets';
+import { AgentProject } from '../app-agentiz/models/AgentProject';
 import { gitlabProviderAdapter } from './lib/GitLabProvider';
 import { gitlabIssuesTaskManagerAdapter } from './lib/GitlabIssuesTaskManager';
 import { DEFAULT_GITLAB_BASE_URL, DEFAULT_GITLAB_SCOPES } from './types/gitlab';
-import { AgentProject } from '../app-agentiz/models/AgentProject';
 import { GitSyncService } from '../app-agentiz/services/GitSyncService';
 import {
-  registerTaskGitProviderResolver,
-  registerTaskRepositoryResolver,
-  unregisterTaskGitProviderResolver,
-  unregisterTaskRepositoryResolver,
+  registerGitConnectionAuthority,
+  unregisterGitConnectionAuthority,
 } from '../app-agentiz/lib/git';
 import type { GitProviderAdapter } from '../app-agentiz/lib/git';
 import type { TaskManagerAdapter } from '../app-agentiz/lib/taskManager';
@@ -83,7 +77,7 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
   migrations: Migration[] = migrations.umzug;
 
   @Collection
-  models: any[] = [GitlabOAuthApp, GitlabConnection, GitlabRepository, AgentProjectIntegration, GitlabOAuthState];
+  models: any[] = [GitlabOAuthApp, GitlabOAuthState];
 
   /**
    * The GitLab adapter itself: this layer owns GitLabProvider and hands it to app-agentiz through
@@ -129,7 +123,7 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
           return res.send(
             htmlPage(
               'GitLab подключён',
-              `<p>Аккаунт <b>${connection.username ?? connection.gitlabUserId}</b> авторизован.</p>`,
+              `<p>Аккаунт <b>${connection.username ?? connection.externalUserId}</b> авторизован.</p>`,
               returnTo || back,
             ),
           );
@@ -153,65 +147,6 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
             data: apps.map((app) => ({
               ...maskModelForUI(app),
               callbackUrl: app.redirectUri || defaultRedirectUri(req),
-            })),
-          });
-        }
-
-        if (method === 'getConnections') {
-          const connections = await GitlabConnection.findAll({
-            order: [['createdAt', 'DESC']],
-            include: [{ model: GitlabOAuthApp, as: 'oauthApp' }],
-          });
-          return res.json({
-            data: connections.map((connection) => ({
-              ...maskModelForUI(connection),
-              oauthAppName: connection.oauthApp?.name ?? null,
-              baseUrl: connection.oauthApp?.baseUrl ?? null,
-            })),
-          });
-        }
-
-        if (method === 'getRepositories') {
-          const connectionId = typeof req.query.connectionId === 'string' ? req.query.connectionId : '';
-          const search = typeof req.query.search === 'string' ? req.query.search.toLowerCase() : '';
-          const repositories = await GitlabRepository.findAll({
-            where: connectionId ? { connectionId } : {},
-            order: [['pathWithNamespace', 'ASC']],
-            limit: 1000,
-          });
-          const filtered = search
-            ? repositories.filter((repo) => repo.pathWithNamespace.toLowerCase().includes(search))
-            : repositories;
-          return res.json({ data: filtered.map((repo) => repo.toJSON()) });
-        }
-
-        if (method === 'getIntegrations') {
-          const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
-          const integrations = await AgentProjectIntegration.findAll({
-            where: projectId ? { projectId } : {},
-            order: [['createdAt', 'DESC']],
-            include: [
-              { model: GitlabRepository, as: 'repository' },
-              { model: GitlabConnection, as: 'connection' },
-            ],
-          });
-          return res.json({
-            data: integrations.map((integration) => ({
-              ...integration.toJSON(),
-              connection: maskModelForUI(integration.connection ?? null),
-              repository: integration.repository?.toJSON() ?? null,
-            })),
-          });
-        }
-
-        if (method === 'getProjects') {
-          const projects = await AgentProject.findAll({ order: [['name', 'ASC']] });
-          return res.json({
-            data: projects.map((project) => ({
-              id: project.id,
-              name: project.name,
-              slug: project.slug,
-              isActive: project.isActive,
             })),
           });
         }
@@ -282,74 +217,12 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
             return res.json({ data: { authorizeUrl } });
           }
 
-          if (method === 'disconnect') {
-            const connection = await GitlabOAuthService.disconnect(String(req.body?.connectionId ?? ''));
-            return res.json({ data: maskModelForUI(connection) });
-          }
-
-          if (method === 'deleteConnection') {
-            const connection = await GitlabConnection.findByPk(String(req.body?.connectionId ?? ''));
-            if (!connection) return res.status(404).json({ message: 'Connection not found' });
-            await connection.destroy();
-            return res.json({ data: { ok: true } });
-          }
-
           if (method === 'syncRepositories') {
             const connectionId = String(req.body?.connectionId ?? '');
             const data = connectionId
               ? [await GitlabRepositorySyncService.syncConnection(connectionId)]
               : await GitlabRepositorySyncService.syncAllActiveConnections();
             return res.json({ data });
-          }
-
-          if (method === 'linkRepository') {
-            const projectId = String(req.body?.projectId ?? '');
-            const repositoryId = String(req.body?.repositoryId ?? '');
-            if (!projectId || !repositoryId) {
-              return res.status(400).json({ message: 'projectId and repositoryId are required' });
-            }
-            const repository = await GitlabRepository.findByPk(repositoryId);
-            if (!repository) return res.status(404).json({ message: 'Repository not found' });
-            const project = await AgentProject.findByPk(projectId);
-            if (!project) return res.status(404).json({ message: 'Agentiz project not found' });
-
-            const existing = await AgentProjectIntegration.findOne({ where: { projectId, repositoryId } });
-            if (existing) return res.status(409).json({ message: 'This repository is already linked' });
-
-            const integration = await AgentProjectIntegration.create({
-              projectId,
-              provider: 'gitlab',
-              connectionId: repository.connectionId,
-              repositoryId,
-              role: req.body?.role ?? 'both',
-              isPrimary: Boolean(req.body?.isPrimary),
-              syncIssues: req.body?.syncIssues !== false,
-              isActive: true,
-              config: req.body?.config ?? null,
-            });
-            if (integration.isPrimary) await this.demoteOtherPrimaries(integration);
-            return res.json({ data: integration.toJSON() });
-          }
-
-          if (method === 'updateIntegration') {
-            const integration = await AgentProjectIntegration.findByPk(String(req.body?.integrationId ?? ''));
-            if (!integration) return res.status(404).json({ message: 'Integration not found' });
-            await integration.update({
-              role: req.body?.role ?? integration.role,
-              isPrimary: req.body?.isPrimary !== undefined ? Boolean(req.body.isPrimary) : integration.isPrimary,
-              syncIssues: req.body?.syncIssues !== undefined ? Boolean(req.body.syncIssues) : integration.syncIssues,
-              isActive: req.body?.isActive !== undefined ? Boolean(req.body.isActive) : integration.isActive,
-              config: req.body?.config !== undefined ? req.body.config : integration.config,
-            });
-            if (integration.isPrimary) await this.demoteOtherPrimaries(integration);
-            return res.json({ data: integration.toJSON() });
-          }
-
-          if (method === 'unlinkIntegration') {
-            const integration = await AgentProjectIntegration.findByPk(String(req.body?.integrationId ?? ''));
-            if (!integration) return res.status(404).json({ message: 'Integration not found' });
-            await integration.destroy();
-            return res.json({ data: { ok: true } });
           }
 
           if (method === 'syncIntegration') {
@@ -383,34 +256,15 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
     super(appManager);
   }
 
-  /** Only one repository per project may be the fallback target. */
-  private async demoteOtherPrimaries(integration: AgentProjectIntegration): Promise<void> {
-    const siblings = await AgentProjectIntegration.findAll({
-      where: { projectId: integration.projectId, isPrimary: true },
-    });
-    for (const sibling of siblings) {
-      if (sibling.id !== integration.id) await sibling.update({ isPrimary: false });
-    }
-  }
-
   async mount(): Promise<void> {
-    const configs = [
-      generateAdminizerModelConfig(GitlabOAuthApp),
-      generateAdminizerModelConfig(GitlabConnection),
-      generateAdminizerModelConfig(GitlabRepository),
-      generateAdminizerModelConfig(AgentProjectIntegration),
-    ].map((item) => ({ appId: this.appId, item }));
+    const configs = [generateAdminizerModelConfig(GitlabOAuthApp)].map((item) => ({ appId: this.appId, item }));
     await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 
-    // Plug into app-agentiz: issues of linked repositories are part of a project sync, and tasks
-    // that came from a link are acted upon in their own repository with their own token.
+    // Plug into app-agentiz: issues of linked repositories are part of a project sync, and the core
+    // gets the one thing it cannot do itself with a GitLab connection — renew its token and
+    // re-mirror its repositories. Repository resolution itself is core business now.
     GitSyncService.registerSyncContributor(this.appId, (project) => GitlabIssueSyncService.syncProject(project));
-    registerTaskGitProviderResolver(this.appId, (task, project) =>
-      IntegrationResolverService.resolveProvider(task, project),
-    );
-    registerTaskRepositoryResolver(this.appId, (task, project) =>
-      IntegrationResolverService.resolveRepository(task, project),
-    );
+    registerGitConnectionAuthority(gitlabConnectionAuthority);
 
     if (process.env.AGENTIZ_GITLAB_SYNC_ENABLED === 'true') {
       this.syncTask = cron.schedule(SYNC_CRON, () => {
@@ -433,8 +287,7 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
       this.syncTask = null;
     }
     GitSyncService.unregisterSyncContributor(this.appId);
-    unregisterTaskGitProviderResolver(this.appId);
-    unregisterTaskRepositoryResolver(this.appId);
+    unregisterGitConnectionAuthority('gitlab');
   }
 }
 

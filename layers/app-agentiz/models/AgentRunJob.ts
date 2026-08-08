@@ -64,6 +64,34 @@ export class AgentRunJob extends Model<InferAttributes<AgentRunJob>, InferCreati
   @Column({ type: DataType.STRING, allowNull: true })
   declare workerId: string | null;
 
+  /**
+   * Repository the run works on, mirrored out of `snapshot.repository`.
+   *
+   * A real column rather than a JSON field because the claim query filters on it in SQL under
+   * `FOR UPDATE SKIP LOCKED`, and JSON filtering is written differently in postgres and sqlite —
+   * this project runs on both. Null = the run touches no repository (`finalAction: none`).
+   */
+  @AdminizerField({
+    title: 'Repository',
+    tooltip: 'AgentRepository the run works on. Empty = the run touches no repository.',
+    views: { list: true, add: false, edit: false },
+  })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare repositoryId: string | null;
+
+  /**
+   * Set when the run can only execute on one machine — currently a pipeline whose source is a
+   * directory on that worker. Enforced in the claim query itself, so a job nobody else can run is
+   * never handed out and silently failed.
+   */
+  @AdminizerField({
+    title: 'Pinned worker',
+    tooltip: 'Only this worker may claim the job. Empty = any eligible worker.',
+    views: { list: false, add: false, edit: false },
+  })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare requiredWorkerId: string | null;
+
   @Column({ type: DataType.STRING, allowNull: true })
   declare leaseTokenHash: string | null;
 

@@ -19,6 +19,10 @@ import { AgentRunResultDedup } from './models/AgentRunResultDedup';
 import { AgentWorker } from './models/AgentWorker';
 import { AgentTaskSource } from './models/AgentTaskSource';
 import { AgentTaskComment } from './models/AgentTaskComment';
+import { AgentGitConnection } from './models/AgentGitConnection';
+import { AgentRepository } from './models/AgentRepository';
+import { AgentProjectRepository } from './models/AgentProjectRepository';
+import { AgentRunDiff } from './models/AgentRunDiff';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentPipelineService } from './services/AgentPipelineService';
 import { AgentWorkerApiService } from './services/AgentWorkerApiService';
@@ -27,7 +31,15 @@ import { AgentWorkerRegistryService, WorkerRegistryError } from './services/Agen
 import { GitSyncService } from './services/GitSyncService';
 import { TaskSourceSyncService } from './services/TaskSourceSyncService';
 import { assertValidSpec, PipelineSpecError } from './services/PipelineSpecResolver';
-import { createGitProvider, githubProviderAdapter } from './lib/git';
+import { RepositoryResolverService } from './services/RepositoryResolverService';
+import {
+    createGitProvider,
+    githubProviderAdapter,
+    registerTaskGitProviderResolver,
+    registerTaskRepositoryResolver,
+    unregisterTaskGitProviderResolver,
+    unregisterTaskRepositoryResolver,
+} from './lib/git';
 import type { GitProviderAdapter } from './lib/git';
 import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
 import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTaskManager';
@@ -35,6 +47,7 @@ import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerColle
 import { taskManagerTitle, type TaskManagerAdapter } from './lib/taskManager';
 import { maskProjectForUI, maskWorkerForUI, restoreMaskedSecrets } from './lib/secrets';
 import { taskRoutes } from './lib/taskRoutes';
+import { repositoryRoutes } from './lib/repositoryRoutes';
 import { createWorkerApiRouter, WORKER_API_BASE } from './lib/workerApiRouter';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
@@ -76,6 +89,10 @@ export class AppAgentiz extends AbstractApp {
         AgentWorker,
         AgentTaskSource,
         AgentTaskComment,
+        AgentGitConnection,
+        AgentRepository,
+        AgentProjectRepository,
+        AgentRunDiff,
     ];
 
     @Collection
@@ -108,6 +125,8 @@ export class AppAgentiz extends AbstractApp {
     adminizerMiddlewares: AdminizerRouteMiddleware[] = [
         // The built-in task tracker and task-source management live in lib/taskRoutes.ts.
         ...taskRoutes,
+        // Connections, mirrored repositories and project links — shared by every platform.
+        ...repositoryRoutes,
         {
             route: '/agentiz',
             method: 'get',
@@ -193,11 +212,13 @@ export class AppAgentiz extends AbstractApp {
                         order: [['createdAt', 'ASC']],
                         limit: 500,
                     });
+                    const diff = await AgentRunDiff.findOne({ where: { runId } });
                     return res.json({
                         data: {
                             run: run.toJSON(),
                             stages: stages.map((stage) => stage.toJSON()),
                             logs: logs.map((log) => log.toJSON()),
+                            diff: diff?.toJSON() ?? null,
                         },
                     });
                 }
@@ -256,6 +277,14 @@ export class AppAgentiz extends AbstractApp {
                         if (!taskId) return res.status(400).json({ message: 'taskId is required' });
                         const run = await AgentPipelineService.runTask(taskId, 'manual');
                         return res.json({ data: run.toJSON() });
+                    }
+
+                    if (method === 'applyRunDiff') {
+                        const runId = String(req.body?.runId ?? '');
+                        if (!runId) return res.status(400).json({ message: 'runId is required' });
+                        const actor = (req as any).session?.UserAP?.login ?? (req as any).user?.login ?? 'admin';
+                        const diff = await AgentPipelineService.applyStoredDiff(runId, String(actor));
+                        return res.json({ data: diff.toJSON() });
                     }
 
                     if (method === 'cancelRun') {
@@ -319,7 +348,8 @@ export class AppAgentiz extends AbstractApp {
                     }
 
                     if (method === 'pauseWorker' || method === 'resumeWorker' || method === 'revokeWorker'
-                        || method === 'deleteWorker' || method === 'rotateWorkerToken' || method === 'setWorkerProjects') {
+                        || method === 'deleteWorker' || method === 'rotateWorkerToken' || method === 'setWorkerProjects'
+                        || method === 'setWorkerRepositories' || method === 'setWorkerWorkspaces') {
                         const workerId = String(req.body?.workerId ?? '');
                         if (!workerId) return res.status(400).json({ message: 'workerId is required' });
                         const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
@@ -327,6 +357,11 @@ export class AppAgentiz extends AbstractApp {
                             ? req.body.allowedProjectIds.map((id: unknown) => String(id))
                             : undefined;
                         try {
+                            if (method === 'setWorkerWorkspaces') {
+                                const workspaces = Array.isArray(req.body?.workspaces) ? req.body.workspaces : [];
+                                const worker = await AgentWorkerRegistryService.setWorkspaces(workerId, workspaces);
+                                return res.json({ data: maskWorkerForUI(worker) });
+                            }
                             if (method === 'pauseWorker') {
                                 return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.pause(workerId, reason)) });
                             }
@@ -342,6 +377,13 @@ export class AppAgentiz extends AbstractApp {
                             }
                             if (method === 'setWorkerProjects') {
                                 const worker = await AgentWorkerRegistryService.setAllowedProjects(workerId, projectIds ?? null);
+                                return res.json({ data: maskWorkerForUI(worker) });
+                            }
+                            if (method === 'setWorkerRepositories') {
+                                const repositoryIds = Array.isArray(req.body?.allowedRepositoryIds)
+                                    ? req.body.allowedRepositoryIds.map((id: unknown) => String(id))
+                                    : null;
+                                const worker = await AgentWorkerRegistryService.setAllowedRepositories(workerId, repositoryIds);
                                 return res.json({ data: maskWorkerForUI(worker) });
                             }
                             // The rotated token is returned exactly once: it is stored only as a hash.
@@ -402,8 +444,22 @@ export class AppAgentiz extends AbstractApp {
             generateAdminizerModelConfig(AgentWorker),
             generateAdminizerModelConfig(AgentTaskSource),
             generateAdminizerModelConfig(AgentTaskComment),
+            generateAdminizerModelConfig(AgentGitConnection),
+            generateAdminizerModelConfig(AgentRepository),
+            generateAdminizerModelConfig(AgentProjectRepository),
+            generateAdminizerModelConfig(AgentRunDiff),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
+
+        // "Which repository does this task belong to" is now a core question: the link lives in
+        // agentiz_project_repositories, and provider layers only supply tokens and adapters. A
+        // project with no links at all resolves to null here and falls back to its own repoConfig.
+        registerTaskGitProviderResolver(this.appId, (task, project) =>
+            RepositoryResolverService.resolveProvider(task, project),
+        );
+        registerTaskRepositoryResolver(this.appId, (task, project) =>
+            RepositoryResolverService.resolveRepository(task, project),
+        );
 
         // Mounted on the root app, outside Adminizer's /dashboard prefix: workers are machines with
         // their own bearer tokens, not admin sessions. See lib/workerApiRouter.ts.
@@ -465,6 +521,8 @@ export class AppAgentiz extends AbstractApp {
             this.syncTask.stop();
             this.syncTask = null;
         }
+        unregisterTaskGitProviderResolver(this.appId);
+        unregisterTaskRepositoryResolver(this.appId);
         AgentWorkerQueueService.stop();
         AgentJobReaperService.stop();
     }
