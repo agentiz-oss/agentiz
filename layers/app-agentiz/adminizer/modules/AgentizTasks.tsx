@@ -148,7 +148,13 @@ const AgentizTasks: React.FC = () => {
   const [showSources, setShowSources] = useState(false);
   const [showNewTask, setShowNewTask] = useState(false);
 
-  const [query, setQuery] = useState({ projectId: "", status: "", priority: "", sourceType: "", search: "" });
+  const [query, setQuery] = useState(() => ({
+    projectId: new URLSearchParams(window.location.search).get("projectId") ?? "",
+    status: "",
+    priority: "",
+    sourceType: "",
+    search: "",
+  }));
 
   // --- new source form -----------------------------------------------------------------------
   const [newSource, setNewSource] = useState<{ projectId: string; type: string; name: string; values: Record<string, string> }>({
@@ -877,6 +883,9 @@ const AgentizTasks: React.FC = () => {
                           </span>
                           {run.triggerCommentId && <span className="text-muted-foreground">после сообщения {run.triggerCommentId.slice(0, 8)}</span>}
                           {run.previousRunId && <span className="text-muted-foreground">после запуска {run.previousRunId.slice(0, 8)}</span>}
+                          <a href={`${(window as any).routePrefix ?? "/dashboard"}/agentiz-runs?runId=${run.id}`} className="underline">
+                            подробнее
+                          </a>
                           {run.status !== "succeeded" && run.status !== "failed" && run.status !== "cancelled" && (
                             <button
                               onClick={async () => {

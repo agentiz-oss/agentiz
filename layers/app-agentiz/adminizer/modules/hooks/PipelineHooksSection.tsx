@@ -12,10 +12,10 @@ import { HookScriptEditor } from './HookScriptEditor';
 /*
  * CodeMirror is most of this module's JavaScript (~160 kB gzipped) and it loads even for someone
  * who never opens a hook. A dynamic import does shrink the first load, but under vite's lib mode it
- * also turns AgentizHome.js into a re-export facade — changing how the *whole* screen is delivered,
- * not just this editor. Adminizer's module loader is not in this repository, so that change cannot
- * be verified here, and a broken pipeline page is a worse outcome than a heavier one. Revisit with
- * the loader in hand.
+ * also turns AgentizPipelines.js into a re-export facade — changing how the *whole* screen is
+ * delivered, not just this editor. Adminizer's module loader is not in this repository, so that
+ * change cannot be verified here, and a broken pipeline page is a worse outcome than a heavier one.
+ * Revisit with the loader in hand.
  */
 
 export interface HookConfig {
