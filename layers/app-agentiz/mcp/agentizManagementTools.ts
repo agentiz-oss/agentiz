@@ -6,6 +6,7 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentTaskSource } from '../models/AgentTaskSource';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentWorkerRegistryService, WorkerRegistryError } from '../services/AgentWorkerRegistryService';
+import { PIPELINE_SPEC_SCHEMA_TOOL } from '../services/PipelineSpecValidation';
 import {
   maskProjectForUI,
   maskTaskSourceForUI,
@@ -111,15 +112,16 @@ export const manageBusinessDataTool: IMcpTool = {
   group: 'agentiz-actions',
   groupDescription: 'State-changing Agentiz operations. Inspect the target first and call deliberately.',
   shortDescription: 'Reads and manages Agentiz projects, roles, pipeline specs, task sources, tasks and comments.',
-  description: 'Controlled CRUD for user-managed Agentiz business records. entity selects the record type; delete requires confirm=true. Secrets can be set but are always masked in returned records.',
+  description: `Controlled CRUD for user-managed Agentiz business records. entity selects the record type; delete requires confirm=true. Secrets can be set but are always masked in returned records. Before writing a pipelineSpec, call ${PIPELINE_SPEC_SCHEMA_TOOL} — its "spec" field is a validated JSON document and a wrong shape is rejected.`,
   mode: 'protected',
   inputSchema: {
     type: 'object',
     required: ['entity', 'operation'],
     properties: {
-      entity: { type: 'string', enum: Object.keys(definitions) },
+      entity: { type: 'string', enum: Object.keys(definitions), description: `Writable fields per entity: ${Object.entries(definitions).map(([key, value]) => `${key}(${value.fields.join(', ')})`).join('; ')}.` },
       operation: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'] },
-      id: { type: 'string' }, projectId: { type: 'string' }, values: { type: 'object' },
+      id: { type: 'string' }, projectId: { type: 'string' },
+      values: { type: 'object', description: `Field values keyed by field name. For entity pipelineSpec, "spec" is a JSON object whose shape comes from ${PIPELINE_SPEC_SCHEMA_TOOL}.` },
       confirm: { type: 'boolean', description: 'Must be true for delete.' },
       limit: { type: 'integer', default: LIMIT_DEFAULT, maximum: LIMIT_MAX },
     },

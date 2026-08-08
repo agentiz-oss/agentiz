@@ -283,6 +283,11 @@ export class AgentizAssistantService extends AbstractAiModelService {
                     ? 'Use list_mcp_tools first (without group for a compact catalogue, with a group for exact schemas), then call_mcp_tool with the exact tool_name and params.'
                     : 'MCP tools are only available to administrator users in this chat.',
                 'Prefer read-only tools for diagnostics. Do not call mutating tools (create/update/delete records, agentiz.sync, agentiz.runTask, agentiz.cancelRun, ...) unless the user explicitly asked for that action.',
+                // The spec is a validated JSON document; guessing its shape is the one failure this
+                // assistant hit repeatedly, and the schema is only reachable through that tool.
+                mcpAvailable
+                    ? 'A PipelineSpec\'s "spec" field is a validated JSON document. Before creating or editing one, read its shape with call_mcp_tool("agentiz.pipelineSpecSchema", {projectId}), and send "spec" as a JSON object, never as a JSON string.'
+                    : 'A PipelineSpec\'s "spec" field is a validated JSON document — send it as a JSON object, never as a JSON string, and follow the field description from list_data_models.',
             ].join('\n'),
             tools: { ...skillTools, ...(mcpAvailable ? { list_mcp_tools: listMcpTools, call_mcp_tool: callMcpTool } : {}) },
         });

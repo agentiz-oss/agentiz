@@ -45,9 +45,15 @@
   from `.env` at call time.
 - `GET /mcp` returns the compact tool catalogue (groups + tool list). Without a valid key it only
   shows the public `general` group (just `health`). With a valid key it also shows `agentiz`
-  (read-only: overview, projects, tasks, runs, runDetails, configuration) and `agentiz-actions`
-  (state-changing: sync, runTask, cancelRun), plus more `general` tools (adminizer.user,
-  system.listApps, system.toggleApp).
+  (read-only: overview, projects, tasks, runs, runDetails, configuration, pipelineSpecSchema,
+  workers, workerDetails, jobs) and `agentiz-actions` (state-changing: sync, runTask, cancelRun,
+  manage, manageWorker), plus more `general` tools (adminizer.user, system.listApps,
+  system.toggleApp).
+- `PipelineSpec.spec` is validated against `layers/app-agentiz/schemas/pipeline-spec.schema.json`.
+  Anything writing a spec — the MCP `agentiz.manage` tool, Adminizer's generic CRUD, the admin
+  assistant's `create_model_record` skill — reads that shape through `agentiz.pipelineSpecSchema`,
+  which also returns the project's role keys and worker workspaces. Rejections carry the failing
+  fields and that tool name in `error.message`, because those callers surface nothing else.
 - `GET /mcp/group/:group` returns full schemas for one group.
 - `POST /mcp/call/:toolName` calls a tool with a JSON body.
 - Example:

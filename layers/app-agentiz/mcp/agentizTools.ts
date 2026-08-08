@@ -12,6 +12,7 @@ import { AgentPipelineService } from '../services/AgentPipelineService';
 import { GitSyncService } from '../services/GitSyncService';
 import { AgentWorkerApiService } from '../services/AgentWorkerApiService';
 import { AgentWorkerQueueService } from '../services/AgentWorkerQueueService';
+import { pipelineSpecSchema, PIPELINE_SPEC_RULES } from '../services/PipelineSpecValidation';
 import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
 
 type Params = Record<string, unknown>;
@@ -282,6 +283,63 @@ const configurationTool: IMcpTool = {
   },
 };
 
+/**
+ * Everything needed to write a `PipelineSpec.spec` in one call. Without it an agent has to guess the
+ * shape from a rejection, which is what made "create a pipeline" fail repeatedly: the schema lives
+ * in a file on the server, and neither the MCP catalogue nor Adminizer's model listing showed it.
+ */
+const pipelineSpecSchemaTool: IMcpTool = {
+  name: 'agentiz.pipelineSpecSchema', group: 'agentiz',
+  shortDescription: 'Returns the JSON Schema, rules and examples for the PipelineSpec.spec document.',
+  description: 'Returns the exact shape of PipelineSpec.spec: the JSON Schema, the cross-field rules the schema cannot express, and ready examples. Pass projectId to also get the agentRoleKey values and the worker workspaces that project can actually reference. Call this before creating or updating a pipeline spec.',
+  mode: 'protected',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string', description: 'Fills in the role keys and workspaces available to this project.' } } },
+  async handler(params) {
+    const payload = objectParams(params);
+    const projectId = stringParam(payload, 'projectId');
+
+    const examples = {
+      repository: {
+        stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
+        finalAction: { type: 'commit_and_pr', branchPrefix: 'agentiz/' },
+      },
+      workerWorkspace: {
+        source: { kind: 'worker_workspace', workspace: { workerId: '<AgentWorker.id>', workspaceKey: '<key from that worker\'s Workspaces>' } },
+        stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
+        finalAction: { type: 'comment_only' },
+      },
+    };
+
+    const base = {
+      storedIn: 'PipelineSpec.spec — a JSON object, not a JSON string. Create the row with agentiz.manage {entity:"pipelineSpec", operation:"create", values:{projectId, name, isDefault, spec}}.',
+      schema: pipelineSpecSchema,
+      rules: PIPELINE_SPEC_RULES,
+      examples,
+    };
+    if (!projectId) return base;
+
+    const [roles, workers] = await Promise.all([
+      AgentRole.findAll({ where: { projectId }, order: [['key', 'ASC']] }),
+      AgentWorker.findAll({ order: [['name', 'ASC']] }),
+    ]);
+    // A workspace is only reachable if the worker may claim this project's jobs and still exists.
+    const usable = workers.filter((worker) => worker.status !== 'revoked' && worker.canClaimProject(projectId));
+    return {
+      ...base,
+      project: {
+        projectId,
+        agentRoleKeys: roles.map((role) => role.key),
+        workspaces: usable.flatMap((worker) => (worker.workspaces ?? []).map((workspace) => ({
+          workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
+          workerContactState: worker.contactState(), workspaceKey: workspace.key,
+          path: workspace.path, label: workspace.label ?? null,
+        }))),
+        workersWithoutWorkspaces: usable.filter((worker) => !(worker.workspaces ?? []).length).map((worker) => ({ id: worker.id, name: worker.name, status: worker.status })),
+      },
+    };
+  },
+};
+
 const syncTool: IMcpTool = {
   name: 'agentiz.sync', group: 'agentiz-actions',
   groupDescription: 'State-changing Agentiz operations. Inspect the target first and call deliberately.',
@@ -325,6 +383,6 @@ const cancelRunTool: IMcpTool = {
 
 export const agentizMcpTools: IMcpTool[] = [
   overviewTool, projectsTool, tasksTool, runsTool, runDetailsTool, configurationTool,
-  workersTool, workerDetailsTool, jobsTool,
+  pipelineSpecSchemaTool, workersTool, workerDetailsTool, jobsTool,
   syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
 ];
