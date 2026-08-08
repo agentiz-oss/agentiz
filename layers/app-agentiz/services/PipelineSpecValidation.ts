@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 import type { PipelineSpecDef } from '../types/agentiz';
+import { MAX_HOOK_SCRIPT_BYTES } from '../lib/hookEnv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const schemaPath = path.resolve(__dirname, '..', 'schemas', 'pipeline-spec.schema.json');
@@ -42,6 +43,32 @@ export function assertValidSpec(spec: unknown): asserts spec is PipelineSpecDef 
   }
 
   assertSourceIsConsistent(spec as PipelineSpecDef);
+  assertHooksAreRunnable(spec as PipelineSpecDef);
+}
+
+/**
+ * Rules about hook scripts that the schema cannot state.
+ *
+ * Deliberately absent: a check that every `$AGENTIZ_*` name exists. `AGENTIZ_` is our prefix, but a
+ * script may define its own (`export AGENTIZ_STEP=2`), so an unknown name is a strong hint rather
+ * than a certainty — the editor underlines it, saving is not blocked.
+ */
+function assertHooksAreRunnable(spec: PipelineSpecDef): void {
+  for (const [position, hook] of Object.entries(spec.hooks ?? {})) {
+    if (!hook) continue;
+    if (!hook.script.trim()) {
+      throw new PipelineSpecError(`hooks.${position}.script is empty — remove the hook instead of saving a blank one`);
+    }
+    // The worker writes the shebang itself from `interpreter`. A second one in the body would
+    // either be a no-op comment or, worse, read as the real one somewhere down the line.
+    if (/^\s*#!/.test(hook.script)) {
+      throw new PipelineSpecError(`hooks.${position}.script must not start with a shebang: the interpreter is chosen by hooks.${position}.interpreter, and the worker writes the "#!" line itself`);
+    }
+    const bytes = Buffer.byteLength(hook.script, 'utf8');
+    if (bytes > MAX_HOOK_SCRIPT_BYTES) {
+      throw new PipelineSpecError(`hooks.${position}.script is ${bytes} bytes, over the ${MAX_HOOK_SCRIPT_BYTES} limit — keep long scripts in the repository and call them from here`);
+    }
+  }
 }
 
 /**

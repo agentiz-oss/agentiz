@@ -30,6 +30,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .changes import collect_changes
+from .hooks import run_hook
 from .redaction import Redactor
 from .repository import prepare_checkout
 
@@ -435,40 +436,95 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             if pinned:
                 emit("job.workspace", None, f"Работа идёт в готовой папке воркера: {workdir}")
 
-        for stage in job.get("stages", []):
-            if heartbeat_failure:
-                raise heartbeat_failure[0]
-            stage_id = stage.get("executionId")
-            mode, kind, command = stage_config(stage)
-            # A container gets its own filesystem, so it would not contain the prepared directory
-            # this pipeline exists for. The server rejects the combination too; this is the guard on
-            # the side that actually owns the path.
-            if pinned and mode == "docker":
-                raise WorkerError(f"stage runtime.mode 'docker' cannot use the worker directory {workdir}; configure the stage as 'host'")
-            # Same reason, for a checkout: it was made on this host and DockerWorkspace starts a
-            # container with its own tree. Delivering the checkout into the container (bind mount or
-            # file upload) is unverified against openhands-workspace, and running the agent in an
-            # empty container while the operator believes it has the code would be worse than
-            # refusing. See .ai-notes/multi-repo-oauth/06-worker-checkout-and-diff.md §6.3.
-            if repository and mode == "docker":
-                raise WorkerError("stage runtime.mode 'docker' cannot see the repository checkout yet; configure the stage as 'host'")
-            emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
-            if kind == "bash-fixture":
-                status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
-            else:
-                status, agent_response = run_openhands(
-                    mode, command, prompt(stage, job), settings, workdir,
-                    lambda text: emit("stage.event", stage_id, text),
-                )
-            if heartbeat_failure:
-                raise heartbeat_failure[0]
-            summary = redact(agent_response or status)
-            outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
-                "output": {"workspaceMode": mode, "workdir": str(workdir), "executionStatus": status, "agentResponse": redact(agent_response) if agent_response else None}})
-            emit("stage.completed", stage_id, summary)
+        hooks = job.get("hooks") if isinstance(job.get("hooks"), dict) else None
+        hook_records: list[dict[str, Any]] = []
+
+        def run_pipeline_hook(position: str, run_status: str | None = None) -> None:
+            """Runs one of the pipeline's scripts, if it declared one.
+
+            The server already resolved every value; the three variables added here are the ones
+            only this process knows — which hook is running, where, and (for `after`) how the
+            stages went.
+            """
+            spec = (hooks or {}).get(position)
+            if not isinstance(spec, dict):
+                return
+            env = {
+                **(hooks.get("env") or {}),
+                "AGENTIZ_HOOK": position,
+                "AGENTIZ_WORKDIR": str(workdir),
+                "AGENTIZ_JOB_ID": str(job["jobId"]),
+            }
+            if run_status:
+                env["AGENTIZ_RUN_STATUS"] = run_status
+            record = run_hook(position, spec, workdir, env, log=lambda message: emit("hook.progress", None, message))
+            record["output"] = redact(record.get("output") or "")
+            if record.get("error"):
+                record["error"] = redact(str(record["error"]))
+            hook_records.append(record)
+            if record["output"]:
+                emit("hook.output", None, f"Вывод {position}-хука:\n{record['output'][:MAX_AGENT_MESSAGE_CHARS]}",
+                     level="warn" if record.get("error") else "info")
+
+        run_pipeline_hook("before")
+        if heartbeat_failure:
+            raise heartbeat_failure[0]
+
+        # Stage failures are caught rather than propagated so the `after` hook still gets to run —
+        # it is the only place a pipeline can put teardown, and teardown that only happens on the
+        # happy path is not teardown. The original error is re-raised once the hook is done.
+        stage_error: Exception | None = None
+        try:
+            for stage in job.get("stages", []):
+                if heartbeat_failure:
+                    raise heartbeat_failure[0]
+                stage_id = stage.get("executionId")
+                mode, kind, command = stage_config(stage)
+                # A container gets its own filesystem, so it would not contain the prepared
+                # directory this pipeline exists for. The server rejects the combination too; this
+                # is the guard on the side that actually owns the path.
+                if pinned and mode == "docker":
+                    raise WorkerError(f"stage runtime.mode 'docker' cannot use the worker directory {workdir}; configure the stage as 'host'")
+                # Same reason, for a checkout: it was made on this host and DockerWorkspace starts a
+                # container with its own tree. Delivering the checkout into the container (bind mount
+                # or file upload) is unverified against openhands-workspace, and running the agent in
+                # an empty container while the operator believes it has the code would be worse than
+                # refusing. See .ai-notes/multi-repo-oauth/06-worker-checkout-and-diff.md §6.3.
+                if repository and mode == "docker":
+                    raise WorkerError("stage runtime.mode 'docker' cannot see the repository checkout yet; configure the stage as 'host'")
+                emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
+                if kind == "bash-fixture":
+                    status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
+                else:
+                    status, agent_response = run_openhands(
+                        mode, command, prompt(stage, job), settings, workdir,
+                        lambda text: emit("stage.event", stage_id, text),
+                    )
+                if heartbeat_failure:
+                    raise heartbeat_failure[0]
+                summary = redact(agent_response or status)
+                outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
+                    "output": {"workspaceMode": mode, "workdir": str(workdir), "executionStatus": status, "agentResponse": redact(agent_response) if agent_response else None}})
+                emit("stage.completed", stage_id, summary)
+        except Exception as error:
+            stage_error = error
+
+        # Before the diff is collected on purpose: a formatter or a codegen step in `after` is meant
+        # to be part of the change the run proposes, not a thing that happens after the snapshot.
+        try:
+            run_pipeline_hook("after", "failed" if stage_error else "succeeded")
+        except Exception as hook_error:
+            # A failing teardown must not hide why the run actually failed.
+            if stage_error is None:
+                raise
+            emit("hook.failed", None, f"after-хук тоже не удался: {hook_error}", level="warn")
+        if stage_error:
+            raise stage_error
 
         result: dict[str, Any] = {"resultId": str(uuid.uuid4()), "status": "succeeded",
             "summary": redact("\n".join(f"- {item['summary']}" for item in outputs)), "stageOutputs": outputs}
+        if hook_records:
+            result["hooks"] = hook_records
         if repository:
             changes = collect_changes(workdir, str(repository.get("baseSha") or ""),
                                       int(job.get("limits", {}).get("maxPatchBytes") or 5 * 1024 * 1024))

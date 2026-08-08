@@ -61,6 +61,13 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/legacy-modes": "^6.5.3",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.8",
     "@faker-js/faker": "^9.8.0",
     "@inertiajs/react": "^1.1.0",
     "@playwright/test": "^1.55.0",

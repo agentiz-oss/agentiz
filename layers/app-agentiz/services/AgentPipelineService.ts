@@ -14,6 +14,7 @@ import { AgentRepository } from '../models/AgentRepository';
 import { RepositoryResolverService } from './RepositoryResolverService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
+import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
 import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
@@ -21,6 +22,7 @@ import type {
   AgentRunTrigger,
   AgentTaskStatus,
   PipelineFinalActionDef,
+  PipelineHookDef,
   PipelineSpecDef,
   PipelineWorkerWorkspaceDef,
 } from '../types/agentiz';
@@ -687,9 +689,44 @@ export class AgentWorkerJobBuilder {
       },
       conversation,
       stages,
+      // Scripts to run around the stages, with their values already resolved. The worker exports
+      // what it is given and adds only what it alone knows (the directory, which hook, the status).
+      hooks: this.buildHooks(run, task, project, stages.length, repository, workspace),
       finalAction: run.pipelineSnapshot.finalAction,
       validation: { commands: [], timeoutSec: 1800 },
       limits: { jobTimeoutSec: 3600, maxOutputBytes: 10485760 },
+    };
+  }
+
+  /**
+   * The `hooks` block of the snapshot, or null when the pipeline declares none.
+   *
+   * The environment is computed once and shared by both hooks: they run in the same directory on
+   * the same run, and a `before` that sees a different `AGENTIZ_BASE_SHA` than `after` would be a
+   * bug waiting to be debugged at three in the morning.
+   */
+  private static buildHooks(
+    run: AgentRun,
+    task: AgentTask,
+    project: AgentProject,
+    stageCount: number,
+    repository: Record<string, unknown> | null,
+    workspace: RunWorkspaceRef | null,
+  ): Record<string, unknown> | null {
+    const hooks = run.pipelineSnapshot.hooks;
+    if (!hooks?.before && !hooks?.after) return null;
+    const describe = (hook: PipelineHookDef | undefined) => (hook
+      ? {
+          interpreter: hook.interpreter,
+          script: hook.script,
+          timeoutSec: Math.min(hook.timeoutSec ?? DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC),
+          onFail: hook.onFail ?? 'stop',
+        }
+      : null);
+    return {
+      env: buildHookEnv({ run, task, project, stageCount, repository, workspace }),
+      before: describe(hooks.before),
+      after: describe(hooks.after),
     };
   }
 

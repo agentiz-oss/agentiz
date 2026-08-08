@@ -15,6 +15,15 @@
     },
     "finalAction": { "$ref": "#/$defs/finalAction" },
     "source": { "$ref": "#/$defs/source" },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Scripts run around the stages, in the same directory the agent works in. Values arrive as AGENTIZ_* environment variables, never substituted into the script text. Absent = nothing runs.",
+      "properties": {
+        "before": { "$ref": "#/$defs/hook" },
+        "after": { "$ref": "#/$defs/hook" }
+      }
+    },
     "triggers": {
       "type": "object",
       "additionalProperties": false,
@@ -28,6 +37,38 @@
     }
   },
   "$defs": {
+    "hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interpreter", "script"],
+      "description": "before runs after the working directory is ready and before the first stage. after runs once the stages are done and before the diff is collected, so what it writes is part of the proposed change; it also runs when a stage failed, with AGENTIZ_RUN_STATUS=failed.",
+      "properties": {
+        "interpreter": {
+          "type": "string",
+          "enum": ["bash", "node"],
+          "description": "What executes the script. The worker adds the shebang and invokes the interpreter by absolute path, so the script cannot choose its own."
+        },
+        "script": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "description": "Source without a shebang line. Runs with the working directory as cwd."
+        },
+        "timeoutSec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 600,
+          "description": "Wall-clock limit. On expiry the hook is killed and treated as a non-zero exit."
+        },
+        "onFail": {
+          "type": "string",
+          "enum": ["stop", "continue"],
+          "default": "stop",
+          "description": "stop = a non-zero exit fails the run; continue = log it and carry on."
+        }
+      }
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,

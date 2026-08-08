@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { PipelineHooksSection } from "./hooks/PipelineHooksSection";
 
 interface AgentProject {
   id: string;
@@ -115,6 +116,14 @@ interface ProjectRepositoryOption {
   repository: { id: string; provider: string; pathWithNamespace: string } | null;
 }
 
+/** One of the two scripts a pipeline can run around its stages. */
+interface PipelineHookConfig {
+  interpreter: "bash" | "node";
+  script: string;
+  timeoutSec?: number;
+  onFail?: "stop" | "continue";
+}
+
 interface PipelineSpecConfig {
   id: string;
   name: string;
@@ -124,6 +133,7 @@ interface PipelineSpecConfig {
     finalAction: Record<string, unknown>;
     triggers?: { humanComment?: boolean };
     source?: PipelineSourceConfig;
+    hooks?: { before?: PipelineHookConfig; after?: PipelineHookConfig };
   };
 }
 
@@ -584,6 +594,20 @@ const AgentizHome: React.FC = () => {
     }), "Не удалось сохранить репозиторий пайплайна");
   }, [savePipelineSpec]);
 
+  /**
+   * Stores both hooks as one object. A position set to `undefined` is dropped rather than saved as
+   * null, so a spec that never had hooks stays byte-identical to what it was.
+   */
+  const setPipelineHooks = useCallback((hooks: { before?: PipelineHookConfig; after?: PipelineHookConfig }) => {
+    void savePipelineSpec((current) => {
+      const next: Record<string, PipelineHookConfig> = {};
+      if (hooks.before) next.before = hooks.before;
+      if (hooks.after) next.after = hooks.after;
+      const { hooks: _dropped, ...rest } = current;
+      return Object.keys(next).length ? { ...rest, hooks: next } : rest;
+    }, "Не удалось сохранить скрипт пайплайна");
+  }, [savePipelineSpec]);
+
   const setPipelineSource = useCallback((source: PipelineSourceConfig) => {
     void savePipelineSpec((current) => {
       const finalAction = source.kind === "worker_workspace" && current.finalAction?.type === "commit_and_pr"
@@ -787,6 +811,14 @@ const AgentizHome: React.FC = () => {
               Запускать пайплайн после нового сообщения пользователя
             </label>
             <p className="text-xs text-muted-foreground">Сообщение становится основным промтом; весь тред и результаты прошлых запусков передаются как контекст.</p>
+
+            <PipelineHooksSection
+              hooks={selectedPipelineSpec.spec.hooks}
+              sourceKind={pipelineSourceKind}
+              busy={busy}
+              onSave={setPipelineHooks}
+            />
+
             <h3 className="text-sm font-medium">Стадии</h3>
             {selectedPipelineSpec.spec.stages.map((stage, index) => (
               <div key={`${stage.order}-${stage.role}`} className="flex flex-wrap items-center gap-2 rounded border p-2 text-sm">

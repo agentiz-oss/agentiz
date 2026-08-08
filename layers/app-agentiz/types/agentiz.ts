@@ -199,6 +199,48 @@ export interface PipelineSourceDef {
   allowTaskOverride?: boolean;
 }
 
+/**
+ * What runs a hook script. `bash` is the everyday case; `node` is there because a project that
+ * already has a JS toolchain should not have to shell out to use it.
+ *
+ * The value picks the interpreter directly rather than reading a shebang out of the script: the
+ * worker writes the script to a temporary file and invokes the interpreter by absolute path, so a
+ * script can never select its own interpreter (`#!/usr/bin/env anything`) on the operator's machine.
+ */
+export type PipelineHookInterpreter = 'bash' | 'node';
+
+/**
+ * A script the pipeline runs around its stages, in the same directory the agent works in.
+ *
+ * Values reach the script as ordinary environment variables (`$AGENTIZ_TASK_TITLE` and friends,
+ * see lib/hookEnv.ts), never as text substituted into the source. A task title is attacker-supplied
+ * in any project that syncs issues, and pasting it into a shell script would make every such title
+ * a command.
+ */
+export interface PipelineHookDef {
+  interpreter: PipelineHookInterpreter;
+  /** Source as typed in the editor, without a shebang line — the worker adds one. */
+  script: string;
+  /** Wall-clock limit. Absent = DEFAULT_HOOK_TIMEOUT_SEC; a hook is not where a run should hang. */
+  timeoutSec?: number;
+  /** `stop` (default) fails the run on a non-zero exit; `continue` logs it and carries on. */
+  onFail?: StageFailurePolicy;
+}
+
+/**
+ * `before` runs once the working directory is ready and before the first stage — install
+ * dependencies, start a database, generate config.
+ *
+ * `after` runs once the stages are done and **before** the diff is collected, so whatever it
+ * writes (a formatter, a codegen step) is part of the change the run proposes. It also runs when a
+ * stage failed, with `AGENTIZ_RUN_STATUS=failed`, so it can serve as teardown; its own failure
+ * never replaces the original error.
+ */
+export interface PipelineHooksDef {
+  before?: PipelineHookDef;
+  after?: PipelineHookDef;
+}
+
 /** Events that may create a new run for a task matching this pipeline. */
 export interface PipelineTriggersDef {
   /** Start a run after a person adds a message to the task thread. Defaults to false. */
@@ -219,6 +261,8 @@ export interface PipelineSpecDef {
   triggers?: PipelineTriggersDef;
   /** Absent = work against the project's repository, as every pre-existing spec does. */
   source?: PipelineSourceDef;
+  /** Scripts run around the stages, in the same directory. Absent = nothing runs, as before. */
+  hooks?: PipelineHooksDef;
 }
 
 export interface AgentProjectRepoConfig {

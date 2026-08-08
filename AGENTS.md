@@ -27,6 +27,13 @@
   claim sites — `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and
   as a column, not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and
   JSON filtering differs between the postgres and sqlite deployments.
+- A pipeline's `spec.hooks` runs a bash/node script before the first stage and after the last one,
+  in the same directory the agent works in. Values reach a script as `AGENTIZ_*` **environment
+  variables**, never substituted into the script text — task titles come from an external tracker,
+  so text substitution would make every title a command. The variable catalogue lives in
+  `layers/app-agentiz/lib/hookEnv.ts` and is the single source read by the server (builds the
+  values), the worker (exports them) and the admin editor (completion and lint); adding a variable
+  anywhere else silently splits those three apart.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 
