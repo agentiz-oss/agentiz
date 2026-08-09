@@ -255,17 +255,19 @@ class Client:
         return self.post(f"/jobs/{job['jobId']}/secrets", job, {})
 
 
-def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str]]:
+def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None]:
     runtime = stage.get("runtime")
     mode = runtime.get("mode") if isinstance(runtime, dict) else None
-    config = stage.get("agent", {}).get("config", {})
-    kind = stage.get("agent", {}).get("kind")
+    agent = stage.get("agent", {})
+    config = agent.get("config", {})
+    kind = agent.get("kind")
     command = config.get("bashCommand") if kind == "bash-fixture" and isinstance(config, dict) else config.get("acpCommand") if isinstance(config, dict) else None
     if mode not in ("host", "docker"):
         raise WorkerError("stage.runtime.mode must be host or docker")
     if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
         raise WorkerError("stage agent config requires acpCommand (or bashCommand for bash-fixture): [executable, ...args]")
-    return mode, str(kind), command
+    model = agent.get("model")
+    return mode, str(kind), command, (str(model) if model else None)
 
 
 def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
@@ -331,7 +333,7 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
     return directory
 
 
-def run_openhands(mode: str, acp_command: list[str], message: str, settings: Settings, workdir: Path, on_agent_message: Any) -> tuple[str, str | None]:
+def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path, on_agent_message: Any) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -345,7 +347,10 @@ def run_openhands(mode: str, acp_command: list[str], message: str, settings: Set
         from openhands.workspace import DockerWorkspace
         context = DockerWorkspace(server_image=settings.server_image)
         workspace = context
-    agent = ACPAgent(acp_command=acp_command)
+    # acp_model is applied to the session after it starts (set_config_option/set_session_model on
+    # the ACP server) rather than as a CLI arg or env var — see the stage.model field on the spec.
+    # None keeps the executor's own default, exactly as before this field existed.
+    agent = ACPAgent(acp_command=acp_command, acp_model=model)
     final_message: str | None = None
 
     def forward_event(event: Any) -> None:
@@ -488,7 +493,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if heartbeat_failure:
                     raise heartbeat_failure[0]
                 stage_id = stage.get("executionId")
-                mode, kind, command = stage_config(stage)
+                mode, kind, command, model = stage_config(stage)
                 # A container gets its own filesystem, so it would not contain the prepared
                 # directory this pipeline exists for. The server rejects the combination too; this
                 # is the guard on the side that actually owns the path.
@@ -506,7 +511,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                     status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
                 else:
                     status, agent_response = run_openhands(
-                        mode, command, prompt(stage, job), settings, workdir,
+                        mode, command, model, prompt(stage, job), settings, workdir,
                         lambda text: emit("stage.event", stage_id, text),
                     )
                 if heartbeat_failure:

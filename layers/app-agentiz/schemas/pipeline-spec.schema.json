@@ -144,6 +144,11 @@
           "minLength": 1,
           "description": "AgentRole.key within the same project. Supplies prompt/model/tools for the stage."
         },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Overrides the role's own model for this stage only. Absent = the role's model (unchanged behaviour for every spec written before this field). Free-form: the executor resolves it, e.g. an Anthropic model id like claude-opus-5."
+        },
         "onFail": {
           "type": "string",
           "enum": ["stop", "continue"],

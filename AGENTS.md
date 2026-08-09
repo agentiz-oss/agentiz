@@ -39,6 +39,13 @@
   `layers/app-agentiz/lib/hookEnv.ts` and is the single source read by the server (builds the
   values), the worker (exports them) and the admin editor (completion and lint); adding a variable
   anywhere else silently splits those three apart.
+- A stage's `model` (`spec.stages[].model`) overrides the model of the `AgentRole` it names, for
+  that stage only — absent falls back to `AgentRole.model`, unchanged from before this field
+  existed. It flows through `AgentPipelineService.buildSnapshot` into the job snapshot's
+  `stage.agent.model`, and the worker passes it as `ACPAgent(acp_model=...)`
+  (`worker/src/agentiz_worker/main.py`): the ACP server applies it to the session after it starts
+  (`set_config_option`/`set_session_model`), not via a CLI flag or env var — `claude-agent-acp`
+  otherwise falls back to `ANTHROPIC_MODEL`/its own default.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

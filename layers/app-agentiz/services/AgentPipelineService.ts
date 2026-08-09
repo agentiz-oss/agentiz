@@ -632,7 +632,9 @@ export class AgentWorkerJobBuilder {
         systemPrompt: role?.systemPrompt ?? null,
         agent: {
           kind: String((role?.config as any)?.executor ?? 'stub'),
-          model: role?.model ?? null,
+          // The spec's own per-stage override wins over the role's model, so one role can run under
+          // different models across stages/pipelines without cloning it.
+          model: stage.model ?? role?.model ?? null,
           allowedTools: role?.allowedTools ?? [],
           config: role?.config ?? {},
         },

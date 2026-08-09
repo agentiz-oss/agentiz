@@ -30,6 +30,7 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'spec is a JSON object, never a JSON string.',
   'stages[].order values are unique and cover 1..N without gaps.',
   'stages[].agentRoleKey must be the `key` of an AgentRole belonging to the same project.',
+  'stages[].model overrides that role\'s own model for this stage only; absent means the role\'s model. Free-form string, resolved by the executor (e.g. an Anthropic model id).',
   'source.kind "worker_workspace" requires source.workspace.workerId and forbids source.repositoryId.',
   'source.workspace names the directory in exactly one of two ways: workspaceKey (looked up in that worker\'s declared Workspaces list — see agentiz.manageWorker {operation:"setWorkspaces"}) or path (an absolute path given directly in the spec, no prior declaration on the worker needed). Setting both, or neither, is rejected.',
   'source.workspace.createIfMissing only applies alongside path: the worker creates the directory if it does not exist yet, instead of failing. It is rejected alongside workspaceKey — a declared directory is expected to already exist.',

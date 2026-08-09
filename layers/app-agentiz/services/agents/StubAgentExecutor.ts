@@ -12,6 +12,7 @@ export class StubAgentExecutor extends AgentExecutor {
 
   async execute(context: AgentStageContext): Promise<AgentStageResult> {
     const { task, stage, role, previousOutputs, conversation } = context;
+    const model = stage.model ?? role.model;
     await context.log('info', `stub executor running role "${role.key}" for stage ${stage.order} (${stage.role})`);
 
     await context.log('debug', `reading task #${task.externalId} "${task.title}" (${(task.description ?? '').length} chars of description)`);
@@ -32,7 +33,7 @@ export class StubAgentExecutor extends AgentExecutor {
 
     await context.log(
       'debug',
-      `resolving role "${role.key}" (${role.title}): model=${role.model ?? '(not set)'}, prompt=${(role.systemPrompt ?? '').length} chars`,
+      `resolving role "${role.key}" (${role.title}): model=${model ?? '(not set)'}, prompt=${(role.systemPrompt ?? '').length} chars`,
     );
 
     await context.log('debug', `drafting stage report for stage ${stage.order} (${stage.role})`);
@@ -43,7 +44,7 @@ export class StubAgentExecutor extends AgentExecutor {
       `- task: #${task.externalId} — ${task.title}`,
       `- stage: ${stage.order} (${stage.role})`,
       `- agent role: ${role.key} (${role.title})`,
-      `- model: ${role.model ?? '(not set)'}`,
+      `- model: ${model ?? '(not set)'}`,
       ``,
       `## Prompt`,
       role.systemPrompt ?? '(no system prompt configured)',
@@ -68,7 +69,7 @@ export class StubAgentExecutor extends AgentExecutor {
       output: {
         executor: this.kind,
         roleKey: role.key,
-        model: role.model ?? null,
+        model: model ?? null,
         promptLength: (role.systemPrompt ?? '').length,
         priorStages: Object.keys(previousOutputs),
         primaryPromptId: conversation.primaryPrompt?.id ?? null,

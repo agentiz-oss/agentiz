@@ -46,6 +46,8 @@ interface PipelineStageConfig {
   order: number;
   role: string;
   agentRoleKey: string;
+  /** Overrides the role's own model for this stage only. Absent = the role's model. */
+  model?: string | null;
   onFail?: "stop" | "continue";
   runtime?: { mode?: "host" | "docker" };
 }
@@ -595,6 +597,11 @@ const AgentizPipelines: React.FC = () => {
             />
 
             <h3 className="text-sm font-medium">Стадии</h3>
+            <p className="text-xs text-muted-foreground">
+              Модель роли можно переопределить только для этой стадии — поле «модель» ниже. Пусто
+              значит «как в роли»; так одна роль может выполняться под разными моделями в разных
+              пайплайнах или стадиях, не будучи склонированной.
+            </p>
             {selectedPipelineSpec.spec.stages.map((stage, index) => (
               <div key={`${stage.order}-${stage.role}`} className="flex flex-wrap items-center gap-2 rounded border p-2 text-sm">
                 <span className="w-16 text-xs text-muted-foreground">#{stage.order} {stage.role}</span>
@@ -617,6 +624,16 @@ const AgentizPipelines: React.FC = () => {
                   {/* A container has its own filesystem, so it cannot see the worker's directory. */}
                   <option value="docker" disabled={pipelineSourceKind === "worker_workspace"}>Docker</option>
                 </select>
+                <input
+                  type="text"
+                  value={stage.model ?? ""}
+                  onChange={(event) => saveStage(index, { model: event.target.value || undefined })}
+                  onBlur={(event) => saveStage(index, { model: event.target.value.trim() || undefined })}
+                  disabled={busy}
+                  placeholder={`модель роли (${roles.find((role) => role.key === stage.agentRoleKey)?.model ?? "не задана"})`}
+                  title="Переопределяет модель роли только для этой стадии. Пусто = модель роли."
+                  className="min-w-48 flex-1 rounded border px-2 py-1 text-xs disabled:opacity-50"
+                />
               </div>
             ))}
           </div>

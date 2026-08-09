@@ -303,7 +303,7 @@ const pipelineSpecSchemaTool: IMcpTool = {
 
     const examples = {
       repository: {
-        stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
+        stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', model: '<optional, e.g. claude-opus-5 — overrides the role\'s own model for this stage only>', runtime: { mode: 'host' } }],
         finalAction: { type: 'commit_and_pr', branchPrefix: 'agentiz/' },
       },
       workerWorkspace: {

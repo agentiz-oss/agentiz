@@ -132,6 +132,13 @@ export interface PipelineStageDef {
   role: string;
   /** Key of the AgentRole (scoped to the same project) that provides prompt/model/tools for this stage. */
   agentRoleKey: string;
+  /**
+   * Overrides the role's own `model` for this stage only. Absent = the role's model, which is
+   * unchanged behaviour for every spec written before this field. Applied to the ACP session after
+   * it starts (`acp_model` on the worker's ACPAgent) — the executor picks the concrete model id, so
+   * this is free-form text rather than an enum here.
+   */
+  model?: string;
   onFail: StageFailurePolicy;
   /** Selects the workspace used by the worker. */
   runtime: PipelineStageRuntimeDef;
