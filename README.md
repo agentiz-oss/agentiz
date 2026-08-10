@@ -63,4 +63,6 @@ from the `@nodeknit/app-adminizer` dependency.
 
 Project documentation is indexed in [`docs/README.md`](docs/README.md). In particular, see
 [`docs/mcp-usage.md`](docs/mcp-usage.md) for calling the MCP endpoint and
-[`docs/mcp-development.md`](docs/mcp-development.md) for adding or extending MCP tools.
+[`docs/mcp-development.md`](docs/mcp-development.md) for adding or extending MCP tools. For the
+Adminizer flow of `worker_workspace` pipelines with manual diff approval, see
+[`docs/workspace-git-review.md`](docs/workspace-git-review.md).
