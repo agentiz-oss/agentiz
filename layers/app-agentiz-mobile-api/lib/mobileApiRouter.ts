@@ -3,8 +3,10 @@ import cors from 'cors';
 import type { Model, Sequelize } from 'sequelize';
 import { bearerToken, verifyMobileToken } from './mobileAuth';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
+import { MobileInteractionService } from '../services/MobileInteractionService';
 import { MobileProjectService } from '../services/MobileProjectService';
 import { MobileTaskService } from '../services/MobileTaskService';
+import type { AgentRunInteractionAction } from '../../app-agentiz/types/agentiz';
 
 /** Public base path of the mobile API. Versioned so the app can pin a contract. */
 export const MOBILE_API_BASE = '/api/agentiz/mobile/v1';
@@ -169,6 +171,41 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   router.post('/tasks/:taskId/runs/:runId/cancel', requireAuth, async (req: AuthedRequest, res) => {
     try {
       res.json({ data: await MobileTaskService.cancelRun(String(req.params.taskId), String(req.params.runId), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Everything an agent is currently waiting on, across every project the caller owns. A run in
+   * `waiting_input` stays parked until one of these is answered, so the app polls this list the way
+   * the dashboard's "Вопросы" page does.
+   */
+  router.get('/interactions', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileInteractionService.listPending(ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/interactions/:id/answer', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const action = String(req.body?.action ?? '') as AgentRunInteractionAction;
+      // Only `accept` carries a body; the core service rejects content on decline/cancel, so an
+      // empty object must not be smuggled in for them.
+      const raw = req.body?.content;
+      const content = action === 'accept' && raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : null;
+      const data = await MobileInteractionService.answer(
+        String(req.params.id),
+        ownerOf(req),
+        action,
+        content,
+        actorOf(req),
+      );
+      res.json({ data });
     } catch (error) {
       errorResponse(res, error);
     }

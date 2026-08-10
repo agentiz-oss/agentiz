@@ -8,6 +8,7 @@ import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
 import { AgentPipelineService } from '../../app-agentiz/services/AgentPipelineService';
 import { AgentTaskService } from '../../app-agentiz/services/AgentTaskService';
 import { MobileAuthError } from './MobileAuthService';
+import { MobileInteractionService } from './MobileInteractionService';
 
 /**
  * Task access for the mobile client: the built-in tracker reduced to what a phone-sized screen
@@ -69,12 +70,15 @@ export class MobileTaskService {
   }
 
   private static async runDetail(run: AgentRun) {
-    const [stages, logs, job] = await Promise.all([
+    const [stages, logs, job, interactions] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
       AgentRunLog.findAll({ where: { runId: run.id }, order: [['createdAt', 'ASC']], limit: 500 }),
       // A run has one durable queue job. Its `result` is the exact terminal payload accepted
       // from the worker; AgentRun intentionally keeps only the small human summary.
       AgentRunJob.findOne({ where: { runId: run.id }, order: [['createdAt', 'DESC']] }),
+      // A run in `waiting_input` is blocked on one of these until somebody answers it, so a run's
+      // record is incomplete without them — answered ones stay as the history of what was asked.
+      MobileInteractionService.forRun(run.id),
     ]);
     const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
     return {
@@ -95,6 +99,7 @@ export class MobileTaskService {
         createdAt: log.createdAt,
       })),
       workerResult: job?.result ?? null,
+      interactions,
     };
   }
 
@@ -135,9 +140,10 @@ export class MobileTaskService {
   static async detail(taskId: string, ownerId: number | string) {
     const task = await this.ownedTask(taskId, ownerId);
 
-    const [runs, comments] = await Promise.all([
+    const [runs, comments, pendingInteractions] = await Promise.all([
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 20 }),
       AgentTaskComment.findAll({ where: { taskId } }),
+      MobileInteractionService.pendingForTask(taskId),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -149,6 +155,9 @@ export class MobileTaskService {
         runCount: runs.length,
       },
       latestRun: latestRun ? await this.runDetail(latestRun) : null,
+      // Surfaced at task level too: a question can belong to a run the task screen is not showing
+      // in full, and a blocked run must not be something the reader has to go hunting for.
+      pendingInteractions,
       // Same ordering rule as the dashboard: upstream timestamp when the comment came from a
       // tracker, local creation time otherwise.
       comments: [...comments]

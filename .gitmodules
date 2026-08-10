@@ -18,3 +18,6 @@
 [submodule "local_modules/app-mcp"]
 	path = local_modules/app-mcp
 	url = git@github.com:nodeknit/app-mcp.git
+[submodule "mobile-client"]
+	path = mobile-client
+	url = git@github.com:agentiz-oss/mobile-client.git
