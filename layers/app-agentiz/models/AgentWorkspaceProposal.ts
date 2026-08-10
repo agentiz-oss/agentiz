@@ -31,6 +31,7 @@ export class AgentWorkspaceProposal extends Model<
 
   @Column({ type: DataType.STRING, allowNull: false }) declare repositoryId: string;
   @Column({ type: DataType.STRING, allowNull: false }) declare workerId: string;
+  /** The worker's declared key, or the absolute path when the spec named the directory directly. */
   @Column({ type: DataType.STRING, allowNull: false }) declare workspaceKey: string;
   @Column({ type: DataType.STRING, allowNull: false }) declare workspacePath: string;
   /** Unique while active; cleared only after pushed/rejected. */

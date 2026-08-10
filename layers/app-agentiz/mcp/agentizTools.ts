@@ -69,7 +69,11 @@ function workerTeaser(worker: AgentWorker) {
     // The directories a worker_workspace pipeline can name. Without them a caller can see that a
     // worker exists but not that it is the one holding the directory the pipeline is about.
     workspaces: worker.workspaces ?? [],
-    allowedProjectIds: worker.allowedProjectIds ?? null, capabilities: worker.capabilities ?? null,
+    // The push grant, and the reason a `commit` pipeline on this worker either works or does not.
+    gitPushRoots: worker.gitPushRoots ?? [],
+    allowedProjectIds: worker.allowedProjectIds ?? null,
+    allowedRepositoryIds: worker.allowedRepositoryIds ?? null,
+    capabilities: worker.capabilities ?? null,
     version: worker.version, hostname: worker.hostname, registeredAt: worker.registeredAt,
     lastSeenAt: worker.lastSeenAt, lastClaimAt: worker.lastClaimAt,
     claimedJobsCount: worker.claimedJobsCount, revokedAt: worker.revokedAt,
@@ -320,7 +324,7 @@ const pipelineSpecSchemaTool: IMcpTool = {
         source: {
           kind: 'worker_workspace',
           repositoryId: '<AgentRepository.id linked to this project and allowed on the worker>',
-          workspace: { workerId: '<AgentWorker.id>', workspaceKey: '<workspace whose git.pushEnabled is true>' },
+          workspace: { workerId: '<AgentWorker.id>', path: '<absolute path covered by that worker\'s gitPushRoots; a declared workspaceKey works too>' },
         },
         stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
         finalAction: {
@@ -348,18 +352,26 @@ const pipelineSpecSchemaTool: IMcpTool = {
     const workspaces = usable.flatMap((worker) => (worker.workspaces ?? []).map((workspace) => ({
       workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
       workerContactState: worker.contactState(), workspaceKey: workspace.key,
-      path: workspace.path, label: workspace.label ?? null, git: workspace.git ?? null,
+      path: workspace.path, label: workspace.label ?? null,
+      git: worker.gitPushGrant(workspace.path, workspace),
     })));
+    // Where a spec may point a `path` workspace and still be able to commit from it.
+    const gitPushRoots = usable
+      .filter((worker) => worker.gitPushRoots?.length)
+      .map((worker) => ({ workerId: worker.id, workerName: worker.name, roots: worker.gitPushRoots }));
     return {
       ...base,
       project: {
         projectId,
         agentRoleKeys: roles.map((role) => role.key),
         workspaces,
+        gitPushRoots,
         workersWithoutWorkspaces: usable.filter((worker) => !(worker.workspaces ?? []).length).map((worker) => ({ id: worker.id, name: worker.name, status: worker.status })),
-        // A directory is not something the spec declares — the worker that owns the machine does.
-        // Said here because an empty list otherwise looks like "this pipeline is impossible".
-        declaringAWorkspace: 'A directory becomes usable by declaring it on the worker that owns the machine: agentiz.manageWorker {operation:"setWorkspaces", workerId, workspaces:[{key:"<key>", path:"/absolute/path", git:{pushEnabled:true,remote:"origin"}}]}. Git is optional and is the administrator\'s explicit push grant. That call replaces the worker\'s whole list, so include existing entries.',
+        // A directory needs no declaration at all — `source.workspace.path` is enough. Said here
+        // because an empty `workspaces` list otherwise looks like "this pipeline is impossible".
+        namingADirectory: 'source.workspace.path takes any absolute path on that worker, with no declaration anywhere. A declared key (agentiz.manageWorker {operation:"setWorkspaces", workerId, workspaces:[{key:"<key>", path:"/absolute/path"}]}) is for when the path should be correctable without touching every spec; that call replaces the worker\'s whole list, so include existing entries.',
+        // The one thing a spec genuinely cannot grant itself.
+        allowingPush: 'finalAction "commit" additionally needs the worker to allow push from that directory: agentiz.manageWorker {operation:"setGitPushRoots", workerId, gitPushRoots:["/srv/projects"]} covers every directory below a prefix. It lives on the worker because the directory holds that machine\'s Git credentials. A declared workspace\'s git:{pushEnabled:true,remote:"upstream"} is the alternative and the only way to push to a remote other than "origin".',
       },
     };
   },

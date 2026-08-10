@@ -34,6 +34,7 @@ interface AgentWorker {
   allowedProjectIds?: string[] | null;
   allowedRepositoryIds?: string[] | null;
   workspaces?: WorkerWorkspace[] | null;
+  gitPushRoots?: string[] | null;
 }
 
 interface RepositoryOption {
@@ -186,6 +187,75 @@ const WorkerWorkspacesEditor: React.FC<{
       <p className="mt-1 text-xs text-muted-foreground">
         Путь абсолютный и должен существовать на машине воркера: воркер работает в готовом окружении и сам его не создаёт.
         Ключ — то, на что ссылается пайплайн, поэтому менять путь можно, а ключ лучше сохранять.
+      </p>
+    </div>
+  );
+};
+
+/**
+ * Where on this machine a pipeline is allowed to push from.
+ *
+ * Separate from the folder list on purpose: a pipeline can name any absolute path by itself, so this
+ * is the only setting an operator has to touch to enable Git review, and the only one that cannot be
+ * granted from a pipeline spec.
+ */
+const WorkerGitPushRootsEditor: React.FC<{
+  worker: AgentWorker;
+  busy: boolean;
+  onSave: (roots: string[]) => void;
+}> = ({ worker, busy, onSave }) => {
+  const [root, setRoot] = useState("");
+  const roots = worker.gitPushRoots ?? [];
+  const draft = root.trim();
+
+  return (
+    <div className="mt-2 rounded border p-2">
+      <div className="text-xs font-medium">Откуда разрешён Git push</div>
+      {roots.length === 0 ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Пока ниоткуда. Пайплайны могут работать в папках этой машины, но коммитить и пушить из них не смогут.
+        </p>
+      ) : (
+        <ul className="mt-1 space-y-1">
+          {roots.map((item) => (
+            <li key={item} className="flex flex-wrap items-center gap-2 text-xs">
+              <code className="rounded border px-1">{item}</code>
+              <span className="text-muted-foreground">и всё, что внутри</span>
+              <button
+                onClick={() => onSave(roots.filter((existing) => existing !== item))}
+                disabled={busy}
+                className="rounded border px-1.5 py-0.5 disabled:opacity-50"
+                style={{ borderColor: "#fca5a5", color: "#b91c1c" }}
+              >
+                Убрать
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <input
+          value={root}
+          onChange={(event) => setRoot(event.target.value)}
+          placeholder="/srv/projects"
+          className="w-64 rounded border px-2 py-1 text-xs"
+        />
+        <button
+          onClick={() => {
+            if (!draft) return;
+            onSave(Array.from(new Set([...roots, draft])));
+            setRoot("");
+          }}
+          disabled={busy || !draft.startsWith("/") || draft === "/"}
+          className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+        >
+          Разрешить push
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Путь абсолютный; разрешение действует на саму папку и на все вложенные. Это доверие к машине, а не к пайплайну:
+        push делается git-кредами этого хоста, поэтому спека сама себе такое право выдать не может. `/` не принимается.
+        Push идёт в remote `origin` — другой remote можно указать только для папки, объявленной по ключу.
       </p>
     </div>
   );
@@ -521,11 +591,18 @@ const AgentizWorkers: React.FC = () => {
                 </select>
               </div>
               {worker.status !== "revoked" && (
-                <WorkerWorkspacesEditor
-                  worker={worker}
-                  busy={busy}
-                  onSave={(workspaces) => workerAction("setWorkerWorkspaces", worker, { workspaces })}
-                />
+                <>
+                  <WorkerGitPushRootsEditor
+                    worker={worker}
+                    busy={busy}
+                    onSave={(gitPushRoots) => workerAction("setWorkerGitPushRoots", worker, { gitPushRoots })}
+                  />
+                  <WorkerWorkspacesEditor
+                    worker={worker}
+                    busy={busy}
+                    onSave={(workspaces) => workerAction("setWorkerWorkspaces", worker, { workspaces })}
+                  />
+                </>
               )}
             </li>
           ))}

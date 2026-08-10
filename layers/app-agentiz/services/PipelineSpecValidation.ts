@@ -31,8 +31,9 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'stages[].order values are unique and cover 1..N without gaps.',
   'stages[].agentRoleKey must be the `key` of an AgentRole belonging to the same project.',
   'stages[].model overrides that role\'s own model for this stage only; absent means the role\'s model. Free-form string, resolved by the executor (e.g. an Anthropic model id).',
-  'source.kind "worker_workspace" normally forbids source.repositoryId; finalAction.type "commit" requires it, a declared workspaceKey, and worker-side git.pushEnabled.',
-  'source.workspace names the directory in exactly one of two ways: workspaceKey (looked up in that worker\'s declared Workspaces list — see agentiz.manageWorker {operation:"setWorkspaces"}) or path (an absolute path given directly in the spec, no prior declaration on the worker needed). Setting both, or neither, is rejected.',
+  'source.kind "worker_workspace" normally forbids source.repositoryId; finalAction.type "commit" requires it.',
+  'source.workspace names the directory in exactly one of two ways: workspaceKey (looked up in that worker\'s declared Workspaces list — see agentiz.manageWorker {operation:"setWorkspaces"}) or path (an absolute path given directly in the spec, no prior declaration on the worker needed). Setting both, or neither, is rejected. Both forms can push.',
+  'Permission to push from a worker directory is never part of the spec: the worker must cover that path with agentiz.manageWorker {operation:"setGitPushRoots"} (or carry git.pushEnabled on the declared workspace, which is also the only way to use a remote other than "origin"). A spec with finalAction "commit" saves either way and fails at queue time if the grant is missing.',
   'source.workspace.createIfMissing only applies alongside path: the worker creates the directory if it does not exist yet, instead of failing. It is rejected alongside workspaceKey — a declared directory is expected to already exist.',
   'source.kind "worker_workspace" allows comment_only, none, or commit through the local workspace Git engine; commit_and_pr remains provider-only.',
   'source.kind "worker_workspace" requires runtime.mode "host" on every stage; a docker container cannot see the worker\'s directory.',
@@ -159,9 +160,10 @@ function assertSourceIsConsistent(spec: PipelineSpecDef): void {
   if (workspace.createIfMissing && hasKey) {
     throw specError('source.workspace.createIfMissing only applies alongside path, not workspaceKey');
   }
-  if (workspaceGit && !hasKey) {
-    throw specError('worker_workspace Git delivery requires workspaceKey; an arbitrary source.workspace.path may not push');
-  }
+  // Whether that directory may push is the worker operator's grant (AgentWorker.gitPushRoots), not a
+  // spec property, so it is deliberately not checked here: this function validates a document, and
+  // the grant can be given or withdrawn long after it was saved. AgentPipelineService checks it when
+  // the run is actually queued, where the worker record is at hand.
   if (spec.finalAction.type === 'commit_and_pr') {
     throw specError('finalAction "commit_and_pr" is not available for source.kind "worker_workspace"; use "commit", "comment_only" or "none"');
   }

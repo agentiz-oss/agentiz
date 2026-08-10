@@ -177,22 +177,35 @@ export const manageWorkerTool: IMcpTool = {
   name: 'agentiz.manageWorker',
   group: 'agentiz-actions',
   shortDescription: 'Creates and administers external worker identities safely.',
-  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects and declared workspaces for an external worker. A pipeline that runs in a directory instead of a repository needs that directory declared here with setWorkspaces first. Newly issued tokens are returned once only.',
+  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects, declared workspaces and Git push roots for an external worker. A pipeline can name any absolute directory on a worker itself, but pushing from one requires setGitPushRoots here — that grant is never part of a pipeline spec. Newly issued tokens are returned once only.',
   mode: 'protected',
   inputSchema: {
     type: 'object', required: ['operation'],
     properties: {
-      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces'] },
+      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces', 'setGitPushRoots'] },
       workerId: { type: 'string' }, name: { type: 'string' }, allowedProjectIds: { type: ['array', 'null'], items: { type: 'string' } },
+      gitPushRoots: {
+        type: ['array', 'null'],
+        description: 'setGitPushRoots only. Absolute path prefixes this machine\'s operator allows Git push from, e.g. ["/srv/projects"]; every directory below one of them may commit and push. This REPLACES the whole list; null or [] withdraws the grant. "/" is refused. Needed for finalAction "commit" on a worker_workspace pipeline, whether the spec names the directory by path or by a declared key.',
+        items: { type: 'string' },
+      },
       workspaces: {
         type: ['array', 'null'],
-        description: 'setWorkspaces only. Prepared directories on that machine, which a pipeline then names by key through source.workspace.workspaceKey. This REPLACES the whole list: read the worker\'s current workspaces with agentiz.workerDetails and send them back alongside the new one, or they are dropped. Paths must be absolute.',
+        description: 'setWorkspaces only. Named directories a pipeline can reference through source.workspace.workspaceKey instead of hardcoding a path — useful when the path should stay correctable without editing every spec. This REPLACES the whole list: read the worker\'s current workspaces with agentiz.workerDetails and send them back alongside the new one, or they are dropped. Paths must be absolute.',
         items: {
           type: 'object', required: ['key', 'path'],
           properties: {
-            key: { type: 'string', description: 'Stable identifier a pipeline spec stores. Unique within the worker.' },
+            key: { type: 'string', description: 'Stable identifier a pipeline spec stores. Unique within the worker, and must not start with "/".' },
             path: { type: 'string', description: 'Absolute path on the worker machine, e.g. /prj/lyapka-rf.' },
             label: { type: 'string' }, description: { type: 'string' },
+            git: {
+              type: 'object', required: ['pushEnabled'],
+              description: 'Per-directory push grant, equivalent to a covering gitPushRoots prefix and the only way to push to a remote other than "origin".',
+              properties: {
+                pushEnabled: { type: 'boolean', description: 'Must be true when git is present; omit the whole block to grant nothing here.' },
+                remote: { type: 'string', description: 'Remote already configured in that checkout. Defaults to origin.' },
+              },
+            },
           },
         },
       },
@@ -218,6 +231,13 @@ export const manageWorkerTool: IMcpTool = {
           throw new Error('workspaces:array is required for setWorkspaces — it replaces the whole list, so include the entries you want to keep');
         }
         return maskWorkerForUI(await AgentWorkerRegistryService.setWorkspaces(workerId, payload.workspaces as AgentWorkerWorkspace[] | null));
+      }
+      if (operation === 'setGitPushRoots') {
+        if (payload.gitPushRoots !== null && !Array.isArray(payload.gitPushRoots)) {
+          throw new Error('gitPushRoots:array is required for setGitPushRoots — it replaces the whole list; pass [] or null to withdraw the push grant');
+        }
+        const roots = Array.isArray(payload.gitPushRoots) ? payload.gitPushRoots.map(String) : null;
+        return maskWorkerForUI(await AgentWorkerRegistryService.setGitPushRoots(workerId, roots));
       }
       if (operation === 'rotateToken') {
         const rotated = await AgentWorkerRegistryService.rotateToken(workerId);

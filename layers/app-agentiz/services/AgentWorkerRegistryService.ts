@@ -8,6 +8,7 @@ import type {
   AgentWorkerStatus,
   AgentWorkerWorkspace,
 } from '../types/agentiz';
+import { isUnderGitPushRoot, normalizeGitPushRoot } from '../lib/workspaceGit';
 
 const SCHEMA_VERSION = 1;
 const TOKEN_PREFIX = 'agw_';
@@ -279,6 +280,11 @@ export class AgentWorkerRegistryService {
       const key = String(item?.key ?? '').trim();
       const path = String(item?.path ?? '').trim();
       if (!key || !path) throw new WorkerRegistryError(400, 'Every workspace needs a key and a path', 'invalid_workspace');
+      // A proposal's reservation is keyed by the declared key or, for a spec that named the directory
+      // directly, by its absolute path. A key shaped like a path would let those two collide.
+      if (key.startsWith('/')) {
+        throw new WorkerRegistryError(400, `Workspace key "${key}" must not start with "/" — a key names the directory, it is not the path`, 'invalid_workspace');
+      }
       if (!path.startsWith('/')) {
         throw new WorkerRegistryError(400, `Workspace "${key}": path must be absolute, got "${path}"`, 'invalid_workspace');
       }
@@ -301,6 +307,37 @@ export class AgentWorkerRegistryService {
       cleaned.push({ key, path, ...(label ? { label } : {}), ...(description ? { description } : {}), ...(git ? { git } : {}) });
     }
     await worker.update({ workspaces: cleaned.length ? cleaned : null });
+    return worker;
+  }
+
+  /**
+   * States which part of this machine's filesystem a pipeline may push from.
+   *
+   * This is the whole Git grant for `worker_workspace` delivery: a spec names a directory below one
+   * of these prefixes and that is enough, no second declaration under a key. It lives on the worker
+   * because the directory holds that host's Git credentials while a spec can be authored by anybody
+   * with panel or MCP access — see `lib/workspaceGit.ts`.
+   *
+   * `/` is refused: a grant that covers every path on the machine is indistinguishable from no
+   * boundary at all, which is the thing this field exists to draw.
+   */
+  static async setGitPushRoots(workerId: string, roots: string[] | null): Promise<AgentWorker> {
+    const worker = await this.require(workerId);
+    const cleaned: string[] = [];
+    for (const raw of roots ?? []) {
+      const root = normalizeGitPushRoot(raw);
+      if (!root) continue;
+      if (!root.startsWith('/')) {
+        throw new WorkerRegistryError(400, `Git push root must be absolute, got "${String(raw)}"`, 'invalid_git_push_root');
+      }
+      if (root === '/') {
+        throw new WorkerRegistryError(400, 'Git push root "/" would cover the whole machine; name the directories that actually hold checkouts', 'invalid_git_push_root');
+      }
+      // A root already covered by another one adds nothing and only makes the grant harder to read.
+      if (cleaned.some((existing) => isUnderGitPushRoot(root, existing))) continue;
+      cleaned.push(root);
+    }
+    await worker.update({ gitPushRoots: cleaned.length ? cleaned : null });
     return worker;
   }
 

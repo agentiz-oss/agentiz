@@ -26,7 +26,29 @@ interface AgentWorker {
   name: string;
   status: string;
   workspaces?: WorkerWorkspace[] | null;
+  /** Path prefixes the worker's operator allows Git push from. */
+  gitPushRoots?: string[] | null;
 }
+
+/**
+ * Mirrors `lib/workspaceGit.ts`: whether this machine allows push from a directory, and with which
+ * remote. Duplicated rather than imported because the panel bundle is standalone — kept to the two
+ * rules the server applies, so the editor greys out exactly what a run would refuse.
+ */
+const workspacePushGrant = (
+  worker: AgentWorker | undefined,
+  directory: string | undefined,
+  declared?: WorkerWorkspace,
+): { remote: string } | null => {
+  if (declared?.git?.pushEnabled) return { remote: declared.git.remote || "origin" };
+  const target = (directory ?? "").trim().replace(/\/+$/, "");
+  if (!target) return null;
+  const covered = (worker?.gitPushRoots ?? []).some((raw) => {
+    const root = raw.trim().replace(/\/+$/, "");
+    return !!root && (target === root || target.startsWith(`${root}/`));
+  });
+  return covered ? { remote: "origin" } : null;
+};
 
 interface ProjectRepositoryOption {
   id: string;
@@ -312,12 +334,27 @@ const AgentizPipelines: React.FC = () => {
 
   const setPipelineSource = useCallback((source: PipelineSourceConfig) => {
     void savePipelineSpec((current) => {
-      const finalAction = source.kind === "worker_workspace" && (current.finalAction?.type === "commit_and_pr" || current.finalAction?.type === "commit")
-        ? { ...current.finalAction, type: "comment_only" as const }
-        : current.finalAction;
-      return { ...current, source, finalAction };
+      // `commit_and_pr` belongs to a hosting provider and can never survive the switch. `commit` can:
+      // it only needs the new directory to still be covered by the worker's push grant, so moving a
+      // pipeline between a declared key and a plain path keeps its delivery instead of silently
+      // dropping to a comment.
+      const worker = workers.find((item) => item.id === source.workspace?.workerId);
+      const declared = worker?.workspaces?.find((item) => item.key === source.workspace?.workspaceKey);
+      // The editors below rebuild `workspace` from scratch, so the repository the delivery points at
+      // has to be carried over here rather than by every call site.
+      const repositoryId = source.repositoryId ?? (source.kind === "worker_workspace" ? current.source?.repositoryId : undefined);
+      const keepsCommit = !!repositoryId
+        && !!workspacePushGrant(worker, declared?.path ?? source.workspace?.path, declared);
+      const downgrade = source.kind === "worker_workspace"
+        && (current.finalAction?.type === "commit_and_pr" || (current.finalAction?.type === "commit" && !keepsCommit));
+      // `repositoryId` is only accepted alongside a workspace `commit`, so it goes with the downgrade.
+      return {
+        ...current,
+        source: { ...source, repositoryId: downgrade ? undefined : repositoryId },
+        finalAction: downgrade ? { ...current.finalAction, type: "comment_only" as const } : current.finalAction,
+      };
     }, "Не удалось сохранить источник пайплайна");
-  }, [savePipelineSpec]);
+  }, [savePipelineSpec, workers]);
 
   const setWorkspaceDelivery = useCallback((type: "commit" | "comment_only" | "none") => {
     void savePipelineSpec((current) => {
@@ -326,7 +363,8 @@ const AgentizPipelines: React.FC = () => {
       const worker = workers.find((item) => item.id === workspace?.workerId);
       const declared = worker?.workspaces?.find((item) => item.key === workspace?.workspaceKey);
       const repositoryId = current.source?.repositoryId || projectRepositories[0]?.repositoryId;
-      if (!workspace?.workspaceKey || !declared?.git?.pushEnabled || !repositoryId) return current;
+      // The directory may be named either way; what decides is the worker's push grant.
+      if (!workspacePushGrant(worker, declared?.path ?? workspace?.path, declared) || !repositoryId) return current;
       return {
         ...current,
         source: { ...current.source, kind: "worker_workspace", repositoryId },
@@ -353,6 +391,10 @@ const AgentizPipelines: React.FC = () => {
   /** A "by path" pipeline needs no declared directory, so any live worker can host it. */
   const activeWorkers = workers.filter((worker) => worker.status !== "revoked");
   const sourceWorker = workers.find((worker) => worker.id === pipelineSource?.workspace?.workerId);
+  const sourceDeclared = sourceWorker?.workspaces?.find((item) => item.key === pipelineSource?.workspace?.workspaceKey);
+  const sourceDirectory = sourceDeclared?.path ?? pipelineSource?.workspace?.path;
+  /** Whether this directory may push at all — the worker's grant, not something the spec can set. */
+  const sourcePushGrant = workspacePushGrant(sourceWorker, sourceDirectory, sourceDeclared);
 
   // Follows the spec's own shape when a different pipeline is picked (or one loads with a path
   // already set); free to diverge from it afterwards while the operator is mid-edit, same as the
@@ -618,7 +660,7 @@ const AgentizPipelines: React.FC = () => {
                   <select value={selectedPipelineSpec.spec.finalAction.type} onChange={(event) => setWorkspaceDelivery(event.target.value as "commit" | "comment_only" | "none")} disabled={busy} className="rounded border px-2 py-1">
                     <option value="comment_only">Только результат в задаче</option>
                     <option value="none">Ничего</option>
-                    <option value="commit" disabled={workspaceNameMode !== "key" || !sourceWorker?.workspaces?.find((item) => item.key === pipelineSource?.workspace?.workspaceKey)?.git?.pushEnabled || projectRepositories.length === 0}>Commit и push из workspace</option>
+                    <option value="commit" disabled={!sourcePushGrant || projectRepositories.length === 0}>Commit и push из workspace</option>
                   </select>
                   {selectedPipelineSpec.spec.finalAction.type === "commit" && (
                     <>
@@ -633,6 +675,26 @@ const AgentizPipelines: React.FC = () => {
                     </>
                   )}
                 </div>
+                {selectedPipelineSpec.spec.finalAction.type !== "commit" && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {!sourcePushGrant && (
+                      <>
+                        Commit и push недоступны: воркер{sourceWorker ? ` «${sourceWorker.name}»` : ""} не разрешает push
+                        из {sourceDirectory ? <code>{sourceDirectory}</code> : "этой папки"}. Это делается на{" "}
+                        <a href={WORKERS_URL} className="underline">странице «Воркеры»</a> в блоке «Откуда разрешён Git push».
+                      </>
+                    )}
+                    {sourcePushGrant && projectRepositories.length === 0 && (
+                      <>
+                        Commit и push недоступны: у проекта нет привязанного репозитория — добавьте его на{" "}
+                        <a href={`${PREFIX}/agentiz-repos`} className="underline">странице «Репозитории»</a>.
+                      </>
+                    )}
+                    {sourcePushGrant && projectRepositories.length > 0 && (
+                      <>Push разрешён (remote <code>{sourcePushGrant.remote}</code>) — можно выбрать «Commit и push из workspace».</>
+                    )}
+                  </p>
+                )}
                 {selectedPipelineSpec.spec.finalAction.type === "commit" && (
                   <div className="mt-2 grid gap-2 md:grid-cols-2">
                     {selectedPipelineSpec.spec.finalAction.targetBranch?.mode === "new" && <input defaultValue={selectedPipelineSpec.spec.finalAction.targetBranch?.prefix ?? "agentiz/"} onBlur={(event) => patchWorkspaceFinalAction({ targetBranch: { mode: "new", prefix: event.target.value.trim() || "agentiz/" } })} placeholder="Префикс ветки" className="rounded border px-2 py-1 text-xs" />}

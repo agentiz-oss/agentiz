@@ -29,6 +29,11 @@
   given directly in the spec; `createIfMissing` lets the worker create it — see `resolve_workdir` in
   `worker/src/agentiz_worker/main.py`). Exactly one of the two is set — validated in
   `PipelineSpecValidation.ts`, not the JSON schema, since Ajv cannot express "exactly one of".
+  Whether a run may `commit`/`push` from that directory is **never** a spec property: the worker
+  record carries the grant (`AgentWorker.gitPushRoots` path prefixes, or `git.pushEnabled` on a
+  declared workspace, which is also the only way to name a remote other than `origin`). Both forms
+  resolve through `lib/workspaceGit.ts`, checked at queue time in `AgentPipelineService`, not in
+  `PipelineSpecValidation` — the grant can be withdrawn long after a spec was saved.
   Anything filtering the job queue must be added to **both** claim sites —
   `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and as a column,
   not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and JSON filtering

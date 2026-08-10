@@ -838,6 +838,9 @@ export class AgentWorkerJobBuilder {
    * the worker checks the path (and creates it, if `createIfMissing`) when it actually runs the
    * job, because this server does not have that machine's filesystem. With `workspaceKey`, the
    * directory must already be declared via `AgentWorkerRegistryService.setWorkspaces`.
+   *
+   * Either way the Git grant comes from the worker record, never from the spec: a declared
+   * workspace's own `git` block, or one of the worker's `gitPushRoots` covering the path.
    */
   static async resolveWorkspace(ref: PipelineWorkerWorkspaceDef): Promise<RunWorkspaceRef> {
     const worker = await AgentWorker.findByPk(ref.workerId);
@@ -848,14 +851,15 @@ export class AgentWorkerJobBuilder {
       throw new Error(`Worker "${worker.name}" is revoked, so its directory cannot be used`);
     }
     if (ref.path) {
+      const directory = ref.path.trim();
       return {
         workerId: worker.id,
         workerName: worker.name,
         key: null,
-        path: ref.path.trim(),
+        path: directory,
         label: null,
         createIfMissing: !!ref.createIfMissing,
-        git: null,
+        git: worker.gitPushGrant(directory),
       };
     }
     const declared = worker.workspace(ref.workspaceKey!);
@@ -866,14 +870,15 @@ export class AgentWorkerJobBuilder {
     if (!declared.path?.trim()) {
       throw new Error(`Directory "${ref.workspaceKey}" on worker "${worker.name}" has an empty path`);
     }
+    const directory = declared.path.trim();
     return {
       workerId: worker.id,
       workerName: worker.name,
       key: declared.key,
-      path: declared.path.trim(),
+      path: directory,
       label: declared.label ?? null,
       createIfMissing: false,
-      git: declared.git?.pushEnabled ? { pushEnabled: true, remote: declared.git.remote?.trim() || 'origin' } : null,
+      git: worker.gitPushGrant(directory, declared),
     };
   }
 
@@ -884,11 +889,19 @@ export class AgentWorkerJobBuilder {
     workspace: RunWorkspaceRef,
     repository: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (!workspace.key) throw new Error('Workspace Git delivery requires a declared workspaceKey');
-    if (!workspace.git?.pushEnabled) throw new Error(`Workspace "${workspace.key}" does not allow Git push`);
+    // The reservation is per directory, so a `path`-named workspace is keyed by the path itself —
+    // `setWorkspaces` refuses keys starting with "/", so the two namespaces cannot collide.
+    const reservationName = workspace.key ?? workspace.path;
+    if (!workspace.git?.pushEnabled) {
+      throw new Error(
+        `Worker "${workspace.workerName}" does not allow Git push from "${workspace.path}"`
+        + ' — add a covering prefix to its Git push roots (or set git.pushEnabled on the declared workspace)',
+      );
+    }
     const worker = await AgentWorker.findByPk(workspace.workerId);
-    if (!worker?.allowedRepositoryIds?.includes(String(repository.repositoryId))) {
-      throw new Error(`Worker "${workspace.workerName}" must explicitly allow repository ${repository.repositoryId} before it may push`);
+    // Same meaning as everywhere else the allowlist is read: empty means "every repository".
+    if (!worker?.canClaimRepository(String(repository.repositoryId))) {
+      throw new Error(`Worker "${workspace.workerName}" is not allowed to work on repository ${repository.repositoryId}`);
     }
     if (worker.capabilities?.workspaceGit !== true) {
       throw new Error(`Worker "${workspace.workerName}" has not announced the workspaceGit capability; update and restart it first`);
@@ -907,9 +920,9 @@ export class AgentWorkerJobBuilder {
           taskId: run.taskId,
           repositoryId: String(repository.repositoryId),
           workerId: workspace.workerId,
-          workspaceKey: workspace.key,
+          workspaceKey: reservationName,
           workspacePath: workspace.path,
-          reservationKey: `${workspace.workerId}:${workspace.key}`,
+          reservationKey: `${workspace.workerId}:${reservationName}`,
           initialRunId: run.id,
           latestRunId: run.id,
           revision: 1,
@@ -932,7 +945,7 @@ export class AgentWorkerJobBuilder {
           rejectedAt: null,
         });
       } catch (error) {
-        throw new Error(`Workspace "${workspace.key}" on worker "${workspace.workerName}" is already reserved by another proposal`);
+        throw new Error(`Workspace "${reservationName}" on worker "${workspace.workerName}" is already reserved by another proposal`);
       }
       await run.update({ proposalId: proposal.id, workspaceRevision: 1 });
     } else {

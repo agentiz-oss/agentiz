@@ -71,15 +71,20 @@ describe('rejection messages', () => {
     }).message).toContain('use "host"');
   });
 
-  it('restricts workspace Git delivery to a declared key and linked repository id', () => {
+  it('requires a repository id and a target branch for workspace Git delivery', () => {
     expect(rejection({ ...workspaceGitExample, source: { ...workspaceGitExample.source, repositoryId: undefined } }).message)
       .toContain('repositoryId is required');
-    expect(rejection({
-      ...workspaceGitExample,
-      source: { kind: 'worker_workspace', repositoryId: 'repo-1', workspace: { workerId: 'worker-1', path: '/tmp/repo' } },
-    }).message).toContain('requires workspaceKey');
     expect(rejection({ ...workspaceGitExample, finalAction: { type: 'commit' } }).message)
       .toContain('targetBranch.mode');
+  });
+
+  // The push grant lives on the worker (AgentWorker.gitPushRoots), so a directory named by path is
+  // just as valid a document here as a declared key; whether it may push is decided at queue time.
+  it('accepts workspace Git delivery for a directory named by path', () => {
+    expect(() => assertValidSpec({
+      ...workspaceGitExample,
+      source: { kind: 'worker_workspace', repositoryId: 'repo-1', workspace: { workerId: 'worker-1', path: '/prj/lyapka-rf' } },
+    })).not.toThrow();
   });
 
   it('requires exactly one of workspaceKey or path', () => {

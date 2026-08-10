@@ -55,6 +55,10 @@ import {
   up as upRunInteractions,
   down as downRunInteractions,
 } from './umzug/1787000500000_run_interactions';
+import {
+  up as upWorkerGitPushRoots,
+  down as downWorkerGitPushRoots,
+} from './umzug/1787000600000_worker_git_push_roots';
 
 export const umzugExports: Migration[] = [
   {
@@ -159,5 +163,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1787000500000,
     up: upRunInteractions,
     down: downRunInteractions,
+  },
+  {
+    name: 'worker_git_push_roots',
+    timestamp: 1787000600000,
+    up: upWorkerGitPushRoots,
+    down: downWorkerGitPushRoots,
   },
 ];

@@ -113,7 +113,7 @@
             "path": {
               "type": "string",
               "minLength": 1,
-              "description": "Absolute path on the worker's machine, given directly by the spec instead of a declared workspaceKey. Mutually exclusive with workspaceKey."
+              "description": "Absolute path on the worker's machine, given directly by the spec instead of a declared workspaceKey. Mutually exclusive with workspaceKey. Usable with finalAction commit too, as long as the worker's gitPushRoots cover this path."
             },
             "createIfMissing": {
               "type": "boolean",
@@ -170,7 +170,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
-      "description": "What the run does after the last stage. commit_and_pr uses the hosting provider. commit on a managed worker_workspace stores a complete diff and queues commit/push on that same worker.",
+      "description": "What the run does after the last stage. commit_and_pr uses the hosting provider. commit on a worker_workspace stores a complete diff and queues commit/push on that same worker, which requires that worker to allow push from the directory (gitPushRoots) — the spec alone cannot grant it. requireApproval decides whether a human confirms before the push.",
       "properties": {
         "type": {
           "type": "string",

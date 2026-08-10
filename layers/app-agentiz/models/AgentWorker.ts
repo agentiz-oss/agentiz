@@ -9,6 +9,7 @@ import type {
   AgentWorkerStatus,
   AgentWorkerWorkspace,
 } from '../types/agentiz';
+import { resolveWorkspaceGitGrant, type WorkspaceGitGrant } from '../lib/workspaceGit';
 
 /** A worker that has not touched the API for this long is shown as offline. */
 const OFFLINE_AFTER_MS = 5 * 60 * 1000;
@@ -121,6 +122,15 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   declare workspaces: AgentWorkerWorkspace[] | null;
 
   @AdminizerField({
+    title: 'Git push roots',
+    type: 'jsoneditor',
+    tooltip: 'Absolute path prefixes this machine\'s operator allows Git push from, e.g. ["/srv/projects"]. A pipeline may then name any directory below one of them and commit from it. Empty = no pipeline may push from this machine.',
+    views: { list: false, add: false, edit: true },
+  })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare gitPushRoots: string[] | null;
+
+  @AdminizerField({
     title: 'Capabilities',
     type: 'jsoneditor',
     tooltip: '{ executors?, maxConcurrency? } reported at registration',
@@ -173,6 +183,16 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   /** A declared directory by its key, or undefined when this worker does not offer it (any more). */
   workspace(key: string): AgentWorkerWorkspace | undefined {
     return (this.workspaces ?? []).find((item) => item.key === key);
+  }
+
+  /**
+   * Whether this machine's operator allows Git push from `directory`, and with which remote.
+   *
+   * A declared workspace's own `git` block and the `gitPushRoots` prefixes are two ways of holding
+   * the same grant — see `lib/workspaceGit.ts`. Nothing in a pipeline spec can produce it.
+   */
+  gitPushGrant(directory: string, declared?: AgentWorkerWorkspace | null): WorkspaceGitGrant | null {
+    return resolveWorkspaceGitGrant(directory, this.gitPushRoots, declared);
   }
 
   /** Empty/absent allowlist means "every project". */
