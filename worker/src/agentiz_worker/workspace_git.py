@@ -128,23 +128,30 @@ def _ls_remote(root: Path, remote: str, branch: str) -> str | None:
 
 
 def _verify_remote(root: Path, remote: str, expected_url: str) -> str:
+    """The remote this checkout pushes to, cross-checked against `expected_url` when there is one.
+
+    A pipeline may pin a hosted repository, and then the URLs have to agree. A plain worker directory
+    pins nothing: the remote configured in the checkout is the only statement of where it pushes, so
+    it is recorded rather than compared. Either way the caller gets the URL that will actually be used.
+    """
     actual = _git(root, ["remote", "get-url", remote])
     if not actual:
         raise WorkspaceGitError(f"Git remote {remote!r} has no URL")
-    if _remote_identity(actual) != _remote_identity(expected_url):
+    if expected_url and _remote_identity(actual) != _remote_identity(expected_url):
         raise WorkspaceGitError(f"Workspace remote {safe_remote_url(actual)} does not match repository {safe_remote_url(expected_url)}")
     return safe_remote_url(actual)
 
 
-def preflight(path: Path, proposal: dict[str, Any], repository: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+def preflight(path: Path, proposal: dict[str, Any], repository: dict[str, Any] | None) -> tuple[Path, dict[str, Any]]:
     """Reserve/check a checkout before an agent is allowed to touch it."""
     root = Path(_git(path, ["rev-parse", "--show-toplevel"])).resolve()
     proposal_id = str(proposal.get("id") or "")
     revision = int(proposal.get("revision") or 0)
-    expected_url = str(repository.get("cloneUrl") or "")
+    # Empty when the pipeline pinned no repository: the checkout's own remote decides. See _verify_remote.
+    expected_url = str((repository or {}).get("cloneUrl") or "")
     remote = str(proposal.get("remote") or "origin")
-    if not proposal_id or revision < 1 or not expected_url:
-        raise WorkspaceGitError("Workspace Git job is missing proposal/repository identity")
+    if not proposal_id or revision < 1:
+        raise WorkspaceGitError("Workspace Git job is missing proposal identity")
     marker = _load_marker(root)
     if marker is None:
         dirty = _git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
@@ -193,14 +200,14 @@ def finalize_action(path: Path, proposal_id: str) -> None:
         _remove_marker(root)
 
 
-def run_action(path: Path, job_kind: str, proposal: dict[str, Any], repository: dict[str, Any]) -> dict[str, Any]:
+def run_action(path: Path, job_kind: str, proposal: dict[str, Any], repository: dict[str, Any] | None) -> dict[str, Any]:
     with workspace_lock(path) as root:
         marker = _load_marker(root)
         if not marker or marker.get("proposalId") != proposal.get("id"):
             raise WorkspaceGitError("Workspace proposal marker is missing or belongs to another proposal")
         if marker.get("baseSha") != proposal.get("baseSha"):
             raise WorkspaceGitError("Workspace base SHA no longer matches the reviewed proposal")
-        _verify_remote(root, str(proposal.get("remote") or "origin"), str(repository.get("cloneUrl") or ""))
+        _verify_remote(root, str(proposal.get("remote") or "origin"), str((repository or {}).get("cloneUrl") or ""))
         if marker.get("actionCompleted") == "reset" and job_kind == "workspace_reset":
             return {"summary": f"Workspace reset to {str(marker['baseSha'])[:12]}"}
         if marker.get("actionCompleted") == "push" and job_kind == "workspace_commit_push":

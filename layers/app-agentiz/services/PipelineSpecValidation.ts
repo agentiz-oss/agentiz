@@ -31,7 +31,7 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'stages[].order values are unique and cover 1..N without gaps.',
   'stages[].agentRoleKey must be the `key` of an AgentRole belonging to the same project.',
   'stages[].model overrides that role\'s own model for this stage only; absent means the role\'s model. Free-form string, resolved by the executor (e.g. an Anthropic model id).',
-  'source.kind "worker_workspace" normally forbids source.repositoryId; finalAction.type "commit" requires it.',
+  'source.repositoryId is only accepted with source.kind "worker_workspace" when finalAction.type is "commit", and even then it is optional: the directory pushes through its own configured remote, and pinning a repository only adds a check that the checkout still points at it.',
   'source.workspace names the directory in exactly one of two ways: workspaceKey (looked up in that worker\'s declared Workspaces list — see agentiz.manageWorker {operation:"setWorkspaces"}) or path (an absolute path given directly in the spec, no prior declaration on the worker needed). Setting both, or neither, is rejected. Both forms can push.',
   'Permission to push from a worker directory is never part of the spec: the worker must cover that path with agentiz.manageWorker {operation:"setGitPushRoots"} (or carry git.pushEnabled on the declared workspace, which is also the only way to use a remote other than "origin"). A spec with finalAction "commit" saves either way and fails at queue time if the grant is missing.',
   'source.workspace.createIfMissing only applies alongside path: the worker creates the directory if it does not exist yet, instead of failing. It is rejected alongside workspaceKey — a declared directory is expected to already exist.',
@@ -139,9 +139,10 @@ function assertSourceIsConsistent(spec: PipelineSpecDef): void {
   if (!isWorkspaceSource(spec.source)) return;
 
   const workspaceGit = spec.finalAction.type === 'commit';
-  if (workspaceGit && !spec.source?.repositoryId) {
-    throw specError('source.repositoryId is required for worker_workspace + finalAction.type "commit"');
-  }
+  // `source.repositoryId` is optional here: a worker directory pushes through the remote configured in
+  // that checkout, and requiring a hosted repository record would mean maintaining the same URL twice.
+  // Pinning one is still allowed and adds the cross-check that the checkout points where the pipeline
+  // meant — see the `commit` branch of AgentPipelineService.buildSnapshot.
   if (!workspaceGit && spec.source?.repositoryId) {
     throw specError('source.repositoryId is only allowed with worker_workspace when finalAction.type is "commit"');
   }

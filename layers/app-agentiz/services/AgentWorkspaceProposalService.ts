@@ -146,9 +146,14 @@ export class AgentWorkspaceProposalService {
   ): Promise<AgentRunJob> {
     const [run, repository] = await Promise.all([
       AgentRun.findByPk(proposal.latestRunId),
-      AgentRepository.findByPk(proposal.repositoryId),
+      // Absent by design when the directory pushes through its own remote; only a *pinned* repository
+      // that has since been deleted is an error worth stopping for.
+      proposal.repositoryId ? AgentRepository.findByPk(proposal.repositoryId) : Promise.resolve(null),
     ]);
-    if (!run || !repository) throw new WorkspaceProposalError(404, 'Proposal run or repository is missing');
+    if (!run) throw new WorkspaceProposalError(404, 'Proposal run is missing');
+    if (proposal.repositoryId && !repository) {
+      throw new WorkspaceProposalError(404, `Proposal repository ${proposal.repositoryId} no longer exists`);
+    }
     const existing = await AgentRunJob.findOne({
       where: { proposalId: proposal.id, jobKind, status: { [Op.in]: ['queued', 'leased', 'running', 'succeeded'] } },
       order: [['createdAt', 'DESC']],
@@ -169,11 +174,15 @@ export class AgentWorkspaceProposalService {
         jobKind,
         runId: run.id,
         workspace: { workerId: proposal.workerId, key: proposal.workspaceKey, path: proposal.workspacePath, createIfMissing: false },
-        repository: {
-          repositoryId: repository.id,
-          cloneUrl: repository.cloneUrl,
-          pathWithNamespace: repository.pathWithNamespace,
-        },
+        // Null means "trust the directory's own remote": the worker then records where it actually
+        // pushed instead of verifying it against a URL Agentiz holds.
+        repository: repository
+          ? {
+              repositoryId: repository.id,
+              cloneUrl: repository.cloneUrl,
+              pathWithNamespace: repository.pathWithNamespace,
+            }
+          : null,
         proposal: {
           id: proposal.id, revision: proposal.revision,
           baseSha: proposal.baseSha, baseBranch: proposal.baseBranch,

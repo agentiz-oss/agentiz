@@ -71,11 +71,20 @@ describe('rejection messages', () => {
     }).message).toContain('use "host"');
   });
 
-  it('requires a repository id and a target branch for workspace Git delivery', () => {
-    expect(rejection({ ...workspaceGitExample, source: { ...workspaceGitExample.source, repositoryId: undefined } }).message)
-      .toContain('repositoryId is required');
+  it('requires a target branch mode for workspace Git delivery', () => {
     expect(rejection({ ...workspaceGitExample, finalAction: { type: 'commit' } }).message)
       .toContain('targetBranch.mode');
+  });
+
+  // The directory pushes through its own remote, so a hosted repository record is optional; pinning
+  // one is still accepted, and still rejected when the delivery is not a commit.
+  it('leaves the pinned repository optional for workspace Git delivery', () => {
+    expect(() => assertValidSpec({ ...workspaceGitExample, source: { ...workspaceGitExample.source, repositoryId: undefined } }))
+      .not.toThrow();
+    expect(rejection({
+      ...workspaceExample,
+      source: { ...workspaceExample.source, repositoryId: 'repo-1' },
+    }).message).toContain('only allowed with worker_workspace when finalAction.type is "commit"');
   });
 
   // The push grant lives on the worker (AgentWorker.gitPushRoots), so a directory named by path is

@@ -29,7 +29,12 @@ export class AgentWorkspaceProposal extends Model<
   @Column({ type: DataType.STRING, allowNull: false })
   declare taskId: string;
 
-  @Column({ type: DataType.STRING, allowNull: false }) declare repositoryId: string;
+  /**
+   * The hosted repository this change belongs to, when the pipeline pinned one. Null for a plain
+   * worker directory: it pushes through its own `origin`, and Agentiz has no reason to invent a
+   * repository record for a folder somebody maintains by hand.
+   */
+  @Column({ type: DataType.STRING, allowNull: true }) declare repositoryId: string | null;
   @Column({ type: DataType.STRING, allowNull: false }) declare workerId: string;
   /** The worker's declared key, or the absolute path when the spec named the directory directly. */
   @Column({ type: DataType.STRING, allowNull: false }) declare workspaceKey: string;

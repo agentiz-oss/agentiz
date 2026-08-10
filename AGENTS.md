@@ -33,7 +33,10 @@
   record carries the grant (`AgentWorker.gitPushRoots` path prefixes, or `git.pushEnabled` on a
   declared workspace, which is also the only way to name a remote other than `origin`). Both forms
   resolve through `lib/workspaceGit.ts`, checked at queue time in `AgentPipelineService`, not in
-  `PipelineSpecValidation` — the grant can be withdrawn long after a spec was saved.
+  `PipelineSpecValidation` — the grant can be withdrawn long after a spec was saved. A hosted
+  repository is **not** required for that push: `source.repositoryId` is optional for
+  `worker_workspace` + `commit`, and pinning one only adds the check that the checkout's remote still
+  matches its `cloneUrl` (`_verify_remote` in `worker/src/agentiz_worker/workspace_git.py`).
   Anything filtering the job queue must be added to **both** claim sites —
   `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and as a column,
   not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and JSON filtering

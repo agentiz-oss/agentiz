@@ -685,7 +685,13 @@ export class AgentWorkerJobBuilder {
     // queue a job instead of failing before the first stage even runs.
     const finalAction = run.pipelineSnapshot.finalAction;
     let repository: Record<string, unknown> | null = null;
-    if ((!workspace && finalAction.type !== 'none') || (workspace && finalAction.type === 'commit')) {
+    // A worker directory pushes through its own `origin`, so a hosted repository is optional there:
+    // pinning one only adds the cross-check that the checkout still points where the pipeline meant.
+    // Without a pin, nothing is resolved — a directory on a worker is not required to correspond to
+    // an AgentRepository at all, and falling back to the task's repository would invent one.
+    const workspaceCommitPin = workspace && finalAction.type === 'commit'
+      && !!(run.pipelineSnapshot.source?.repositoryId ?? '').trim();
+    if ((!workspace && finalAction.type !== 'none') || workspaceCommitPin) {
       // The pipeline's own repository wins when it names one; otherwise the task decides, as before.
       const pinned = await AgentPipelineService.pinnedRepository(run.pipelineSnapshot, project);
       const resolved = pinned
@@ -719,7 +725,7 @@ export class AgentWorkerJobBuilder {
       };
     }
     const proposal = workspace && finalAction.type === 'commit'
-      ? await this.workspaceProposal(run, task, workspace, repository!)
+      ? await this.workspaceProposal(run, task, workspace, repository)
       : null;
     return {
       schemaVersion: 1,
@@ -887,7 +893,8 @@ export class AgentWorkerJobBuilder {
     run: AgentRun,
     task: AgentTask,
     workspace: RunWorkspaceRef,
-    repository: Record<string, unknown>,
+    /** Only set when the pipeline pinned a repository; a worker directory does not need one. */
+    repository: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>> {
     // The reservation is per directory, so a `path`-named workspace is keyed by the path itself —
     // `setWorkspaces` refuses keys starting with "/", so the two namespaces cannot collide.
@@ -898,10 +905,12 @@ export class AgentWorkerJobBuilder {
         + ' — add a covering prefix to its Git push roots (or set git.pushEnabled on the declared workspace)',
       );
     }
+    const repositoryId = repository?.repositoryId ? String(repository.repositoryId) : null;
     const worker = await AgentWorker.findByPk(workspace.workerId);
-    // Same meaning as everywhere else the allowlist is read: empty means "every repository".
-    if (!worker?.canClaimRepository(String(repository.repositoryId))) {
-      throw new Error(`Worker "${workspace.workerName}" is not allowed to work on repository ${repository.repositoryId}`);
+    // Same meaning as everywhere else the allowlist is read: empty means "every repository", and a
+    // directory with no pinned repository is not restricted by it at all.
+    if (!worker?.canClaimRepository(repositoryId)) {
+      throw new Error(`Worker "${workspace.workerName}" is not allowed to work on repository ${repositoryId}`);
     }
     if (worker.capabilities?.workspaceGit !== true) {
       throw new Error(`Worker "${workspace.workerName}" has not announced the workspaceGit capability; update and restart it first`);
@@ -918,7 +927,7 @@ export class AgentWorkerJobBuilder {
         proposal = await AgentWorkspaceProposal.create({
           projectId: run.projectId,
           taskId: run.taskId,
-          repositoryId: String(repository.repositoryId),
+          repositoryId,
           workerId: workspace.workerId,
           workspaceKey: reservationName,
           workspacePath: workspace.path,

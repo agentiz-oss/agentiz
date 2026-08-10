@@ -323,7 +323,8 @@ const pipelineSpecSchemaTool: IMcpTool = {
       workerWorkspaceGit: {
         source: {
           kind: 'worker_workspace',
-          repositoryId: '<AgentRepository.id linked to this project and allowed on the worker>',
+          // Optional: omit it and the push goes through the remote configured in that checkout.
+          repositoryId: '<optional AgentRepository.id linked to this project, to also verify the checkout\'s remote>',
           workspace: { workerId: '<AgentWorker.id>', path: '<absolute path covered by that worker\'s gitPushRoots; a declared workspaceKey works too>' },
         },
         stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
@@ -371,7 +372,7 @@ const pipelineSpecSchemaTool: IMcpTool = {
         // because an empty `workspaces` list otherwise looks like "this pipeline is impossible".
         namingADirectory: 'source.workspace.path takes any absolute path on that worker, with no declaration anywhere. A declared key (agentiz.manageWorker {operation:"setWorkspaces", workerId, workspaces:[{key:"<key>", path:"/absolute/path"}]}) is for when the path should be correctable without touching every spec; that call replaces the worker\'s whole list, so include existing entries.',
         // The one thing a spec genuinely cannot grant itself.
-        allowingPush: 'finalAction "commit" additionally needs the worker to allow push from that directory: agentiz.manageWorker {operation:"setGitPushRoots", workerId, gitPushRoots:["/srv/projects"]} covers every directory below a prefix. It lives on the worker because the directory holds that machine\'s Git credentials. A declared workspace\'s git:{pushEnabled:true,remote:"upstream"} is the alternative and the only way to push to a remote other than "origin".',
+        allowingPush: 'finalAction "commit" needs exactly one thing beyond the spec: the worker must allow push from that directory — agentiz.manageWorker {operation:"setGitPushRoots", workerId, gitPushRoots:["/srv/projects"]} covers every directory below a prefix. It lives on the worker because the directory holds that machine\'s Git credentials. A declared workspace\'s git:{pushEnabled:true,remote:"upstream"} is the alternative and the only way to push to a remote other than "origin". No AgentRepository record is required: the push follows the remote configured in that checkout.',
       },
     };
   },

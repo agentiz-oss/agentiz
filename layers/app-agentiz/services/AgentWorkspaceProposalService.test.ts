@@ -75,6 +75,19 @@ describe('AgentWorkspaceProposalService', () => {
     expect(await AgentRunJob.count({ where: { proposalId: proposal.id, jobKind: 'workspace_reset' } })).toBe(1);
   });
 
+  // A worker directory pushes through its own remote, so there may be no AgentRepository at all; the
+  // job then carries `repository: null` and the worker records the remote instead of verifying it.
+  it('queues a push for a directory that pins no repository', async () => {
+    await proposal.update({ repositoryId: null });
+    const approved = await AgentWorkspaceProposalService.approve(proposal.id, 1, 'reviewer');
+    expect(approved.status).toBe('apply_queued');
+    const job = await AgentRunJob.findOne({ where: { proposalId: proposal.id, jobKind: 'workspace_commit_push' } });
+    expect(job).toBeTruthy();
+    expect(job!.repositoryId).toBeNull();
+    expect((job!.snapshot as any).repository).toBeNull();
+    expect((job!.snapshot as any).proposal.remote).toBe('origin');
+  });
+
   it('never approves a truncated patch', async () => {
     await AgentRunDiff.update({ truncated: true }, { where: { proposalId: proposal.id } });
     await expect(AgentWorkspaceProposalService.approve(proposal.id, 1, 'reviewer')).rejects.toThrow(/complete reviewed diff/);

@@ -362,12 +362,13 @@ const AgentizPipelines: React.FC = () => {
       const workspace = current.source?.workspace;
       const worker = workers.find((item) => item.id === workspace?.workerId);
       const declared = worker?.workspaces?.find((item) => item.key === workspace?.workspaceKey);
-      const repositoryId = current.source?.repositoryId || projectRepositories[0]?.repositoryId;
-      // The directory may be named either way; what decides is the worker's push grant.
-      if (!workspacePushGrant(worker, declared?.path ?? workspace?.path, declared) || !repositoryId) return current;
+      // The directory may be named either way; the only precondition is the worker's push grant. A
+      // repository stays unpinned unless the operator picks one below — the checkout's own remote is
+      // where the push goes.
+      if (!workspacePushGrant(worker, declared?.path ?? workspace?.path, declared)) return current;
       return {
         ...current,
-        source: { ...current.source, kind: "worker_workspace", repositoryId },
+        source: { ...current.source, kind: "worker_workspace", repositoryId: current.source?.repositoryId },
         finalAction: {
           type: "commit", requireApproval: true,
           targetBranch: { mode: "new", prefix: "agentiz/" },
@@ -375,7 +376,7 @@ const AgentizPipelines: React.FC = () => {
         },
       };
     }, "Не удалось включить Git-доставку workspace");
-  }, [projectRepositories, savePipelineSpec, workers]);
+  }, [savePipelineSpec, workers]);
 
   const patchWorkspaceFinalAction = useCallback((patch: Record<string, unknown>) => {
     void savePipelineSpec((current) => ({ ...current, finalAction: { ...current.finalAction, ...patch } }),
@@ -660,11 +661,12 @@ const AgentizPipelines: React.FC = () => {
                   <select value={selectedPipelineSpec.spec.finalAction.type} onChange={(event) => setWorkspaceDelivery(event.target.value as "commit" | "comment_only" | "none")} disabled={busy} className="rounded border px-2 py-1">
                     <option value="comment_only">Только результат в задаче</option>
                     <option value="none">Ничего</option>
-                    <option value="commit" disabled={!sourcePushGrant || projectRepositories.length === 0}>Commit и push из workspace</option>
+                    <option value="commit" disabled={!sourcePushGrant}>Commit и push из workspace</option>
                   </select>
                   {selectedPipelineSpec.spec.finalAction.type === "commit" && (
                     <>
-                      <select value={pipelineSource?.repositoryId ?? ""} onChange={(event) => void savePipelineSpec((current) => ({ ...current, source: { ...current.source, repositoryId: event.target.value } }), "Не удалось сохранить репозиторий")} disabled={busy} className="rounded border px-2 py-1">
+                      <select value={pipelineSource?.repositoryId ?? ""} onChange={(event) => void savePipelineSpec((current) => ({ ...current, source: { ...current.source, repositoryId: event.target.value || undefined } }), "Не удалось сохранить репозиторий")} disabled={busy} className="rounded border px-2 py-1">
+                        <option value="">Remote самой папки</option>
                         {projectRepositories.map((link) => <option key={link.id} value={link.repositoryId}>{link.repository?.pathWithNamespace ?? link.repositoryId}</option>)}
                       </select>
                       <select value={selectedPipelineSpec.spec.finalAction.targetBranch?.mode ?? "new"} onChange={(event) => patchWorkspaceFinalAction({ targetBranch: { ...selectedPipelineSpec.spec.finalAction.targetBranch, mode: event.target.value } })} disabled={busy} className="rounded border px-2 py-1">
@@ -684,14 +686,8 @@ const AgentizPipelines: React.FC = () => {
                         <a href={WORKERS_URL} className="underline">странице «Воркеры»</a> в блоке «Откуда разрешён Git push».
                       </>
                     )}
-                    {sourcePushGrant && projectRepositories.length === 0 && (
-                      <>
-                        Commit и push недоступны: у проекта нет привязанного репозитория — добавьте его на{" "}
-                        <a href={`${PREFIX}/agentiz-repos`} className="underline">странице «Репозитории»</a>.
-                      </>
-                    )}
-                    {sourcePushGrant && projectRepositories.length > 0 && (
-                      <>Push разрешён (remote <code>{sourcePushGrant.remote}</code>) — можно выбрать «Commit и push из workspace».</>
+                    {sourcePushGrant && (
+                      <>Push разрешён в remote <code>{sourcePushGrant.remote}</code> этой папки — можно выбрать «Commit и push из workspace».</>
                     )}
                   </p>
                 )}

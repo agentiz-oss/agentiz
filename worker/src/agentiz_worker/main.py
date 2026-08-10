@@ -461,8 +461,9 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
     try:
         pinned = isinstance(job.get("workspace"), dict)
         if job_kind != "pipeline":
-            if not pinned or not proposal or not repository:
-                raise WorkerError(f"{job_kind} job is missing workspace, proposal or repository")
+            # `repository` is optional: a directory that pushes through its own remote pins none.
+            if not pinned or not proposal:
+                raise WorkerError(f"{job_kind} job is missing workspace or proposal")
             workdir = resolve_workdir(job, settings)
             action_result = run_action(workdir, job_kind, proposal, repository)
             client.post(f"/jobs/{job['jobId']}/result", job, {
@@ -491,8 +492,6 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             workspace_lock_context = guard_workspace(workdir, str(proposal.get("id")) if proposal else None)
             locked_root = workspace_lock_context.__enter__()
             if proposal:
-                if not repository:
-                    raise WorkerError("Workspace Git proposal has no repository identity")
                 workdir, workspace_marker = workspace_git_preflight(locked_root, proposal, repository)
                 emit("workspace.git.ready", None,
                      f"Git proposal {proposal.get('id')} revision {proposal.get('revision')} at {workspace_marker['baseSha'][:12]}")

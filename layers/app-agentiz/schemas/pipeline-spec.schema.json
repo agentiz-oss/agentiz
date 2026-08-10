@@ -82,7 +82,7 @@
         "repositoryId": {
           "type": "string",
           "minLength": 1,
-          "description": "AgentRepository.id this pipeline works on. Must be linked to the same project. Required for worker_workspace + finalAction commit; otherwise absent means the repository the task came from."
+          "description": "AgentRepository.id this pipeline works on. Must be linked to the same project. For kind repository, absent means the repository the task came from. For worker_workspace it is optional and only accepted with finalAction commit: that directory pushes through its own configured remote, and pinning a repository adds the check that the checkout still points at it."
         },
         "branch": {
           "type": "string",

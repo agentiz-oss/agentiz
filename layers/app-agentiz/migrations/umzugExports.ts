@@ -59,6 +59,10 @@ import {
   up as upWorkerGitPushRoots,
   down as downWorkerGitPushRoots,
 } from './umzug/1787000600000_worker_git_push_roots';
+import {
+  up as upWorkspaceProposalOptionalRepository,
+  down as downWorkspaceProposalOptionalRepository,
+} from './umzug/1787000700000_workspace_proposal_optional_repository';
 
 export const umzugExports: Migration[] = [
   {
@@ -169,5 +173,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1787000600000,
     up: upWorkerGitPushRoots,
     down: downWorkerGitPushRoots,
+  },
+  {
+    name: 'workspace_proposal_optional_repository',
+    timestamp: 1787000700000,
+    up: upWorkspaceProposalOptionalRepository,
+    down: downWorkspaceProposalOptionalRepository,
   },
 ];
