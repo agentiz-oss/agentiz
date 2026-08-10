@@ -56,6 +56,12 @@ export class AgentRunDiff extends Model<InferAttributes<AgentRunDiff>, InferCrea
   @Column({ type: DataType.STRING, allowNull: true })
   declare baseSha: string | null;
 
+  @Column({ type: DataType.STRING, allowNull: true }) declare proposalId: string | null;
+  @Column({ type: DataType.INTEGER, allowNull: true }) declare revision: number | null;
+  @Column({ type: DataType.STRING, allowNull: true }) declare treeSha: string | null;
+  @Column({ type: DataType.INTEGER, allowNull: true }) declare patchSizeBytes: number | null;
+  @Column({ type: DataType.STRING, allowNull: true }) declare patchSha256: string | null;
+
   @AdminizerField({ title: 'Patch', type: 'longtext', views: { list: false, add: false, edit: false } })
   @Column({ type: DataType.TEXT, allowNull: true })
   declare patch: string | null;

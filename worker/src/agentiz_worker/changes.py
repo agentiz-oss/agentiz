@@ -12,6 +12,7 @@ The patch is produced even when it is large: a truncated patch is more useful th
 from __future__ import annotations
 
 import base64
+import hashlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -109,8 +110,12 @@ def collect_changes(repo: Path, base_sha: str, max_patch_bytes: int = DEFAULT_MA
     # diff describe the whole working tree instead of only tracked edits.
     _git_text(repo, ["add", "-A"])
 
-    patch_bytes = _git_bytes(repo, ["diff", "--cached", "--binary"])
-    truncated = len(patch_bytes) > max_patch_bytes
+    diff_args = ["diff", "--cached", "--binary"] + ([base_sha] if base_sha else [])
+    full_patch_bytes = _git_bytes(repo, diff_args)
+    patch_size = len(full_patch_bytes)
+    patch_hash = hashlib.sha256(full_patch_bytes).hexdigest()
+    patch_bytes = full_patch_bytes
+    truncated = patch_size > max_patch_bytes
     if truncated:
         patch_bytes = patch_bytes[:max_patch_bytes]
     patch = patch_bytes.decode("utf-8", errors="replace")
@@ -151,4 +156,7 @@ def collect_changes(repo: Path, base_sha: str, max_patch_bytes: int = DEFAULT_MA
         else:
             ops.append(_upsert(repo, path, binary))
 
-    return {"ops": ops, "patch": patch, "stats": _stats(repo), "truncated": truncated, "baseSha": base_sha}
+    tree_sha = _git_text(repo, ["write-tree"]).strip()
+    return {"ops": ops, "patch": patch, "patchBase64": base64.b64encode(patch_bytes).decode("ascii"),
+            "stats": _stats(repo), "truncated": truncated, "baseSha": base_sha,
+            "treeSha": tree_sha, "patchSizeBytes": patch_size, "patchSha256": patch_hash}

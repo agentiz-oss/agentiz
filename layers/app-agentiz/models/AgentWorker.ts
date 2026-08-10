@@ -114,7 +114,7 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   @AdminizerField({
     title: 'Workspaces',
     type: 'jsoneditor',
-    tooltip: 'Prepared directories on this machine: [{ key, path, label?, description? }]. A pipeline with source.kind "worker_workspace" names one of these keys and then runs only here.',
+    tooltip: 'Prepared directories: [{ key, path, label?, description?, git?: { pushEnabled: true, remote?: "origin" } }]. Git push is an explicit operator grant.',
     views: { list: false, add: false, edit: true },
   })
   @Column({ type: DataType.JSONB, allowNull: true })

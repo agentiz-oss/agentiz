@@ -18,6 +18,7 @@ interface WorkerWorkspace {
   path: string;
   label?: string;
   description?: string;
+  git?: { pushEnabled: boolean; remote?: string };
 }
 
 interface AgentWorker {
@@ -71,7 +72,13 @@ interface PipelineSpecConfig {
   isDefault: boolean;
   spec: {
     stages: PipelineStageConfig[];
-    finalAction: Record<string, unknown>;
+    finalAction: {
+      type: "commit_and_pr" | "commit" | "comment_only" | "none";
+      requireApproval?: boolean;
+      targetBranch?: { mode: "current" | "new"; prefix?: string };
+      commitMessageTemplate?: string;
+      [key: string]: unknown;
+    };
     triggers?: { humanComment?: boolean };
     source?: PipelineSourceConfig;
     hooks?: { before?: PipelineHookConfig; after?: PipelineHookConfig };
@@ -305,11 +312,36 @@ const AgentizPipelines: React.FC = () => {
 
   const setPipelineSource = useCallback((source: PipelineSourceConfig) => {
     void savePipelineSpec((current) => {
-      const finalAction = source.kind === "worker_workspace" && current.finalAction?.type === "commit_and_pr"
-        ? { ...current.finalAction, type: "comment_only" }
+      const finalAction = source.kind === "worker_workspace" && (current.finalAction?.type === "commit_and_pr" || current.finalAction?.type === "commit")
+        ? { ...current.finalAction, type: "comment_only" as const }
         : current.finalAction;
       return { ...current, source, finalAction };
     }, "Не удалось сохранить источник пайплайна");
+  }, [savePipelineSpec]);
+
+  const setWorkspaceDelivery = useCallback((type: "commit" | "comment_only" | "none") => {
+    void savePipelineSpec((current) => {
+      if (type !== "commit") return { ...current, finalAction: { type } };
+      const workspace = current.source?.workspace;
+      const worker = workers.find((item) => item.id === workspace?.workerId);
+      const declared = worker?.workspaces?.find((item) => item.key === workspace?.workspaceKey);
+      const repositoryId = current.source?.repositoryId || projectRepositories[0]?.repositoryId;
+      if (!workspace?.workspaceKey || !declared?.git?.pushEnabled || !repositoryId) return current;
+      return {
+        ...current,
+        source: { ...current.source, kind: "worker_workspace", repositoryId },
+        finalAction: {
+          type: "commit", requireApproval: true,
+          targetBranch: { mode: "new", prefix: "agentiz/" },
+          commitMessageTemplate: "{{title}}\n\n{{summary}}",
+        },
+      };
+    }, "Не удалось включить Git-доставку workspace");
+  }, [projectRepositories, savePipelineSpec, workers]);
+
+  const patchWorkspaceFinalAction = useCallback((patch: Record<string, unknown>) => {
+    void savePipelineSpec((current) => ({ ...current, finalAction: { ...current.finalAction, ...patch } }),
+      "Не удалось сохранить Git-доставку workspace");
   }, [savePipelineSpec]);
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
@@ -557,7 +589,8 @@ const AgentizPipelines: React.FC = () => {
                       ?? "—"}
                   </code>
                   {pipelineSource?.workspace?.createIfMissing && " (будет создана, если её ещё нет)"}.
-                  Репозиторий не нужен, коммит и PR недоступны, стадии выполняются в режиме Host.
+                  Стадии выполняются в режиме Host. Commit/push доступен только для объявленной папки,
+                  которой администратор воркера явно разрешил Git push.
                 </p>
               ) : pendingWorkerWorkspace ? (
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -577,6 +610,37 @@ const AgentizPipelines: React.FC = () => {
                 </p>
               )}
             </div>
+
+            {pipelineSourceKind === "worker_workspace" && (
+              <div className="rounded border p-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">После выполнения</span>
+                  <select value={selectedPipelineSpec.spec.finalAction.type} onChange={(event) => setWorkspaceDelivery(event.target.value as "commit" | "comment_only" | "none")} disabled={busy} className="rounded border px-2 py-1">
+                    <option value="comment_only">Только результат в задаче</option>
+                    <option value="none">Ничего</option>
+                    <option value="commit" disabled={workspaceNameMode !== "key" || !sourceWorker?.workspaces?.find((item) => item.key === pipelineSource?.workspace?.workspaceKey)?.git?.pushEnabled || projectRepositories.length === 0}>Commit и push из workspace</option>
+                  </select>
+                  {selectedPipelineSpec.spec.finalAction.type === "commit" && (
+                    <>
+                      <select value={pipelineSource?.repositoryId ?? ""} onChange={(event) => void savePipelineSpec((current) => ({ ...current, source: { ...current.source, repositoryId: event.target.value } }), "Не удалось сохранить репозиторий")} disabled={busy} className="rounded border px-2 py-1">
+                        {projectRepositories.map((link) => <option key={link.id} value={link.repositoryId}>{link.repository?.pathWithNamespace ?? link.repositoryId}</option>)}
+                      </select>
+                      <select value={selectedPipelineSpec.spec.finalAction.targetBranch?.mode ?? "new"} onChange={(event) => patchWorkspaceFinalAction({ targetBranch: { ...selectedPipelineSpec.spec.finalAction.targetBranch, mode: event.target.value } })} disabled={busy} className="rounded border px-2 py-1">
+                        <option value="current">В исходную ветку</option>
+                        <option value="new">В новую короткую ветку</option>
+                      </select>
+                      <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={selectedPipelineSpec.spec.finalAction.requireApproval === true} onChange={(event) => patchWorkspaceFinalAction({ requireApproval: event.target.checked })} />Требовать подтверждение</label>
+                    </>
+                  )}
+                </div>
+                {selectedPipelineSpec.spec.finalAction.type === "commit" && (
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    {selectedPipelineSpec.spec.finalAction.targetBranch?.mode === "new" && <input defaultValue={selectedPipelineSpec.spec.finalAction.targetBranch?.prefix ?? "agentiz/"} onBlur={(event) => patchWorkspaceFinalAction({ targetBranch: { mode: "new", prefix: event.target.value.trim() || "agentiz/" } })} placeholder="Префикс ветки" className="rounded border px-2 py-1 text-xs" />}
+                    <textarea defaultValue={selectedPipelineSpec.spec.finalAction.commitMessageTemplate ?? "{{title}}\n\n{{summary}}"} onBlur={(event) => patchWorkspaceFinalAction({ commitMessageTemplate: event.target.value })} rows={3} className="rounded border px-2 py-1 text-xs" />
+                  </div>
+                )}
+              </div>
+            )}
 
             <label className="flex items-center gap-2 rounded border p-2 text-sm">
               <input

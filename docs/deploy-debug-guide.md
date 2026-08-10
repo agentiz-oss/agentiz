@@ -128,14 +128,17 @@ minutes and there's no reason to block on it.
 ## 5. No MCP tool for what you need? Add one.
 
 The `agentiz` group (read-only: `overview`, `projects`, `tasks`, `runs`, `runDetails`,
-`configuration`, `workers`, `workerDetails`, `jobs`) and `agentiz-actions` group (state-changing:
-`sync`, `runTask`, `cancelRun`) are
-defined in `layers/app-agentiz/mcp/agentizTools.ts` as a flat `IMcpTool[]` array
-(`agentizMcpTools`). If the thing you need to inspect or change in production has no tool:
+`configuration`, `pipelineSpecSchema`, `workers`, `workerDetails`, `jobs`) and
+`agentiz-actions` group (state-changing: `sync`, `runTask`, `cancelRun`, `manage`,
+`manageWorker`) are defined in `layers/app-agentiz/mcp/agentizTools.ts` and
+`layers/app-agentiz/mcp/agentizManagementTools.ts`, then collected in the flat
+`agentizMcpTools` array. The complete extension guide, including schema validation, security,
+cross-layer registration and tests, is in [`mcp-development.md`](./mcp-development.md).
+If the thing you need to inspect or change in production has no tool:
 
-1. Add a new `IMcpTool` object in that file — copy the shape of an existing tool in the same
-   group (`mode: 'protected'`, an `inputSchema`, an async `handler()` that talks to the Sequelize
-   models directly, same as `overviewTool`/`runTaskTool`).
+1. Add a new `IMcpTool` object — copy the shape of an existing tool in the same group
+   (`mode: 'protected'`, an `inputSchema`, and an async `handler()`). Read-only tools may query
+   models; mutations with domain invariants must call the owning service.
 2. Put read-only tools in `agentiz`, state-changing ones in `agentiz-actions` — this split is
    meaningful to callers, not cosmetic.
 3. Add it to the `agentizMcpTools` export array at the bottom of the file.

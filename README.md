@@ -58,3 +58,9 @@ Use SQLite by default or set `DB_DIALECT=postgres` with `DB_HOST`, `DB_PORT`, `D
 
 Only `layers/app-agentiz` is a local application layer. The admin dashboard is loaded
 from the `@nodeknit/app-adminizer` dependency.
+
+## Documentation
+
+Project documentation is indexed in [`docs/README.md`](docs/README.md). In particular, see
+[`docs/mcp-usage.md`](docs/mcp-usage.md) for calling the MCP endpoint and
+[`docs/mcp-development.md`](docs/mcp-development.md) for adding or extending MCP tools.

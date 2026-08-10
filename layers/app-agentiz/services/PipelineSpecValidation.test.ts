@@ -23,6 +23,11 @@ const workspacePathExample = {
   stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
   finalAction: { type: 'comment_only' },
 };
+const workspaceGitExample = {
+  source: { kind: 'worker_workspace', repositoryId: 'repo-1', workspace: { workerId: 'worker-1', workspaceKey: 'lyapka' } },
+  stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
+  finalAction: { type: 'commit', requireApproval: true, targetBranch: { mode: 'new', prefix: 'agentiz/' } },
+};
 
 function rejection(spec: unknown): PipelineSpecError {
   try {
@@ -38,6 +43,7 @@ describe('pipeline spec examples', () => {
     expect(() => assertValidSpec(repositoryExample)).not.toThrow();
     expect(() => assertValidSpec(workspaceExample)).not.toThrow();
     expect(() => assertValidSpec(workspacePathExample)).not.toThrow();
+    expect(() => assertValidSpec(workspaceGitExample)).not.toThrow();
   });
 });
 
@@ -58,11 +64,22 @@ describe('rejection messages', () => {
 
   it('explains the worker-directory combinations that cannot work', () => {
     expect(rejection({ ...workspaceExample, finalAction: { type: 'commit_and_pr' } }).message)
-      .toContain('use "comment_only" or "none"');
+      .toContain('use "commit", "comment_only" or "none"');
     expect(rejection({
       ...workspaceExample,
       stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'docker' } }],
     }).message).toContain('use "host"');
+  });
+
+  it('restricts workspace Git delivery to a declared key and linked repository id', () => {
+    expect(rejection({ ...workspaceGitExample, source: { ...workspaceGitExample.source, repositoryId: undefined } }).message)
+      .toContain('repositoryId is required');
+    expect(rejection({
+      ...workspaceGitExample,
+      source: { kind: 'worker_workspace', repositoryId: 'repo-1', workspace: { workerId: 'worker-1', path: '/tmp/repo' } },
+    }).message).toContain('requires workspaceKey');
+    expect(rejection({ ...workspaceGitExample, finalAction: { type: 'commit' } }).message)
+      .toContain('targetBranch.mode');
   });
 
   it('requires exactly one of workspaceKey or path', () => {

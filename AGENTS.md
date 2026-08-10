@@ -1,5 +1,6 @@
 # Agentiz development notes
 
+- Documentation index: [`docs/README.md`](docs/README.md).
 - Run the server with `npm run dev` (TSX).
 - Run `npm run build` after TypeScript changes.
 - Local application layers: `layers/app-agentiz` (core), `layers/app-agentiz-gitlab-integration`,

@@ -16,6 +16,7 @@ interface WorkerWorkspace {
   path: string;
   label?: string;
   description?: string;
+  git?: { pushEnabled: boolean; remote?: string };
 }
 
 interface AgentWorker {
@@ -112,15 +113,22 @@ const WorkerWorkspacesEditor: React.FC<{
 }> = ({ worker, busy, onSave }) => {
   const [key, setKey] = useState("");
   const [path, setPath] = useState("");
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [remote, setRemote] = useState("origin");
   const workspaces = worker.workspaces ?? [];
 
   const add = () => {
     const trimmedKey = key.trim();
     const trimmedPath = path.trim();
     if (!trimmedKey || !trimmedPath) return;
-    onSave([...workspaces.filter((item) => item.key !== trimmedKey), { key: trimmedKey, path: trimmedPath }]);
+    onSave([...workspaces.filter((item) => item.key !== trimmedKey), {
+      key: trimmedKey, path: trimmedPath,
+      ...(pushEnabled ? { git: { pushEnabled: true, remote: remote.trim() || "origin" } } : {}),
+    }]);
     setKey("");
     setPath("");
+    setPushEnabled(false);
+    setRemote("origin");
   };
 
   return (
@@ -136,6 +144,7 @@ const WorkerWorkspacesEditor: React.FC<{
             <li key={workspace.key} className="flex flex-wrap items-center gap-2 text-xs">
               <code className="rounded border px-1">{workspace.key}</code>
               <span className="text-muted-foreground">{workspace.path}</span>
+              {workspace.git?.pushEnabled && <span style={{ color: "#047857" }}>Git push: {workspace.git.remote ?? "origin"}</span>}
               <button
                 onClick={() => onSave(workspaces.filter((item) => item.key !== workspace.key))}
                 disabled={busy}
@@ -155,6 +164,11 @@ const WorkerWorkspacesEditor: React.FC<{
           placeholder="ключ, напр. monorepo"
           className="rounded border px-2 py-1 text-xs"
         />
+        <label className="flex items-center gap-1 text-xs">
+          <input type="checkbox" checked={pushEnabled} onChange={(event) => setPushEnabled(event.target.checked)} />
+          Разрешить Git push
+        </label>
+        {pushEnabled && <input value={remote} onChange={(event) => setRemote(event.target.value)} placeholder="origin" className="w-24 rounded border px-2 py-1 text-xs" />}
         <input
           value={path}
           onChange={(event) => setPath(event.target.value)}

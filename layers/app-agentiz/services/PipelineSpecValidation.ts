@@ -31,10 +31,10 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'stages[].order values are unique and cover 1..N without gaps.',
   'stages[].agentRoleKey must be the `key` of an AgentRole belonging to the same project.',
   'stages[].model overrides that role\'s own model for this stage only; absent means the role\'s model. Free-form string, resolved by the executor (e.g. an Anthropic model id).',
-  'source.kind "worker_workspace" requires source.workspace.workerId and forbids source.repositoryId.',
+  'source.kind "worker_workspace" normally forbids source.repositoryId; finalAction.type "commit" requires it, a declared workspaceKey, and worker-side git.pushEnabled.',
   'source.workspace names the directory in exactly one of two ways: workspaceKey (looked up in that worker\'s declared Workspaces list — see agentiz.manageWorker {operation:"setWorkspaces"}) or path (an absolute path given directly in the spec, no prior declaration on the worker needed). Setting both, or neither, is rejected.',
   'source.workspace.createIfMissing only applies alongside path: the worker creates the directory if it does not exist yet, instead of failing. It is rejected alongside workspaceKey — a declared directory is expected to already exist.',
-  'source.kind "worker_workspace" allows only finalAction.type "comment_only" or "none" — there is no hosted repository to push to.',
+  'source.kind "worker_workspace" allows comment_only, none, or commit through the local workspace Git engine; commit_and_pr remains provider-only.',
   'source.kind "worker_workspace" requires runtime.mode "host" on every stage; a docker container cannot see the worker\'s directory.',
   `hooks.before/after scripts must be non-empty, must not start with a shebang, and must stay under ${MAX_HOOK_SCRIPT_BYTES} bytes.`,
 ];
@@ -137,9 +137,12 @@ function assertHooksAreRunnable(spec: PipelineSpecDef): void {
 function assertSourceIsConsistent(spec: PipelineSpecDef): void {
   if (!isWorkspaceSource(spec.source)) return;
 
-  // Both name where the code comes from, and they cannot both be right.
-  if (spec.source?.repositoryId) {
-    throw specError('source.repositoryId is meaningless with source.kind "worker_workspace": the run works in a directory, not in a repository');
+  const workspaceGit = spec.finalAction.type === 'commit';
+  if (workspaceGit && !spec.source?.repositoryId) {
+    throw specError('source.repositoryId is required for worker_workspace + finalAction.type "commit"');
+  }
+  if (!workspaceGit && spec.source?.repositoryId) {
+    throw specError('source.repositoryId is only allowed with worker_workspace when finalAction.type is "commit"');
   }
   const workspace = spec.source?.workspace;
   if (!workspace?.workerId) {
@@ -156,9 +159,14 @@ function assertSourceIsConsistent(spec: PipelineSpecDef): void {
   if (workspace.createIfMissing && hasKey) {
     throw specError('source.workspace.createIfMissing only applies alongside path, not workspaceKey');
   }
-  // Nothing to push to: the directory belongs to the worker's machine, not to a git host.
-  if (spec.finalAction.type === 'commit_and_pr' || spec.finalAction.type === 'commit') {
-    throw specError(`finalAction "${spec.finalAction.type}" is not available for source.kind "worker_workspace"; use "comment_only" or "none"`);
+  if (workspaceGit && !hasKey) {
+    throw specError('worker_workspace Git delivery requires workspaceKey; an arbitrary source.workspace.path may not push');
+  }
+  if (spec.finalAction.type === 'commit_and_pr') {
+    throw specError('finalAction "commit_and_pr" is not available for source.kind "worker_workspace"; use "commit", "comment_only" or "none"');
+  }
+  if (workspaceGit && !spec.finalAction.targetBranch?.mode) {
+    throw specError('worker_workspace finalAction.type "commit" requires finalAction.targetBranch.mode "current" or "new"');
   }
   // docker starts a fresh container, so the host directory this pipeline is about would not be in it.
   const dockerStage = spec.stages.find((stage) => stage.runtime?.mode === 'docker');

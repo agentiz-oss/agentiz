@@ -287,7 +287,18 @@ export class AgentWorkerRegistryService {
       }
       const label = String(item?.label ?? '').trim();
       const description = String(item?.description ?? '').trim();
-      cleaned.push({ key, path, ...(label ? { label } : {}), ...(description ? { description } : {}) });
+      let git: AgentWorkerWorkspace['git'];
+      if (item?.git !== undefined) {
+        if (!item.git || typeof item.git !== 'object' || item.git.pushEnabled !== true) {
+          throw new WorkerRegistryError(400, `Workspace "${key}": git.pushEnabled must be true or git must be omitted`, 'invalid_workspace');
+        }
+        const remote = String(item.git.remote ?? 'origin').trim();
+        if (!/^[A-Za-z0-9._-]+$/.test(remote)) {
+          throw new WorkerRegistryError(400, `Workspace "${key}": invalid Git remote "${remote}"`, 'invalid_workspace');
+        }
+        git = { pushEnabled: true, remote };
+      }
+      cleaned.push({ key, path, ...(label ? { label } : {}), ...(description ? { description } : {}), ...(git ? { git } : {}) });
     }
     await worker.update({ workspaces: cleaned.length ? cleaned : null });
     return worker;

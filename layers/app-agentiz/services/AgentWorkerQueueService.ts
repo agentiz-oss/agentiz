@@ -85,6 +85,8 @@ export class AgentWorkerQueueService {
           ...(allowedRepositoryIds
             ? { [Op.and]: [{ [Op.or]: [{ repositoryId: null }, { repositoryId: { [Op.in]: allowedRepositoryIds } }] }] }
             : {}),
+          // Workspace Git actions are implemented by the external worker that owns the checkout.
+          jobKind: 'pipeline',
           // Same rule as the remote claim: a job tied to one machine's directory stays there.
           [Op.or]: [{ requiredWorkerId: null }, { requiredWorkerId: worker.id }],
         },

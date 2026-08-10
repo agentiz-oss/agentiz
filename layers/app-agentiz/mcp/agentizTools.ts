@@ -316,6 +316,19 @@ const pipelineSpecSchemaTool: IMcpTool = {
         stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
         finalAction: { type: 'comment_only' },
       },
+      workerWorkspaceGit: {
+        source: {
+          kind: 'worker_workspace',
+          repositoryId: '<AgentRepository.id linked to this project and allowed on the worker>',
+          workspace: { workerId: '<AgentWorker.id>', workspaceKey: '<workspace whose git.pushEnabled is true>' },
+        },
+        stages: [{ order: 1, role: 'implement', agentRoleKey: '<AgentRole.key>', runtime: { mode: 'host' } }],
+        finalAction: {
+          type: 'commit', requireApproval: true,
+          targetBranch: { mode: 'new', prefix: 'agentiz/' },
+          commitMessageTemplate: '{{title}}\n\n{{summary}}',
+        },
+      },
     };
 
     const base = {
@@ -335,7 +348,7 @@ const pipelineSpecSchemaTool: IMcpTool = {
     const workspaces = usable.flatMap((worker) => (worker.workspaces ?? []).map((workspace) => ({
       workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
       workerContactState: worker.contactState(), workspaceKey: workspace.key,
-      path: workspace.path, label: workspace.label ?? null,
+      path: workspace.path, label: workspace.label ?? null, git: workspace.git ?? null,
     })));
     return {
       ...base,
@@ -346,7 +359,7 @@ const pipelineSpecSchemaTool: IMcpTool = {
         workersWithoutWorkspaces: usable.filter((worker) => !(worker.workspaces ?? []).length).map((worker) => ({ id: worker.id, name: worker.name, status: worker.status })),
         // A directory is not something the spec declares — the worker that owns the machine does.
         // Said here because an empty list otherwise looks like "this pipeline is impossible".
-        declaringAWorkspace: 'A directory becomes usable by declaring it on the worker that owns the machine: agentiz.manageWorker {operation:"setWorkspaces", workerId, workspaces:[{key:"<key>", path:"/absolute/path"}]}. That call replaces the worker\'s whole list, so include its existing entries. The spec then names it by key, never by path.',
+        declaringAWorkspace: 'A directory becomes usable by declaring it on the worker that owns the machine: agentiz.manageWorker {operation:"setWorkspaces", workerId, workspaces:[{key:"<key>", path:"/absolute/path", git:{pushEnabled:true,remote:"origin"}}]}. Git is optional and is the administrator\'s explicit push grant. That call replaces the worker\'s whole list, so include existing entries.',
       },
     };
   },

@@ -82,7 +82,7 @@
         "repositoryId": {
           "type": "string",
           "minLength": 1,
-          "description": "AgentRepository.id this pipeline works on. Must be linked to the same project. Absent = the repository the task came from. Ignored for kind worker_workspace."
+          "description": "AgentRepository.id this pipeline works on. Must be linked to the same project. Required for worker_workspace + finalAction commit; otherwise absent means the repository the task came from."
         },
         "branch": {
           "type": "string",
@@ -170,7 +170,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
-      "description": "What the run does after the last stage. commit_and_pr pushes the accumulated file changes and opens a PR/MR; comment_only just posts the summary back to the tracker; none finishes silently. commit pushes straight onto the target branch without opening anything. commit_and_pr and commit both require source.kind = repository: a worker workspace has no hosted repository to push to.",
+      "description": "What the run does after the last stage. commit_and_pr uses the hosting provider. commit on a managed worker_workspace stores a complete diff and queues commit/push on that same worker.",
       "properties": {
         "type": {
           "type": "string",
@@ -185,6 +185,16 @@
           "type": "boolean",
           "default": false,
           "description": "Hold the change in Agentiz instead of pushing it. The diff is stored either way; with this on the run ends in waiting_review and nothing reaches the repository until somebody applies it."
+        },
+        "targetBranch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "description": "For worker_workspace commit: push the original branch or a new short branch.",
+          "properties": {
+            "mode": { "type": "string", "enum": ["current", "new"] },
+            "prefix": { "type": "string", "maxLength": 80, "default": "agentiz/" }
+          }
         },
         "branchPrefix": {
           "type": "string",

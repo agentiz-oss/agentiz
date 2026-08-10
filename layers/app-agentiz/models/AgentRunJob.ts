@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentRun } from './AgentRun';
 import { AgentProject } from './AgentProject';
-import type { AgentRunJobStatus } from '../types/agentiz';
+import type { AgentRunJobKind, AgentRunJobStatus } from '../types/agentiz';
 
 @AdminizerModel({
   model: 'AgentRunJob',
@@ -29,6 +29,13 @@ export class AgentRunJob extends Model<InferAttributes<AgentRunJob>, InferCreati
   @ForeignKey(() => AgentProject)
   @Column({ type: DataType.STRING, allowNull: false })
   declare projectId: string;
+
+  @Default('pipeline')
+  @Column({ type: DataType.STRING, allowNull: false, defaultValue: 'pipeline' })
+  declare jobKind: CreationOptional<AgentRunJobKind>;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare proposalId: string | null;
 
   @AdminizerField({
     title: 'Status',
