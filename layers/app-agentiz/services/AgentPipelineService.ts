@@ -3,6 +3,7 @@ import { AgentRole } from '../models/AgentRole';
 import { AgentRun } from '../models/AgentRun';
 import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentRunJob } from '../models/AgentRunJob';
+import { AgentRunInteractionService } from './AgentRunInteractionService';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
 import { AgentTaskComment } from '../models/AgentTaskComment';
@@ -11,11 +12,13 @@ import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentGitConnection } from '../models/AgentGitConnection';
 import { AgentProjectRepository } from '../models/AgentProjectRepository';
 import { AgentRepository } from '../models/AgentRepository';
+import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
 import { RepositoryResolverService } from './RepositoryResolverService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
 import { hasUpstreamThread } from '../lib/taskManager';
+import { generateWorkspaceBranch } from '../lib/workspaceBranch';
 import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
@@ -27,6 +30,7 @@ import type {
   PipelineSpecDef,
   PipelineWorkerWorkspaceDef,
 } from '../types/agentiz';
+import { Op } from 'sequelize';
 
 export interface RunConversationTurn {
   id: string;
@@ -51,6 +55,7 @@ export interface RunWorkspaceRef {
   label: string | null;
   /** Create `path` if it does not exist yet, instead of failing. Only ever true for a `path`-named workspace. */
   createIfMissing: boolean;
+  git: { pushEnabled: boolean; remote: string } | null;
 }
 
 export interface RunConversation {
@@ -85,13 +90,18 @@ export class AgentPipelineService {
   static async createRun(
     taskId: string,
     trigger: AgentRunTrigger = 'manual',
-    options: { triggerCommentId?: string | null } = {},
+    options: {
+      triggerCommentId?: string | null;
+      pipelineSnapshot?: PipelineSpecDef;
+      proposalId?: string | null;
+      workspaceRevision?: number | null;
+    } = {},
   ): Promise<AgentRun> {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new Error(`AgentTask ${taskId} not found`);
 
     const spec = await resolveSpecForTask(task);
-    const snapshot = spec.spec as PipelineSpecDef;
+    const snapshot = options.pipelineSnapshot ?? spec.spec as PipelineSpecDef;
     assertValidSpec(snapshot);
 
     const [previousRun, latestHumanComment] = await Promise.all([
@@ -106,6 +116,8 @@ export class AgentPipelineService {
     const run = await AgentRun.create({
       taskId: task.id,
       projectId: task.projectId,
+      proposalId: options.proposalId ?? null,
+      workspaceRevision: options.workspaceRevision ?? null,
       status: 'pending',
       trigger,
       triggerCommentId,
@@ -273,6 +285,11 @@ export class AgentPipelineService {
       const message = error instanceof Error ? error.message : String(error);
       await run.update({ status: 'failed', finishedAt: new Date(), errorMessage: message });
       await AgentTask.update({ status: 'failed' }, { where: { id: run.taskId } });
+      if (run.proposalId && !(await AgentRunJob.findOne({ where: { runId: run.id, jobKind: 'pipeline' } }))) {
+        await AgentWorkspaceProposal.update({
+          status: 'rejected', reservationKey: null, rejectedAt: new Date(), lastError: message,
+        }, { where: { id: run.proposalId } });
+      }
       await writeLog(run.id, run.projectId, null, 'error', `Run could not be queued: ${message}`);
       throw error;
     }
@@ -458,6 +475,9 @@ export class AgentPipelineService {
 
     const run = await AgentRun.findByPk(runId);
     if (!run) throw new Error(`AgentRun ${runId} not found`);
+    if (isWorkspaceSource(run.pipelineSnapshot.source)) {
+      throw new Error('Workspace diffs are applied only by their pinned worker through proposal approval');
+    }
     const [task, project] = await Promise.all([AgentTask.findByPk(run.taskId), AgentProject.findByPk(run.projectId)]);
     if (!task || !project) throw new Error(`AgentRun ${runId}: task or project is missing`);
 
@@ -493,7 +513,7 @@ export class AgentPipelineService {
     project: AgentProject,
   ): Promise<{ repository: AgentRepository; connection: AgentGitConnection; link: AgentProjectRepository } | null> {
     const repositoryId = spec.source?.repositoryId?.trim();
-    if (!repositoryId || isWorkspaceSource(spec.source)) return null;
+    if (!repositoryId) return null;
 
     const link = await AgentProjectRepository.findOne({
       where: { projectId: project.id, repositoryId, isActive: true },
@@ -538,10 +558,11 @@ export class AgentPipelineService {
       throw new Error(`AgentRun ${runId} already finished with status ${run.status}`);
     }
     const job = await AgentRunJob.findOne({ where: { runId } });
+    if (job) await AgentRunInteractionService.closeForJob(job, 'cancelled', reason);
     if (job && (job.status === 'queued' || job.status === 'released')) {
       await job.update({ status: 'cancelled', cancelRequestedAt: new Date(), cancelReason: reason });
       await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
-      await AgentTask.update({ status: 'cancelled' }, { where: { id: run.taskId } });
+      await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(run.taskId, 'cancelled');
       await writeLog(run.id, run.projectId, null, 'warn', `Queued run cancelled: ${reason}`);
       return run;
     }
@@ -551,7 +572,7 @@ export class AgentPipelineService {
       return run;
     }
     await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
-    await AgentTask.update({ status: 'cancelled' }, { where: { id: run.taskId } });
+    await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(run.taskId, 'cancelled');
     await writeLog(run.id, run.projectId, null, 'warn', `Run cancelled: ${reason}`);
     return run;
   }
@@ -577,11 +598,14 @@ export class AgentWorkerJobBuilder {
     const requiredWorkerId = workspace?.workerId ?? null;
     // Mirrored out of the snapshot for the same reason: the claim query has to filter on it in SQL.
     const repositoryId = (snapshot.repository as { repositoryId?: string } | null)?.repositoryId ?? null;
+    const proposalId = (snapshot.proposal as { id?: string } | null)?.id ?? null;
     const [job, created] = await AgentRunJob.findOrCreate({
-      where: { runId: run.id },
+      where: { runId: run.id, jobKind: 'pipeline' },
       defaults: {
         runId: run.id,
         projectId: run.projectId,
+        jobKind: 'pipeline',
+        proposalId,
         status: 'queued',
         priority: 100,
         attempt: 0,
@@ -599,7 +623,7 @@ export class AgentWorkerJobBuilder {
       },
     });
     if (!created && job.status === 'released') {
-      await job.update({ status: 'queued', availableAt: new Date(), snapshot, repositoryId, requiredWorkerId });
+      await job.update({ status: 'queued', availableAt: new Date(), snapshot, repositoryId, requiredWorkerId, proposalId });
     }
     if (created) {
       await writeLog(run.id, run.projectId, null, 'info', 'Worker job queued', {
@@ -641,19 +665,27 @@ export class AgentWorkerJobBuilder {
       };
     }));
 
-    // A pipeline whose source is a worker directory has no hosted repository by definition: the
-    // environment already exists on that machine, so nothing is resolved through a git provider.
     const source = run.pipelineSnapshot.source;
     const workspace = isWorkspaceSource(source)
       ? await this.resolveWorkspace(source!.workspace as PipelineWorkerWorkspaceDef)
       : null;
+    if (workspace) {
+      const reservation = workspace.key
+        ? await AgentWorkspaceProposal.findOne({ where: { reservationKey: `${workspace.workerId}:${workspace.key}` } })
+        : await AgentWorkspaceProposal.findOne({
+            where: { workerId: workspace.workerId, workspacePath: workspace.path, reservationKey: { [Op.ne]: null } },
+          });
+      if (reservation && reservation.id !== run.proposalId) {
+        throw new Error(`Workspace "${workspace.key ?? workspace.path}" is reserved by proposal ${reservation.id}`);
+      }
+    }
 
     // finalAction 'none' never touches git (see finalize()), so a task-manager-only project with
     // no repository at all — neither its own repoConfig nor an integration — must still be able to
     // queue a job instead of failing before the first stage even runs.
     const finalAction = run.pipelineSnapshot.finalAction;
     let repository: Record<string, unknown> | null = null;
-    if (!workspace && finalAction.type !== 'none') {
+    if ((!workspace && finalAction.type !== 'none') || (workspace && finalAction.type === 'commit')) {
       // The pipeline's own repository wins when it names one; otherwise the task decides, as before.
       const pinned = await AgentPipelineService.pinnedRepository(run.pipelineSnapshot, project);
       const resolved = pinned
@@ -670,11 +702,9 @@ export class AgentWorkerJobBuilder {
       const baseHost = resolved.baseUrl
         ? resolved.baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
         : resolved.provider === 'gitlab' ? 'gitlab.com' : 'github.com';
-      const baseRef = this.resolveBaseRef(task, run.pipelineSnapshot, resolved.defaultBranch);
-      const baseSha = await this.resolveBaseSha(run, task, project, baseRef, resolved);
-      // Recorded on the run so the final action does not resolve the branch a second time, and so
-      // the run card can show which commit the work started from.
-      await run.update({ baseRef, baseSha });
+      const baseRef = workspace ? null : this.resolveBaseRef(task, run.pipelineSnapshot, resolved.defaultBranch);
+      const baseSha = workspace ? null : await this.resolveBaseSha(run, task, project, baseRef!, resolved);
+      if (!workspace) await run.update({ baseRef, baseSha });
       repository = {
         repositoryId: resolved.repositoryId ?? null,
         provider: resolved.provider,
@@ -683,10 +713,14 @@ export class AgentWorkerJobBuilder {
         cloneUrl: resolved.cloneUrl ?? `https://${baseHost}/${resolved.owner}/${resolved.repo}.git`,
         owner: resolved.owner,
         repo: resolved.repo,
+        pathWithNamespace: `${resolved.owner}/${resolved.repo}`,
         baseRef,
         baseSha,
       };
     }
+    const proposal = workspace && finalAction.type === 'commit'
+      ? await this.workspaceProposal(run, task, workspace, repository!)
+      : null;
     return {
       schemaVersion: 1,
       runId: run.id,
@@ -694,6 +728,7 @@ export class AgentWorkerJobBuilder {
       repository,
       // Present only for a worker-directory pipeline; the worker runs every stage in `path`.
       workspace,
+      proposal,
       task: {
         id: task.id,
         externalId: task.externalId,
@@ -820,6 +855,7 @@ export class AgentWorkerJobBuilder {
         path: ref.path.trim(),
         label: null,
         createIfMissing: !!ref.createIfMissing,
+        git: null,
       };
     }
     const declared = worker.workspace(ref.workspaceKey!);
@@ -837,6 +873,83 @@ export class AgentWorkerJobBuilder {
       path: declared.path.trim(),
       label: declared.label ?? null,
       createIfMissing: false,
+      git: declared.git?.pushEnabled ? { pushEnabled: true, remote: declared.git.remote?.trim() || 'origin' } : null,
+    };
+  }
+
+  /** Creates the durable reservation before the first workspace Git job becomes claimable. */
+  private static async workspaceProposal(
+    run: AgentRun,
+    task: AgentTask,
+    workspace: RunWorkspaceRef,
+    repository: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!workspace.key) throw new Error('Workspace Git delivery requires a declared workspaceKey');
+    if (!workspace.git?.pushEnabled) throw new Error(`Workspace "${workspace.key}" does not allow Git push`);
+    const worker = await AgentWorker.findByPk(workspace.workerId);
+    if (!worker?.allowedRepositoryIds?.includes(String(repository.repositoryId))) {
+      throw new Error(`Worker "${workspace.workerName}" must explicitly allow repository ${repository.repositoryId} before it may push`);
+    }
+    if (worker.capabilities?.workspaceGit !== true) {
+      throw new Error(`Worker "${workspace.workerName}" has not announced the workspaceGit capability; update and restart it first`);
+    }
+
+    let proposal = run.proposalId ? await AgentWorkspaceProposal.findByPk(run.proposalId) : null;
+    if (!proposal) {
+      const action = run.pipelineSnapshot.finalAction;
+      const mode = action.targetBranch?.mode ?? 'current';
+      const message = renderTemplate(action.commitMessageTemplate ?? '{{title}}\n\n{{summary}}', {
+        taskId: task.id, externalId: task.externalId, title: task.title, summary: '{{summary}}',
+      });
+      try {
+        proposal = await AgentWorkspaceProposal.create({
+          projectId: run.projectId,
+          taskId: run.taskId,
+          repositoryId: String(repository.repositoryId),
+          workerId: workspace.workerId,
+          workspaceKey: workspace.key,
+          workspacePath: workspace.path,
+          reservationKey: `${workspace.workerId}:${workspace.key}`,
+          initialRunId: run.id,
+          latestRunId: run.id,
+          revision: 1,
+          latestDiffId: null,
+          baseSha: null,
+          baseBranch: null,
+          remote: workspace.git.remote,
+          remoteUrl: null,
+          remoteBaseSha: null,
+          expectedTreeSha: null,
+          targetMode: mode,
+          targetBranch: mode === 'new' ? generateWorkspaceBranch(task.title, action.targetBranch?.prefix) : null,
+          commitMessage: message,
+          status: 'working',
+          decisionActor: null,
+          decisionAt: null,
+          lastError: null,
+          pushedCommitSha: null,
+          pushedAt: null,
+          rejectedAt: null,
+        });
+      } catch (error) {
+        throw new Error(`Workspace "${workspace.key}" on worker "${workspace.workerName}" is already reserved by another proposal`);
+      }
+      await run.update({ proposalId: proposal.id, workspaceRevision: 1 });
+    } else {
+      if (proposal.latestRunId !== run.id || proposal.revision !== run.workspaceRevision) {
+        throw new Error(`Run ${run.id} is not the latest revision of workspace proposal ${proposal.id}`);
+      }
+      await proposal.update({ status: 'working', lastError: null });
+    }
+    return {
+      id: proposal.id,
+      revision: proposal.revision,
+      baseSha: proposal.baseSha,
+      baseBranch: proposal.baseBranch,
+      remote: proposal.remote,
+      remoteUrl: proposal.remoteUrl,
+      remoteBaseSha: proposal.remoteBaseSha,
+      expectedTreeSha: proposal.expectedTreeSha,
     };
   }
 

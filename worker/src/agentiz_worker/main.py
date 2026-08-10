@@ -31,8 +31,10 @@ from urllib.request import Request, urlopen
 
 from .changes import collect_changes
 from .hooks import run_hook
+from .interactions import HumanInteractionBroker, install_acp_human_input
 from .redaction import Redactor
 from .repository import prepare_checkout
+from .workspace_git import finalize_action, guard_workspace, preflight as workspace_git_preflight, record_tree, run_action
 
 SCHEMA_VERSION = 1
 HEARTBEAT_INTERVAL_SEC = 20
@@ -236,11 +238,13 @@ class Client:
 
     def register(self) -> Any:
         return self.request("POST", "/register", {"schemaVersion": SCHEMA_VERSION, "instanceId": self.settings.instance_id,
-            "version": worker_version(), "capabilities": {"executors": ["openhands-acp"], "workspaceModes": ["host", "docker"], "maxConcurrency": 1}})[1]
+            "version": worker_version(), "capabilities": {"executors": ["openhands-acp"], "workspaceModes": ["host", "docker"],
+                "workspaceGit": True, "jobKinds": ["pipeline", "workspace_commit_push", "workspace_reset"],
+                "humanInput": {"modes": ["form"], "nativeRoundTrip": True, "durableResume": False}, "maxConcurrency": 1}})[1]
 
     def claim(self) -> dict[str, Any] | None:
         status, data = self.request("POST", "/claims", {"schemaVersion": SCHEMA_VERSION,
-            "capabilities": {"executors": ["openhands-acp"], "workspaceModes": ["host", "docker"]}})
+            "capabilities": {"executors": ["openhands-acp"], "workspaceModes": ["host", "docker"], "workspaceGit": True}})
         return data if status == 200 else None
 
     def post(self, path: str, job: dict[str, Any], extra: dict[str, Any]) -> Any:
@@ -267,7 +271,7 @@ def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None
     if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
         raise WorkerError("stage agent config requires acpCommand (or bashCommand for bash-fixture): [executable, ...args]")
     model = agent.get("model")
-    return mode, str(kind), command, (str(model) if model else None)
+    return mode, str(kind), pin_acp_command(command), (str(model) if model else None)
 
 
 def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
@@ -276,6 +280,22 @@ def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
 
 
 MAX_AGENT_MESSAGE_CHARS = 4_000
+ACP_ADAPTER_PINS = {
+    "@agentclientprotocol/codex-acp": "@agentclientprotocol/codex-acp@1.1.14",
+    "@agentclientprotocol/claude-agent-acp": "@agentclientprotocol/claude-agent-acp@0.66.0",
+}
+
+
+def pin_acp_command(command: list[str]) -> list[str]:
+    """Make old role snapshots use the contract-tested adapter versions too."""
+    pinned: list[str] = []
+    for part in command:
+        replacement = next(
+            (version for package, version in ACP_ADAPTER_PINS.items() if part == package or part.startswith(f"{package}@")),
+            None,
+        )
+        pinned.append(replacement or part)
+    return pinned
 
 
 def agent_message_text(event: Any) -> str | None:
@@ -333,7 +353,8 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
     return directory
 
 
-def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path, on_agent_message: Any) -> tuple[str, str | None]:
+def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path,
+                  on_agent_message: Any, interaction_broker: HumanInteractionBroker) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -365,13 +386,14 @@ def run_openhands(mode: str, acp_command: list[str], model: str | None, message:
     try:
         if context:
             context.__enter__()
-        conversation = Conversation(agent=agent, workspace=workspace, callbacks=[forward_event])
-        try:
-            conversation.send_message(message)
-            conversation.run()
-            return str(conversation.state.execution_status), final_message
-        finally:
-            conversation.close()
+        with install_acp_human_input(interaction_broker):
+            conversation = Conversation(agent=agent, workspace=workspace, callbacks=[forward_event])
+            try:
+                conversation.send_message(message)
+                conversation.run()
+                return str(conversation.state.execution_status), final_message
+            finally:
+                conversation.close()
     finally:
         agent.close()
         if context:
@@ -429,11 +451,26 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
     heartbeat.start()
 
     repository = job.get("repository") if isinstance(job.get("repository"), dict) else None
+    proposal = job.get("proposal") if isinstance(job.get("proposal"), dict) else None
+    job_kind = str(job.get("jobKind") or "pipeline")
     job_root: Path | None = None
+    workdir: Path | None = None
+    workspace_marker: dict[str, Any] | None = None
+    workspace_lock_context: Any = None
     failed = False
     try:
         pinned = isinstance(job.get("workspace"), dict)
-        if repository:
+        if job_kind != "pipeline":
+            if not pinned or not proposal or not repository:
+                raise WorkerError(f"{job_kind} job is missing workspace, proposal or repository")
+            workdir = resolve_workdir(job, settings)
+            action_result = run_action(workdir, job_kind, proposal, repository)
+            client.post(f"/jobs/{job['jobId']}/result", job, {
+                "resultId": str(uuid.uuid4()), "status": "succeeded", **action_result,
+            })
+            finalize_action(workdir, str(proposal.get("id")))
+            return
+        if repository and not pinned:
             # One disposable checkout per job, under the managed workspace root.
             job_root = settings.workspace / str(job["jobId"])
             job_root.mkdir(parents=True, exist_ok=True)
@@ -449,6 +486,16 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             workdir = resolve_workdir(job, settings)
             if pinned:
                 emit("job.workspace", None, f"Работа идёт в готовой папке воркера: {workdir}")
+
+        if pinned:
+            workspace_lock_context = guard_workspace(workdir, str(proposal.get("id")) if proposal else None)
+            locked_root = workspace_lock_context.__enter__()
+            if proposal:
+                if not repository:
+                    raise WorkerError("Workspace Git proposal has no repository identity")
+                workdir, workspace_marker = workspace_git_preflight(locked_root, proposal, repository)
+                emit("workspace.git.ready", None,
+                     f"Git proposal {proposal.get('id')} revision {proposal.get('revision')} at {workspace_marker['baseSha'][:12]}")
 
         hooks = job.get("hooks") if isinstance(job.get("hooks"), dict) else None
         hook_records: list[dict[str, Any]] = []
@@ -510,9 +557,12 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if kind == "bash-fixture":
                     status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
                 else:
+                    source = "codex" if any("codex-acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
+                    interaction_broker = HumanInteractionBroker(client, job, str(stage_id), source, redact)
                     status, agent_response = run_openhands(
                         mode, command, model, prompt(stage, job), settings, workdir,
                         lambda text: emit("stage.event", stage_id, text),
+                        interaction_broker,
                     )
                 if heartbeat_failure:
                     raise heartbeat_failure[0]
@@ -540,25 +590,54 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
         if hook_records:
             result["hooks"] = hook_records
         if repository:
-            changes = collect_changes(workdir, str(repository.get("baseSha") or ""),
+            base_sha = str((workspace_marker or {}).get("baseSha") or repository.get("baseSha") or "")
+            changes = collect_changes(workdir, base_sha,
                                       int(job.get("limits", {}).get("maxPatchBytes") or 5 * 1024 * 1024))
             result.update({
                 "baseSha": changes["baseSha"],
                 "fileOps": changes["ops"],
-                "patch": redact(changes["patch"]),
+                "patch": changes["patch"],
+                "patchBase64": changes["patchBase64"],
                 "diffStats": changes["stats"],
                 "patchTruncated": changes["truncated"],
+                "patchSizeBytes": changes["patchSizeBytes"],
+                "patchSha256": changes["patchSha256"],
+                "treeSha": changes["treeSha"],
             })
+            if workspace_marker and proposal:
+                record_tree(workdir, workspace_marker, changes["treeSha"], int(proposal.get("revision") or 0))
+                result["git"] = {key: workspace_marker.get(key) for key in
+                                 ("baseBranch", "remote", "remoteUrl", "remoteBaseSha")}
             emit("changes.collected", None,
                  f"{len(changes['ops'])} операц(ий), +{changes['stats']['insertions']} −{changes['stats']['deletions']}")
         client.post(f"/jobs/{job['jobId']}/result", job, result)
     except Exception as error:
         failed = True
-        client.post(f"/jobs/{job['jobId']}/result", job, {"resultId": str(uuid.uuid4()), "status": "failed",
-            "errorMessage": redact(str(error)), "stageOutputs": outputs})
+        terminal_status = "cancelled" if "cancellation requested" in str(error).lower() else "failed"
+        failure_result: dict[str, Any] = {"resultId": str(uuid.uuid4()), "status": terminal_status,
+            "errorMessage": redact(str(error)), "stageOutputs": outputs}
+        if pinned and proposal and workspace_marker is None:
+            # Preflight runs before hooks/stages. Without a marker Agentiz never touched the tree,
+            # so the server may safely release the reservation without attempting reset.
+            failure_result["workspaceUntouched"] = True
+        if workdir and workspace_marker and proposal:
+            try:
+                changes = collect_changes(workdir, str(workspace_marker["baseSha"]),
+                                          int(job.get("limits", {}).get("maxPatchBytes") or 5 * 1024 * 1024))
+                failure_result.update({"baseSha": changes["baseSha"], "fileOps": changes["ops"],
+                    "patch": changes["patch"], "patchBase64": changes["patchBase64"], "diffStats": changes["stats"],
+                    "patchTruncated": changes["truncated"], "patchSizeBytes": changes["patchSizeBytes"],
+                    "patchSha256": changes["patchSha256"], "treeSha": changes["treeSha"],
+                    "git": {key: workspace_marker.get(key) for key in ("baseBranch", "remote", "remoteUrl", "remoteBaseSha")}})
+                record_tree(workdir, workspace_marker, changes["treeSha"], int(proposal.get("revision") or 0))
+            except Exception as diff_error:
+                failure_result["errorMessage"] += f"; diff collection also failed: {redact(str(diff_error))}"
+        client.post(f"/jobs/{job['jobId']}/result", job, failure_result)
     finally:
         heartbeat_stop.set()
         heartbeat.join(timeout=1)
+        if workspace_lock_context:
+            workspace_lock_context.__exit__(None, None, None)
         # The only thing keeping the disk from filling up with checkouts.
         if job_root and job_root.exists() and not (failed and settings.keep_workspace_on_failure):
             shutil.rmtree(job_root, ignore_errors=True)

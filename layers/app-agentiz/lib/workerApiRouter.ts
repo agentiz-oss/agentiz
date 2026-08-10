@@ -27,7 +27,8 @@ function workerErrorResponse(res: express.Response, error: unknown) {
  */
 export function createWorkerApiRouter(): Router {
   const router = express.Router();
-  router.use(express.json({ limit: '5mb' }));
+  // Workspace Git uploads a complete binary patch; the server applies its own stricter hard limit.
+  router.use(express.json({ limit: '25mb' }));
 
   router.get(['/healthz', '/readyz'], (_req, res) => {
     res.json({ ok: true, workerApiEnabled: AgentWorkerApiService.isEnabled() });
@@ -88,6 +89,44 @@ export function createWorkerApiRouter(): Router {
   router.post('/jobs/:jobId/secrets', async (req, res) => {
     try {
       res.json(await AgentWorkerApiService.issueSecrets(req.params.jobId, req.body, req.header('authorization') ?? '', req.ip ?? null));
+    } catch (error) {
+      workerErrorResponse(res, error);
+    }
+  });
+
+  router.post('/jobs/:jobId/interactions', async (req, res) => {
+    try {
+      res.json(await AgentWorkerApiService.createInteraction(req.params.jobId, req.body, req.header('authorization') ?? '', req.ip ?? null));
+    } catch (error) {
+      workerErrorResponse(res, error);
+    }
+  });
+
+  router.post('/jobs/:jobId/interactions/:interactionId/wait', async (req, res) => {
+    try {
+      const answer = await AgentWorkerApiService.waitInteraction(
+        req.params.jobId,
+        req.params.interactionId,
+        req.body,
+        req.header('authorization') ?? '',
+        req.ip ?? null,
+      );
+      if (!answer) return res.status(204).send();
+      return res.json(answer);
+    } catch (error) {
+      return workerErrorResponse(res, error);
+    }
+  });
+
+  router.post('/jobs/:jobId/interactions/:interactionId/ack', async (req, res) => {
+    try {
+      res.json(await AgentWorkerApiService.acknowledgeInteraction(
+        req.params.jobId,
+        req.params.interactionId,
+        req.body,
+        req.header('authorization') ?? '',
+        req.ip ?? null,
+      ));
     } catch (error) {
       workerErrorResponse(res, error);
     }

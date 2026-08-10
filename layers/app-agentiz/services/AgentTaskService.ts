@@ -24,6 +24,7 @@ const TASK_STATUSES: AgentTaskStatus[] = [
   'new',
   'queued',
   'running',
+  'waiting_input',
   'waiting_review',
   'done',
   'failed',
@@ -34,7 +35,7 @@ const TASK_STATUSES: AgentTaskStatus[] = [
 const TASK_PRIORITIES: AgentTaskPriority[] = ['low', 'normal', 'high', 'urgent'];
 
 /** Statuses a run currently owns — changing them by hand would fight the pipeline. */
-const PIPELINE_OWNED = new Set<AgentTaskStatus>(['queued', 'running']);
+const PIPELINE_OWNED = new Set<AgentTaskStatus>(['queued', 'running', 'waiting_input']);
 
 export interface TaskListFilters {
   projectId?: string;

@@ -38,15 +38,21 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @Column({ type: DataType.STRING, allowNull: false })
   declare projectId: string;
 
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare proposalId: string | null;
+
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare workspaceRevision: number | null;
+
   @AdminizerField({
     title: 'Status',
     type: 'select',
-    isIn: { pending: 'Pending', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled' },
+    isIn: { pending: 'Pending', running: 'Running', waiting_input: 'Waiting input', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled' },
     views: { list: true, add: false, edit: true },
   })
   @Default('pending')
   @Column({
-    type: DataType.ENUM('pending', 'running', 'succeeded', 'failed', 'cancelled'),
+    type: DataType.ENUM('pending', 'running', 'waiting_input', 'succeeded', 'failed', 'cancelled'),
     allowNull: false,
     defaultValue: 'pending',
   })

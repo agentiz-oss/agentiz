@@ -49,6 +49,46 @@ interface RunDiff {
   truncated: boolean;
   appliedAt: string | null;
   appliedCommitSha: string | null;
+  revision?: number | null;
+  treeSha?: string | null;
+  patchSizeBytes?: number | null;
+  patchSha256?: string | null;
+}
+
+interface WorkspaceProposal {
+  id: string;
+  revision: number;
+  status: string;
+  workspacePath: string;
+  baseSha: string | null;
+  baseBranch: string | null;
+  expectedTreeSha: string | null;
+  targetMode: "current" | "new";
+  targetBranch: string | null;
+  commitMessage: string;
+  decisionActor?: string | null;
+  decisionAt?: string | null;
+  lastError?: string | null;
+  pushedCommitSha?: string | null;
+}
+
+interface RunInteraction {
+  id: string;
+  stageExecutionId: string;
+  source: string;
+  message: string;
+  requestedSchema: {
+    type: "object";
+    properties?: Record<string, { type?: string; title?: string; description?: string; enum?: unknown[]; default?: unknown }>;
+    required?: string[];
+  };
+  status: string;
+  responseAction?: "accept" | "decline" | "cancel" | null;
+  responseContent?: Record<string, unknown> | null;
+  answeredByName?: string | null;
+  answeredAt?: string | null;
+  deliveredAt?: string | null;
+  createdAt?: string;
 }
 
 interface RunDetails {
@@ -56,6 +96,10 @@ interface RunDetails {
   stages: StageExecution[];
   logs: RunLog[];
   diff: RunDiff | null;
+  interactions: RunInteraction[];
+  proposal: WorkspaceProposal | null;
+  revisions: RunDiff[];
+  latestDiff: RunDiff | null;
 }
 
 const PREFIX = (window as any).routePrefix ?? "/dashboard";
@@ -64,6 +108,9 @@ const API_URL = `${PREFIX}/agentiz-runs`;
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   pending: { bg: "#f1f5f9", fg: "#334155" },
   running: { bg: "#fef3c7", fg: "#b45309" },
+  waiting_input: { bg: "#ffedd5", fg: "#c2410c" },
+  answered: { bg: "#dbeafe", fg: "#1d4ed8" },
+  delivered: { bg: "#d1fae5", fg: "#047857" },
   succeeded: { bg: "#d1fae5", fg: "#047857" },
   failed: { bg: "#fee2e2", fg: "#b91c1c" },
   cancelled: { bg: "#f1f5f9", fg: "#64748b" },
@@ -83,6 +130,10 @@ const AgentizRunDetail: React.FC = () => {
   const [details, setDetails] = useState<RunDetails | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<Record<string, Record<string, unknown>>>({});
+  const [reviewComment, setReviewComment] = useState("");
+  const [targetBranch, setTargetBranch] = useState("");
+  const [commitMessage, setCommitMessage] = useState("");
 
   useEffect(() => {
     setRunId(new URLSearchParams(window.location.search).get("runId") ?? "");
@@ -92,7 +143,28 @@ const AgentizRunDetail: React.FC = () => {
     if (!id) return;
     try {
       const res = await axios.get(API_URL, { params: { _method: "getRunDetails", runId: id } });
-      setDetails(res.data?.data ?? null);
+      const next = res.data?.data ?? null;
+      setDetails(next);
+      if (next?.proposal) {
+        setTargetBranch(next.proposal.targetBranch ?? next.proposal.baseBranch ?? "");
+        setCommitMessage(next.proposal.commitMessage ?? "");
+      }
+      if (next?.interactions) {
+        setAnswers((current: Record<string, Record<string, unknown>>): Record<string, Record<string, unknown>> => {
+          const merged = { ...current };
+          for (const interaction of next.interactions as RunInteraction[]) {
+            if (merged[interaction.id]) continue;
+            const defaults: Record<string, unknown> = {};
+            for (const [name, field] of Object.entries(interaction.requestedSchema?.properties ?? {})) {
+              if (field.default !== undefined) defaults[name] = field.default;
+              else if (field.type === "boolean") defaults[name] = false;
+              else defaults[name] = "";
+            }
+            merged[interaction.id] = defaults;
+          }
+          return merged;
+        });
+      }
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось загрузить запуск");
     }
@@ -101,6 +173,30 @@ const AgentizRunDetail: React.FC = () => {
   useEffect(() => {
     load(runId);
   }, [runId, load]);
+
+  useEffect(() => {
+    if (!runId) return undefined;
+    const timer = window.setInterval((): void => { void load(runId); }, 2500);
+    return (): void => { window.clearInterval(timer); };
+  }, [runId, load]);
+
+  const answerInteraction = useCallback(async (interaction: RunInteraction, action: "accept" | "decline" | "cancel") => {
+    setBusy(true);
+    setError(null);
+    try {
+      await axios.post(API_URL, {
+        _method: "answerInteraction",
+        interactionId: interaction.id,
+        action,
+        content: action === "accept" ? (answers[interaction.id] ?? {}) : null,
+      });
+      await load(runId);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось отправить ответ");
+    } finally {
+      setBusy(false);
+    }
+  }, [answers, load, runId]);
 
   const cancelRun = useCallback(async () => {
     if (!runId) return;
@@ -131,6 +227,28 @@ const AgentizRunDetail: React.FC = () => {
     }
   }, [runId, load]);
 
+  const proposalAction = useCallback(async (method: string, extra: Record<string, unknown> = {}) => {
+    const proposal = details?.proposal;
+    if (!proposal) return;
+    if (method === "rejectWorkspaceProposal" && !window.confirm(
+      `Все отслеживаемые изменения в ${proposal.workspacePath} будут возвращены к ${proposal.baseSha}, новые неотслеживаемые файлы будут удалены. Игнорируемые файлы сохранятся. Продолжить?`,
+    )) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await axios.post(API_URL, { _method: method, proposalId: proposal.id, revision: proposal.revision, ...extra });
+      if (method === "continueWorkspaceProposal" && response.data?.data?.id) {
+        window.location.href = `${API_URL}?runId=${response.data.data.id}`;
+        return;
+      }
+      await load(runId);
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Действие review не удалось");
+    } finally {
+      setBusy(false);
+    }
+  }, [details?.proposal, load, runId]);
+
   if (!runId) {
     return (
       <div className="space-y-4 p-6">
@@ -143,6 +261,7 @@ const AgentizRunDetail: React.FC = () => {
   }
 
   const run = details?.run;
+  const displayedDiff = details?.proposal ? details.latestDiff : details?.diff;
 
   return (
     <div className="space-y-6 p-6">
@@ -192,6 +311,118 @@ const AgentizRunDetail: React.FC = () => {
             </div>
           </div>
 
+          {details!.proposal && (
+            <div className="rounded-lg border p-4" style={{ borderColor: "#c4b5fd", backgroundColor: "#faf5ff" }}>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-semibold">Проверка workspace-изменений</h2>
+                <StatusBadge status={details!.proposal.status} />
+                <span className="text-xs text-muted-foreground">ревизия {details!.proposal.revision}</span>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                <code>{details!.proposal.workspacePath}</code> · {details!.proposal.baseBranch ?? "—"}@{(details!.proposal.baseSha ?? "—").slice(0, 12)}
+                {details!.proposal.expectedTreeSha && <> · tree <code>{details!.proposal.expectedTreeSha.slice(0, 12)}</code></>}
+              </div>
+              {details!.proposal.lastError && <div className="mt-2 text-sm" style={{ color: "#b91c1c" }}>{details!.proposal.lastError}</div>}
+              {details!.revisions.length > 1 && (
+                <div className="mt-2 text-xs">История: {details!.revisions.map((revision) => (
+                  <span key={revision.id} className="mr-2">#{revision.revision}: {revision.stats?.files ?? 0} файл(ов)</span>
+                ))}</div>
+              )}
+              {details!.proposal.status === "waiting_review" && (
+                <div className="mt-3 space-y-3">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <label className="text-xs">Ветка
+                      <input value={targetBranch} onChange={(event) => setTargetBranch(event.target.value)} disabled={details!.proposal.targetMode === "current"} className="mt-1 w-full rounded border px-2 py-1.5" />
+                    </label>
+                    <label className="text-xs">Commit message
+                      <textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} rows={3} className="mt-1 w-full rounded border px-2 py-1.5" />
+                    </label>
+                  </div>
+                  <button
+                    onClick={() => proposalAction("approveWorkspaceProposal", { targetBranch, commitMessage })}
+                    disabled={busy || displayedDiff?.truncated || !commitMessage.trim()}
+                    className="rounded border px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                  >Подтвердить commit и push</button>
+                  <div className="flex flex-wrap gap-2">
+                    <textarea value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="Что нужно доработать" rows={2} className="min-w-72 flex-1 rounded border px-2 py-1.5 text-sm" />
+                    <button onClick={() => proposalAction("continueWorkspaceProposal", { comment: reviewComment })} disabled={busy || !reviewComment.trim()} className="rounded border px-3 py-1.5 text-xs disabled:opacity-50">Продолжить работу</button>
+                  </div>
+                  <button onClick={() => proposalAction("rejectWorkspaceProposal")} disabled={busy} className="rounded border px-3 py-1.5 text-xs disabled:opacity-50" style={{ borderColor: "#ef4444", color: "#b91c1c" }}>Отклонить и вернуть workspace</button>
+                </div>
+              )}
+              {details!.proposal.status === "push_failed" && (
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => proposalAction("approveWorkspaceProposal", { targetBranch, commitMessage })} disabled={busy} className="rounded border px-3 py-1.5 text-xs">Повторить push</button>
+                  <button onClick={() => proposalAction("rejectWorkspaceProposal")} disabled={busy} className="rounded border px-3 py-1.5 text-xs" style={{ borderColor: "#ef4444", color: "#b91c1c" }}>Вернуть workspace</button>
+                </div>
+              )}
+              {details!.proposal.status === "reset_failed" && (
+                <button onClick={() => proposalAction("rejectWorkspaceProposal")} disabled={busy} className="mt-3 rounded border px-3 py-1.5 text-xs" style={{ borderColor: "#ef4444", color: "#b91c1c" }}>Повторить безопасный reset</button>
+              )}
+            </div>
+          )}
+
+          {details!.interactions.length > 0 && (
+            <div className="rounded-lg border p-4">
+              <h2 className="mb-3 text-lg font-semibold">Вопросы агенту</h2>
+              <ul className="space-y-3">
+                {details!.interactions.map((interaction) => {
+                  const stage = details!.stages.find((item) => item.id === interaction.stageExecutionId);
+                  return (
+                    <li key={interaction.id} className="rounded border p-3 text-sm" style={interaction.status === "pending" ? { borderColor: "#fdba74", backgroundColor: "#fff7ed" } : undefined}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge status={interaction.status} />
+                        <span className="font-medium">{stage ? `#${stage.stageIndex} ${stage.role}` : "Стадия"}</span>
+                        <span className="text-xs text-muted-foreground">{interaction.source} · {interaction.createdAt}</span>
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap">{interaction.message}</p>
+                      {interaction.status === "pending" && (
+                        <div className="mt-3 space-y-2">
+                          {Object.entries(interaction.requestedSchema?.properties ?? {}).map(([name, field]) => {
+                            const value = answers[interaction.id]?.[name];
+                            const label = field.title ?? name;
+                            return (
+                              <label key={name} className="block text-xs">
+                                <span className="block font-medium">{label}{interaction.requestedSchema.required?.includes(name) ? " *" : ""}</span>
+                                {field.description && <span className="block text-muted-foreground">{field.description}</span>}
+                                {field.enum ? (
+                                  <select value={String(value ?? "")} onChange={(event) => setAnswers((all) => ({ ...all, [interaction.id]: { ...all[interaction.id], [name]: event.target.value } }))} className="mt-1 w-full rounded border px-2 py-1.5 text-sm">
+                                    <option value="">Выберите…</option>
+                                    {field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
+                                  </select>
+                                ) : field.type === "boolean" ? (
+                                  <input type="checkbox" checked={Boolean(value)} onChange={(event) => setAnswers((all) => ({ ...all, [interaction.id]: { ...all[interaction.id], [name]: event.target.checked } }))} className="mt-1" />
+                                ) : (
+                                  <input type={field.type === "number" || field.type === "integer" ? "number" : "text"} value={String(value ?? "")} onChange={(event) => {
+                                    const raw = event.target.value;
+                                    const next: unknown = field.type === "number" || field.type === "integer" ? (raw === "" ? "" : Number(raw)) : raw;
+                                    setAnswers((all) => ({ ...all, [interaction.id]: { ...all[interaction.id], [name]: next } }));
+                                  }} className="mt-1 w-full rounded border px-2 py-1.5 text-sm" />
+                                )}
+                              </label>
+                            );
+                          })}
+                          <div className="flex flex-wrap gap-2">
+                            <button onClick={() => answerInteraction(interaction, "accept")} disabled={busy} className="rounded border px-3 py-1.5 text-xs font-medium disabled:opacity-50">Ответить</button>
+                            <button onClick={() => answerInteraction(interaction, "decline")} disabled={busy} className="rounded border px-3 py-1.5 text-xs disabled:opacity-50">Отказаться</button>
+                            <button onClick={() => answerInteraction(interaction, "cancel")} disabled={busy} className="rounded border px-3 py-1.5 text-xs disabled:opacity-50">Отменить запрос</button>
+                          </div>
+                        </div>
+                      )}
+                      {interaction.responseAction && interaction.status !== "pending" && (
+                        <div className="mt-2 rounded p-2 text-xs" style={{ backgroundColor: "#f8fafc" }}>
+                          Ответ: <strong>{interaction.responseAction}</strong>
+                          {interaction.responseContent && <pre className="mt-1 whitespace-pre-wrap">{JSON.stringify(interaction.responseContent, null, 2)}</pre>}
+                          {interaction.answeredByName && <div className="text-muted-foreground">{interaction.answeredByName} · {interaction.answeredAt}{interaction.deliveredAt ? ` · доставлен ${interaction.deliveredAt}` : ""}</div>}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           <div className="rounded-lg border p-4">
             <h2 className="mb-3 text-lg font-semibold">Стадии</h2>
             {details!.stages.length === 0 && <p className="text-sm text-muted-foreground">Стадий пока нет.</p>}
@@ -228,21 +459,21 @@ const AgentizRunDetail: React.FC = () => {
 
           <div className="rounded-lg border p-4">
             <h2 className="mb-3 text-lg font-semibold">Дифф</h2>
-            {!details!.diff ? (
+            {!displayedDiff ? (
               <p className="text-sm text-muted-foreground">Этот запуск ничего не менял в коде.</p>
             ) : (
               <>
                 <div className="text-xs text-muted-foreground">
-                  от <code>{(details!.diff.baseSha ?? "—").slice(0, 12)}</code>
+                  от <code>{(displayedDiff.baseSha ?? "—").slice(0, 12)}</code>
                   {" · "}
-                  {details!.diff.stats?.files ?? details!.diff.ops?.length ?? 0} файл(ов),{" "}
-                  +{details!.diff.stats?.insertions ?? 0} −{details!.diff.stats?.deletions ?? 0}
-                  {details!.diff.appliedAt
-                    ? ` · применено ${new Date(details!.diff.appliedAt).toLocaleString()}, коммит ${(details!.diff.appliedCommitSha ?? "").slice(0, 12)}`
+                  {displayedDiff.stats?.files ?? displayedDiff.ops?.length ?? 0} файл(ов),{" "}
+                  +{displayedDiff.stats?.insertions ?? 0} −{displayedDiff.stats?.deletions ?? 0}
+                  {displayedDiff.appliedAt
+                    ? ` · применено ${new Date(displayedDiff.appliedAt).toLocaleString()}, коммит ${(displayedDiff.appliedCommitSha ?? "").slice(0, 12)}`
                     : " · в репозиторий не отправлено"}
                 </div>
                 <ul className="mt-2 space-y-0.5 text-xs">
-                  {(details!.diff.ops ?? []).map((op, index) => (
+                  {(displayedDiff.ops ?? []).map((op, index) => (
                     <li key={index}>
                       {/* One glyph per operation: the list is scanned, not read. */}
                       <span className="mr-1 font-mono">
@@ -253,19 +484,19 @@ const AgentizRunDetail: React.FC = () => {
                     </li>
                   ))}
                 </ul>
-                {details!.diff.truncated && (
+                {displayedDiff.truncated && (
                   <div className="mt-2 text-xs" style={{ color: "#b45309" }}>
                     Патч обрезан по лимиту размера. Операции сохранены полностью — применяются именно они.
                   </div>
                 )}
-                {details!.diff.patch && (
+                {displayedDiff.patch && (
                   <pre className="mt-2 max-h-96 overflow-auto rounded border p-2 text-xs" style={{ backgroundColor: "#f8fafc" }}>
-                    {details!.diff.patch}
+                    {displayedDiff.patch}
                   </pre>
                 )}
                 {/* Only offered while the change is still held: applying twice is refused by the
                     server, and a button that always fails is worse than no button. */}
-                {!details!.diff.appliedAt && (details!.diff.ops?.length ?? 0) > 0 && (
+                {!details!.proposal && !displayedDiff.appliedAt && (displayedDiff.ops?.length ?? 0) > 0 && (
                   <button
                     onClick={applyRunDiff}
                     disabled={busy}

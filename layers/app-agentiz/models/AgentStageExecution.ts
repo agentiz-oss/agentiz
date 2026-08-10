@@ -43,12 +43,12 @@ export class AgentStageExecution extends Model<InferAttributes<AgentStageExecuti
   @AdminizerField({
     title: 'Status',
     type: 'select',
-    isIn: { pending: 'Pending', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', skipped: 'Skipped' },
+    isIn: { pending: 'Pending', running: 'Running', waiting_input: 'Waiting input', succeeded: 'Succeeded', failed: 'Failed', skipped: 'Skipped' },
     views: { list: true, add: false, edit: false },
   })
   @Default('pending')
   @Column({
-    type: DataType.ENUM('pending', 'running', 'succeeded', 'failed', 'skipped'),
+    type: DataType.ENUM('pending', 'running', 'waiting_input', 'succeeded', 'failed', 'skipped'),
     allowNull: false,
     defaultValue: 'pending',
   })

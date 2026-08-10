@@ -77,6 +77,7 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
       new: 'New',
       queued: 'Queued',
       running: 'Running',
+      waiting_input: 'Waiting input',
       waiting_review: 'Waiting review',
       done: 'Done',
       failed: 'Failed',
@@ -87,7 +88,7 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
   })
   @Default('new')
   @Column({
-    type: DataType.ENUM('new', 'queued', 'running', 'waiting_review', 'done', 'failed', 'cancelled', 'ignored'),
+    type: DataType.ENUM('new', 'queued', 'running', 'waiting_input', 'waiting_review', 'done', 'failed', 'cancelled', 'ignored'),
     allowNull: false,
     defaultValue: 'new',
   })

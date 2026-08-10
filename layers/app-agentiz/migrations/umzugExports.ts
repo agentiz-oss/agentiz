@@ -47,6 +47,14 @@ import {
   up as upRunDiffs,
   down as downRunDiffs,
 } from './umzug/1787000300000_run_diffs';
+import {
+  up as upWorkspaceGitReview,
+  down as downWorkspaceGitReview,
+} from './umzug/1787000400000_workspace_git_review';
+import {
+  up as upRunInteractions,
+  down as downRunInteractions,
+} from './umzug/1787000500000_run_interactions';
 
 export const umzugExports: Migration[] = [
   {
@@ -139,5 +147,17 @@ export const umzugExports: Migration[] = [
     timestamp: 1787000300000,
     up: upRunDiffs,
     down: downRunDiffs,
+  },
+  {
+    name: 'workspace_git_review',
+    timestamp: 1787000400000,
+    up: upWorkspaceGitReview,
+    down: downWorkspaceGitReview,
+  },
+  {
+    name: 'run_interactions',
+    timestamp: 1787000500000,
+    up: upRunInteractions,
+    down: downRunInteractions,
   },
 ];

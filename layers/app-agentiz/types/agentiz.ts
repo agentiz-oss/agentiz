@@ -36,6 +36,7 @@ export type AgentTaskStatus =
   | 'new'
   | 'queued'
   | 'running'
+  | 'waiting_input'
   | 'waiting_review'
   | 'done'
   | 'failed'
@@ -54,11 +55,21 @@ export type AgentTaskCommentAuthorKind = 'human' | 'agent' | 'system';
  */
 export type AgentTaskCommentOrigin = 'local' | 'remote';
 
-export type AgentRunStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type AgentRunStatus = 'pending' | 'running' | 'waiting_input' | 'succeeded' | 'failed' | 'cancelled';
 
 export type AgentRunTrigger = 'sync' | 'manual' | 'webhook' | 'schedule' | 'human_comment';
 
-export type AgentStageStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+export type AgentStageStatus = 'pending' | 'running' | 'waiting_input' | 'succeeded' | 'failed' | 'skipped';
+
+export type AgentRunInteractionKind = 'elicitation';
+export type AgentRunInteractionStatus =
+  | 'pending'
+  | 'answered'
+  | 'delivered'
+  | 'cancelled'
+  | 'expired'
+  | 'orphaned';
+export type AgentRunInteractionAction = 'accept' | 'decline' | 'cancel';
 
 export type AgentRunLogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -71,6 +82,21 @@ export type AgentRunJobStatus =
   | 'cancelled'
   | 'released'
   | 'dead';
+
+export type AgentRunJobKind = 'pipeline' | 'workspace_commit_push' | 'workspace_reset';
+
+export type AgentWorkspaceProposalStatus =
+  | 'working'
+  | 'waiting_review'
+  | 'continuing'
+  | 'apply_queued'
+  | 'applying'
+  | 'pushed'
+  | 'push_failed'
+  | 'reset_queued'
+  | 'resetting'
+  | 'rejected'
+  | 'reset_failed';
 
 /**
  * Lifecycle of a worker identity, modelled on GitLab runners: an admin creates the worker in the
@@ -110,6 +136,11 @@ export interface AgentWorkerWorkspace {
   path: string;
   label?: string;
   description?: string;
+  /** Git operations are an explicit operator grant, never implied by merely exposing a path. */
+  git?: {
+    pushEnabled: boolean;
+    remote?: string;
+  };
 }
 
 /** What happens to the run when a stage fails. */
@@ -162,6 +193,11 @@ export interface PipelineFinalActionDef {
    * AgentRunDiff); with this on, nothing reaches the repository until somebody applies it.
    */
   requireApproval?: boolean;
+  /** Worker-workspace delivery target. Repository-source pipelines keep using branch/branchPrefix. */
+  targetBranch?: {
+    mode: 'current' | 'new';
+    prefix?: string;
+  };
 }
 
 /**

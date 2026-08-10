@@ -23,7 +23,7 @@
 ```
 
 Команда ACP находится в `AgentRole.config`, а не в pipeline: например
-`{ "executor": "openhands-acp", "acpCommand": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"] }`.
+`{ "executor": "openhands-acp", "acpCommand": ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"] }`.
 `host` передаёт checkout в `Conversation` напрямую. `docker` передаёт `DockerWorkspace`; SDK сам
 создаёт Agent Server container, ждёт его готовности и удаляет в `finally`. Worker не вызывает
 `docker run` сам.
@@ -135,6 +135,13 @@ Job может нести блок `hooks` — скрипт до первой с
 }
 ```
 
+Если объявленная папка имеет `git: { pushEnabled: true, remote: "origin" }`, pipeline может связать
+её с core `AgentRepository` и использовать `finalAction.type: commit`. Worker проверяет чистый
+исходный checkout, ветку и remote, сохраняет marker proposal в `.git`, а после каждой итерации
+отправляет на сервер кумулятивный binary patch, его SHA-256 и staged `treeSha`. Commit/push или
+безопасный `reset --hard` + `clean -fd` выполняются отдельным job только на этом worker. OAuth
+Agentiz для локального Git не используется; non-interactive push должен быть настроен на машине.
+
 Что важно знать:
 
 - **Значения приходят переменными окружения**, а не подстановкой в текст. Название задачи пишет
@@ -232,6 +239,27 @@ OPENAI_API_KEY=...
 Для Claude оставьте только `ANTHROPIC_API_KEY`, для Codex — только `OPENAI_API_KEY` (либо
 `CODEX_API_KEY`). Затем перезапустите пользовательскую службу воркера. У worker-host должны быть
 Node.js/npm и доступ в сеть: ACP-адаптеры запускаются через `npx`.
+
+### Уточняющие вопросы (human-in-the-loop)
+
+Воркер объявляет capability `humanInput.form` и передаёт ACP `elicitation/create` в Agentiz.
+Codex `request_user_input` и Claude `AskUserQuestion` создают durable-запись вопроса внутри run:
+
+1. `POST /jobs/:jobId/interactions` идемпотентно сохраняет вопрос для текущих `attempt` и lease;
+2. воркер оставляет ACP-сессию и workspace открытыми, продолжает heartbeat и делает ограниченный
+   long-poll `POST /jobs/:jobId/interactions/:interactionId/wait`;
+3. пользователь отвечает на странице запуска или в `/dashboard/agentiz-interactions`;
+4. после `POST .../ack` ответ возвращается в тот же ACP request и run продолжает ту же стадию.
+
+Во время ожидания job остаётся `running`, а run, stage и task показываются как `waiting_input`.
+Это тёплая пауза: она сохраняет точное место продолжения, но занимает один slot воркера. Form mode
+предназначен только для несекретных данных; пароли, токены, API keys, private keys и платёжные
+данные сервер отклоняет. При cancel или потере lease вопрос закрывается и старому attempt уже не
+может быть отвечено.
+
+Версии адаптеров являются частью проверенного контракта: worker нормализует старые незакреплённые
+snapshot-команды к `@agentclientprotocol/codex-acp@1.1.14` и
+`@agentclientprotocol/claude-agent-acp@0.66.0`. Python ACP client закреплён в `pyproject.toml`.
 
 ### Controller image
 

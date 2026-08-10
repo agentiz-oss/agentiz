@@ -98,6 +98,7 @@ const STATUS_COLORS: Record<string, Swatch> = {
   new: { bg: "#f1f5f9", fg: "#334155" },
   queued: { bg: "#dbeafe", fg: "#1d4ed8" },
   running: { bg: "#fef3c7", fg: "#b45309" },
+  waiting_input: { bg: "#ffedd5", fg: "#c2410c" },
   waiting_review: { bg: "#ede9fe", fg: "#6d28d9" },
   done: { bg: "#d1fae5", fg: "#047857" },
   succeeded: { bg: "#d1fae5", fg: "#047857" },
@@ -361,6 +362,9 @@ const AgentizTasks: React.FC = () => {
           </p>
         </div>
         <div className="flex gap-2">
+          <a href={`${(window as any).routePrefix ?? "/dashboard"}/agentiz-interactions`} className="rounded border px-3 py-1.5 text-sm font-medium">
+            Нужен ответ
+          </a>
           <button onClick={() => setShowNewTask((v) => !v)} className="rounded border px-3 py-1.5 text-sm font-medium">
             Новая задача
           </button>

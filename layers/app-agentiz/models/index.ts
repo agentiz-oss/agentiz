@@ -15,3 +15,5 @@ export { AgentGitConnection } from './AgentGitConnection';
 export { AgentRepository } from './AgentRepository';
 export { AgentProjectRepository } from './AgentProjectRepository';
 export { AgentRunDiff } from './AgentRunDiff';
+export { AgentWorkspaceProposal } from './AgentWorkspaceProposal';
+export { AgentRunInteraction } from './AgentRunInteraction';

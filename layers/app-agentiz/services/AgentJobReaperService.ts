@@ -3,6 +3,8 @@ import { AgentRun } from '../models/AgentRun';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentTask } from '../models/AgentTask';
 import { AgentPipelineService } from './AgentPipelineService';
+import { AgentRunInteractionService } from './AgentRunInteractionService';
+import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
 
 /** How often the sweep runs. */
 const SWEEP_INTERVAL_MS = Number(process.env.AGENTIZ_JOB_REAPER_INTERVAL_MS ?? 15_000);
@@ -93,6 +95,7 @@ export class AgentJobReaperService {
         buried += 1;
         continue;
       }
+      await AgentRunInteractionService.closeForJob(job, 'orphaned', 'worker lease expired');
       await job.update({
         status: 'queued',
         workerId: null,
@@ -117,6 +120,7 @@ export class AgentJobReaperService {
    */
   private static async buryIfExhausted(job: AgentRunJob, reason: string): Promise<boolean> {
     if (job.attempt < MAX_ATTEMPTS) return false;
+    await AgentRunInteractionService.closeForJob(job, 'orphaned', reason);
     await job.update({
       status: 'dead',
       workerId: null,
@@ -124,6 +128,16 @@ export class AgentJobReaperService {
       lockedUntil: null,
       lastError: `${reason} (attempt ${job.attempt}/${MAX_ATTEMPTS})`,
     });
+    if (job.proposalId && job.jobKind !== 'pipeline') {
+      const proposal = await AgentWorkspaceProposal.findByPk(job.proposalId);
+      if (proposal) {
+        await proposal.update({
+          status: job.jobKind === 'workspace_commit_push' ? 'push_failed' : 'reset_failed',
+          lastError: `${reason} (attempt ${job.attempt}/${MAX_ATTEMPTS})`,
+        });
+        await AgentTask.update({ status: 'waiting_review' }, { where: { id: proposal.taskId } });
+      }
+    }
     const run = await AgentRun.findByPk(job.runId);
     if (run && !['succeeded', 'failed', 'cancelled'].includes(run.status)) {
       await run.update({
@@ -131,7 +145,7 @@ export class AgentJobReaperService {
         finishedAt: new Date(),
         errorMessage: `Job abandoned: ${reason} (attempt ${job.attempt}/${MAX_ATTEMPTS})`,
       });
-      await AgentTask.update({ status: 'failed' }, { where: { id: run.taskId } });
+      await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(run.taskId, 'failed');
     }
     await AgentPipelineService.log(job.runId, job.projectId, null, 'error', `Job buried: ${reason}`, {
       jobId: job.id,

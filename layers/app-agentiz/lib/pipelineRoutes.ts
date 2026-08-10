@@ -67,8 +67,8 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
           const role = await AgentRole.findByPk(roleId);
           if (!role) return res.status(404).json({ message: 'Agent role not found' });
           const presets: Record<string, string[]> = {
-            codex: ['npx', '-y', '@agentclientprotocol/codex-acp'],
-            claude: ['npx', '-y', '@agentclientprotocol/claude-agent-acp'],
+            codex: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.14'],
+            claude: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.66.0'],
           };
           const acpCommand = presets[provider];
           if (!acpCommand) return res.status(400).json({ message: 'provider must be codex or claude' });

@@ -23,6 +23,8 @@ import { AgentGitConnection } from './models/AgentGitConnection';
 import { AgentRepository } from './models/AgentRepository';
 import { AgentProjectRepository } from './models/AgentProjectRepository';
 import { AgentRunDiff } from './models/AgentRunDiff';
+import { AgentRunInteraction } from './models/AgentRunInteraction';
+import { AgentWorkspaceProposal } from './models/AgentWorkspaceProposal';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
 import { AgentWorkerRegistryService } from './services/AgentWorkerRegistryService';
@@ -83,6 +85,8 @@ export class AppAgentiz extends AbstractApp {
         AgentRepository,
         AgentProjectRepository,
         AgentRunDiff,
+        AgentRunInteraction,
+        AgentWorkspaceProposal,
     ];
 
     @Collection
@@ -264,6 +268,7 @@ export class AppAgentiz extends AbstractApp {
             generateAdminizerModelConfig(AgentRepository),
             generateAdminizerModelConfig(AgentProjectRepository),
             generateAdminizerModelConfig(AgentRunDiff),
+            generateAdminizerModelConfig(AgentRunInteraction),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 

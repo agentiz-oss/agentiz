@@ -17,6 +17,9 @@ import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
 import type { AgentWorker } from '../models/AgentWorker';
+import { AgentRunInteractionService, InteractionError } from './AgentRunInteractionService';
+import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
+import { AgentWorkspaceProposalService } from './AgentWorkspaceProposalService';
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_LEASE_MS = 60_000;
@@ -54,7 +57,22 @@ type WorkerResult = {
   fileOps?: FileOp[];
   /** Raw `git diff` of the worker's tree against `baseSha`, stored as-is. */
   patch?: string;
+  /** Lossless transport for binary/invalid-UTF8 unified patches. */
+  patchBase64?: string;
+  patchTruncated?: boolean;
+  patchSizeBytes?: number;
+  patchSha256?: string;
+  treeSha?: string;
   baseSha?: string;
+  git?: {
+    baseBranch?: string;
+    remote?: string;
+    remoteUrl?: string;
+    remoteBaseSha?: string;
+  };
+  commitSha?: string;
+  targetBranch?: string;
+  workspaceUntouched?: boolean;
   diffStats?: { files?: number; insertions?: number; deletions?: number };
   stageOutputs?: Array<{
     executionId: string;
@@ -87,6 +105,13 @@ function objectBody(body: unknown): Record<string, unknown> {
     throw new WorkerApiError(400, 'JSON object body is required');
   }
   return body as Record<string, unknown>;
+}
+
+function renderCommitMessage(template: string, run: AgentRun, task: AgentTask, summary: string): string {
+  const values: Record<string, string> = {
+    taskId: task.id, externalId: task.externalId, title: task.title, summary,
+  };
+  return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => values[key] ?? '');
 }
 
 export class AgentWorkerApiService {
@@ -131,6 +156,7 @@ export class AgentWorkerApiService {
           ...(allowedRepositoryIds
             ? { [Op.and]: [{ [Op.or]: [{ repositoryId: null }, { repositoryId: { [Op.in]: allowedRepositoryIds } }] }] }
             : {}),
+          ...(worker.capabilities?.workspaceGit === true ? {} : { jobKind: 'pipeline' }),
           // A job pinned to a worker directory belongs to that machine alone; everyone else must
           // not even see it, or it would be claimed and then fail for a missing path.
           [Op.or]: [{ requiredWorkerId: null }, { requiredWorkerId: workerId }],
@@ -155,6 +181,11 @@ export class AgentWorkerApiService {
     if (!job) return null;
     await AgentWorkerRegistryService.noteClaim(worker);
     await this.markRunStarted(job);
+    if (job.proposalId && job.jobKind !== 'pipeline') {
+      await AgentWorkspaceProposal.update({
+        status: job.jobKind === 'workspace_commit_push' ? 'applying' : 'resetting',
+      }, { where: { id: job.proposalId } });
+    }
     await AgentPipelineService.log(job.runId, job.projectId, null, 'info', `Worker job claimed by ${worker.name}`, {
       jobId: job.id,
       attempt: job.attempt,
@@ -169,6 +200,7 @@ export class AgentWorkerApiService {
       leaseToken,
       leaseExpiresAt: lockedUntil.toISOString(),
       cancelRequested: Boolean(job.cancelRequestedAt),
+      jobKind: job.jobKind,
       ...job.snapshot,
     };
   }
@@ -214,6 +246,9 @@ export class AgentWorkerApiService {
     const payload = objectBody(body) as WorkerResult;
     const job = await this.requireLeasedJob(jobId, payload as unknown as Record<string, unknown>, worker);
     if (!payload.resultId) throw new WorkerApiError(400, 'resultId is required');
+    if (job.jobKind === 'pipeline' && payload.status === 'succeeded' && await AgentRunInteractionService.hasUnresolved(job)) {
+      throw new WorkerApiError(409, 'Successful result is not allowed while human input is unresolved');
+    }
     const [dedup, created] = await AgentRunResultDedup.findOrCreate({
       where: { jobId: job.id, attempt: job.attempt, resultId: payload.resultId },
       defaults: { jobId: job.id, runId: job.runId, attempt: job.attempt, resultId: payload.resultId },
@@ -221,6 +256,14 @@ export class AgentWorkerApiService {
     if (!created) {
       const run = await AgentRun.findByPk(job.runId);
       return { schemaVersion: SCHEMA_VERSION, deduplicated: true, terminalRunStatus: run?.status ?? null, resultDedupId: dedup.id };
+    }
+
+    if (job.jobKind !== 'pipeline') {
+      return this.applyWorkspaceActionResult(job, payload);
+    }
+
+    if (payload.status !== 'succeeded') {
+      await AgentRunInteractionService.closeForJob(job, 'cancelled', payload.errorMessage ?? payload.status);
     }
 
     const run = await AgentRun.findByPk(job.runId);
@@ -237,6 +280,9 @@ export class AgentWorkerApiService {
     }
 
     const summary = payload.summary ?? '';
+    if (job.proposalId) {
+      return this.applyWorkspacePipelineResult(job, run, task, payload, summary);
+    }
     if (payload.status === 'succeeded') {
       // Written before anything is pushed, and that ordering is the requirement: a failed push used
       // to take the agent's entire work product with it.
@@ -253,13 +299,13 @@ export class AgentWorkerApiService {
         });
         await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null });
         const finalTaskStatus: AgentTaskStatus = AgentPipelineService.taskStatusAfter(run.pipelineSnapshot.finalAction);
-        await task.update({ status: finalTaskStatus });
+        await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, finalTaskStatus);
         await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null });
         await AgentPipelineService.log(run.id, run.projectId, null, 'info', `Worker job succeeded, task moved to "${finalTaskStatus}"`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message });
-        await task.update({ status: 'failed' });
+        await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, 'failed');
         await job.update({ status: 'failed', result: payload as unknown as Record<string, unknown>, lastError: message, lockedUntil: null });
         await AgentPipelineService.log(run.id, run.projectId, null, 'error', `Final action failed: ${message}`);
       }
@@ -267,7 +313,7 @@ export class AgentWorkerApiService {
       const terminal = payload.status === 'cancelled' ? 'cancelled' : 'failed';
       const taskStatus: AgentTaskStatus = terminal === 'cancelled' ? 'cancelled' : 'failed';
       await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
-      await task.update({ status: taskStatus });
+      await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, taskStatus);
       await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await AgentPipelineService.log(run.id, run.projectId, null, terminal === 'cancelled' ? 'warn' : 'error', `Worker job ${terminal}: ${payload.errorMessage ?? summary}`);
       // A failure is what a person most needs to see in the task thread, so it reports too.
@@ -294,18 +340,29 @@ export class AgentWorkerApiService {
     ops: FileOp[],
     payload: WorkerResult,
   ): Promise<AgentRunDiff | null> {
-    if (ops.length === 0 && !payload.patch) return null;
+    if (ops.length === 0 && !payload.patch && !payload.patchBase64 && !job.proposalId) return null;
 
     const limit = Number(process.env.AGENTIZ_MAX_PATCH_BYTES ?? 5 * 1024 * 1024);
-    const rawPatch = payload.patch ?? '';
-    const truncated = Buffer.byteLength(rawPatch, 'utf8') > limit;
-    const patch = truncated ? rawPatch.slice(0, limit) : rawPatch;
+    const rawBytes = payload.patchBase64 ? Buffer.from(payload.patchBase64, 'base64') : Buffer.from(payload.patch ?? '', 'utf8');
+    const actualSize = rawBytes.length;
+    const computedHash = createHash('sha256').update(rawBytes).digest('hex');
+    if (payload.patchSha256 && !payload.patchTruncated && payload.patchSha256 !== computedHash) {
+      throw new WorkerApiError(400, 'patchSha256 does not match the uploaded patch');
+    }
+    const truncated = Boolean(payload.patchTruncated) || actualSize > limit
+      || (payload.patchSizeBytes !== undefined && payload.patchSizeBytes !== actualSize);
+    const patch = (truncated ? rawBytes.subarray(0, limit) : rawBytes).toString('utf8');
 
     const [diff] = await AgentRunDiff.upsert({
       runId: run.id,
       projectId: run.projectId,
       repositoryId: job.repositoryId,
       baseSha: payload.baseSha ?? run.baseSha ?? null,
+      proposalId: job.proposalId,
+      revision: run.workspaceRevision,
+      treeSha: payload.treeSha ?? null,
+      patchSizeBytes: payload.patchSizeBytes ?? actualSize,
+      patchSha256: payload.patchSha256 ?? computedHash,
       patch: patch || null,
       ops,
       stats: {
@@ -322,6 +379,99 @@ export class AgentWorkerApiService {
       truncated,
     });
     return diff;
+  }
+
+  private static async applyWorkspacePipelineResult(
+    job: AgentRunJob,
+    run: AgentRun,
+    task: AgentTask,
+    payload: WorkerResult,
+    summary: string,
+  ): Promise<Record<string, unknown>> {
+    const proposal = await AgentWorkspaceProposal.findByPk(job.proposalId!);
+    if (!proposal || proposal.latestRunId !== run.id || proposal.revision !== run.workspaceRevision) {
+      throw new WorkerApiError(409, 'Worker result is not for the latest proposal revision');
+    }
+    const ops = normalizeFileChanges(payload.fileOps ?? payload.fileChanges);
+    let diff: AgentRunDiff | null = null;
+    if (payload.workspaceUntouched) {
+      await proposal.update({ status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: payload.errorMessage ?? 'Git preflight failed' });
+      const terminal = payload.status === 'cancelled' ? 'cancelled' : 'failed';
+      await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
+      await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
+      await task.update({ status: terminal });
+      return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: terminal, proposalStatus: 'rejected' };
+    }
+    try {
+      diff = await this.storeRunDiff(job, run, ops, payload);
+      if (!diff || !payload.treeSha || !payload.baseSha || !payload.git?.baseBranch || !payload.git.remoteUrl) {
+        throw new Error('Workspace Git result is missing a complete diff or preflight metadata');
+      }
+      await proposal.update({
+        latestDiffId: diff.id,
+        baseSha: proposal.baseSha ?? payload.baseSha,
+        baseBranch: proposal.baseBranch ?? payload.git.baseBranch,
+        remote: payload.git.remote ?? proposal.remote,
+        remoteUrl: proposal.remoteUrl ?? payload.git.remoteUrl,
+        remoteBaseSha: proposal.remoteBaseSha ?? payload.git.remoteBaseSha ?? null,
+        expectedTreeSha: payload.treeSha,
+        status: 'waiting_review',
+        lastError: diff.truncated ? 'Full patch was not stored; approval is blocked' : payload.errorMessage ?? null,
+        commitMessage: renderCommitMessage(
+          run.pipelineSnapshot.finalAction.commitMessageTemplate ?? '{{title}}\n\n{{summary}}', run, task, summary,
+        ),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await proposal.update({ status: 'waiting_review', lastError: message });
+    }
+
+    const terminal = payload.status === 'succeeded' ? 'succeeded' : payload.status === 'cancelled' ? 'cancelled' : 'failed';
+    await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null,
+      baseSha: proposal.baseSha, baseRef: proposal.baseBranch });
+    await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
+    await task.update({ status: 'waiting_review' });
+    await AgentPipelineService.reportToTaskThread(run, task,
+      payload.errorMessage ? `Запуск ${terminal}: ${payload.errorMessage}` : summary || `Workspace revision ${proposal.revision} готова к проверке`);
+
+    if (payload.status === 'succeeded' && ops.length > 0 && diff && !diff.truncated
+      && run.pipelineSnapshot.finalAction.requireApproval !== true) {
+      await AgentWorkspaceProposalService.approve(proposal.id, proposal.revision, 'system:auto');
+    }
+    return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: terminal, proposalStatus: (await proposal.reload()).status };
+  }
+
+  private static async applyWorkspaceActionResult(job: AgentRunJob, payload: WorkerResult): Promise<Record<string, unknown>> {
+    const proposal = job.proposalId ? await AgentWorkspaceProposal.findByPk(job.proposalId) : null;
+    if (!proposal) throw new WorkerApiError(404, 'Workspace proposal not found');
+    const queuedRevision = Number((job.snapshot.proposal as { revision?: number } | undefined)?.revision);
+    if (queuedRevision !== proposal.revision) {
+      throw new WorkerApiError(409, `Action job revision ${queuedRevision} is stale; proposal is ${proposal.revision}`);
+    }
+    const expectedKind = job.jobKind === 'workspace_commit_push' ? 'apply_queued' : 'reset_queued';
+    const activeKind = job.jobKind === 'workspace_commit_push' ? 'applying' : 'resetting';
+    if (![expectedKind, activeKind].includes(proposal.status)) {
+      throw new WorkerApiError(409, `Proposal is ${proposal.status}, not awaiting ${job.jobKind}`);
+    }
+    if (payload.status === 'succeeded') {
+      if (job.jobKind === 'workspace_commit_push') {
+        if (!payload.commitSha) throw new WorkerApiError(400, 'commitSha is required for a successful push');
+        await proposal.update({ status: 'pushed', pushedCommitSha: payload.commitSha, pushedAt: new Date(), reservationKey: null, lastError: null });
+        await AgentRun.update({ commitSha: payload.commitSha }, { where: { id: proposal.latestRunId } });
+        await AgentRunDiff.update({ appliedAt: new Date(), appliedCommitSha: payload.commitSha }, { where: { id: proposal.latestDiffId } });
+        await AgentTask.update({ status: 'done' }, { where: { id: proposal.taskId } });
+      } else {
+        await proposal.update({ status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: null });
+        await AgentTask.update({ status: 'cancelled' }, { where: { id: proposal.taskId } });
+      }
+      await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null, lastError: null });
+    } else {
+      const message = payload.errorMessage ?? payload.summary ?? `${job.jobKind} failed`;
+      await proposal.update({ status: job.jobKind === 'workspace_commit_push' ? 'push_failed' : 'reset_failed', lastError: message });
+      await job.update({ status: payload.status === 'cancelled' ? 'cancelled' : 'failed', result: payload as unknown as Record<string, unknown>, lockedUntil: null, lastError: message });
+      await AgentTask.update({ status: 'waiting_review' }, { where: { id: proposal.taskId } });
+    }
+    return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: null, proposalStatus: (await proposal.reload()).status };
   }
 
   /**
@@ -387,6 +537,7 @@ export class AgentWorkerApiService {
     const payload = objectBody(body);
     const job = await this.requireLeasedJob(jobId, payload, worker);
     const message = typeof payload.errorMessage === 'string' ? payload.errorMessage : null;
+    await AgentRunInteractionService.closeForJob(job, 'orphaned', message ?? 'job released');
     // `released` is a parking state, not a terminal one: AgentJobReaperService flips it back to
     // `queued` once availableAt passes, which is what makes the retryAt below a real promise.
     await job.update({
@@ -399,6 +550,80 @@ export class AgentWorkerApiService {
     });
     await AgentPipelineService.log(job.runId, job.projectId, null, 'warn', `Worker released job${message ? `: ${message}` : ''}`);
     return { schemaVersion: SCHEMA_VERSION, released: true, retryAt: job.availableAt };
+  }
+
+  static async createInteraction(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
+    const payload = objectBody(body);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
+    try {
+      const interaction = await AgentRunInteractionService.create(job, {
+        externalRequestId: typeof payload.externalRequestId === 'string' ? payload.externalRequestId : '',
+        stageExecutionId: typeof payload.stageExecutionId === 'string' ? payload.stageExecutionId : '',
+        source: typeof payload.source === 'string' ? payload.source : 'acp',
+        message: typeof payload.message === 'string' ? payload.message : '',
+        requestedSchema: payload.requestedSchema as Record<string, unknown>,
+        toolCallId: typeof payload.toolCallId === 'string' ? payload.toolCallId : null,
+        meta: payload.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta)
+          ? payload.meta as Record<string, unknown>
+          : null,
+        timeoutSec: typeof payload.timeoutSec === 'number' ? payload.timeoutSec : undefined,
+      });
+      return { schemaVersion: SCHEMA_VERSION, interaction: interaction.toJSON() };
+    } catch (error) {
+      if (error instanceof InteractionError) throw new WorkerApiError(error.status, error.message);
+      throw error;
+    }
+  }
+
+  static async waitInteraction(
+    jobId: string,
+    interactionId: string,
+    body: unknown,
+    authHeader: string,
+    ip?: string | null,
+  ): Promise<Record<string, unknown> | null> {
+    const worker = await this.authorize(authHeader, ip);
+    const payload = objectBody(body);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
+    try {
+      const interaction = await AgentRunInteractionService.wait(
+        job,
+        interactionId,
+        typeof payload.waitMs === 'number' ? payload.waitMs : 25_000,
+      );
+      if (!interaction) return null;
+      const action = interaction.responseAction
+        ?? (['cancelled', 'expired', 'orphaned'].includes(interaction.status) ? 'cancel' : null);
+      return {
+        schemaVersion: SCHEMA_VERSION,
+        interactionId: interaction.id,
+        status: interaction.status,
+        response: action ? { action, content: action === 'accept' ? interaction.responseContent : null } : null,
+      };
+    } catch (error) {
+      if (error instanceof InteractionError) throw new WorkerApiError(error.status, error.message);
+      throw error;
+    }
+  }
+
+  static async acknowledgeInteraction(
+    jobId: string,
+    interactionId: string,
+    body: unknown,
+    authHeader: string,
+    ip?: string | null,
+  ): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
+    const payload = objectBody(body);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
+    try {
+      const interaction = await AgentRunInteractionService.acknowledge(job, interactionId);
+      return { schemaVersion: SCHEMA_VERSION, interaction: interaction.toJSON() };
+    } catch (error) {
+      if (error instanceof InteractionError) throw new WorkerApiError(error.status, error.message);
+      throw error;
+    }
   }
 
   private static async requireLeasedJob(jobId: string, payload: Record<string, unknown>, worker: AgentWorker): Promise<AgentRunJob> {
@@ -422,6 +647,7 @@ export class AgentWorkerApiService {
   }
 
   private static async markRunStarted(job: AgentRunJob): Promise<void> {
+    if (job.jobKind !== 'pipeline') return;
     const run = await AgentRun.findByPk(job.runId);
     if (!run) throw new WorkerApiError(404, 'Run not found');
     if (run.status === 'pending') {
