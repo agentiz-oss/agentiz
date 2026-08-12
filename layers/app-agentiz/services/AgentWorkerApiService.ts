@@ -393,6 +393,12 @@ export class AgentWorkerApiService {
       throw new WorkerApiError(409, 'Worker result is not for the latest proposal revision');
     }
     const ops = normalizeFileChanges(payload.fileOps ?? payload.fileChanges);
+    // A failed worker may still leave a useful patch for a human to inspect and recover.  Do not
+    // put an otherwise empty failed run into the review queue, though: there is nothing to review
+    // and it hides the actual failure on the task.
+    const hasReviewableChanges = ops.length > 0
+      || Boolean(payload.patch)
+      || Boolean(payload.patchBase64);
     let diff: AgentRunDiff | null = null;
     if (payload.workspaceUntouched) {
       await proposal.update({ status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: payload.errorMessage ?? 'Git preflight failed' });
@@ -401,6 +407,23 @@ export class AgentWorkerApiService {
       await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await task.update({ status: terminal });
       return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: terminal, proposalStatus: 'rejected' };
+    }
+    if (payload.status !== 'succeeded' && !hasReviewableChanges) {
+      await proposal.update({
+        status: 'rejected',
+        rejectedAt: new Date(),
+        reservationKey: null,
+        lastError: payload.errorMessage ?? `Workspace run ${payload.status} without changes to review`,
+      });
+      await run.update({ status: payload.status, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
+      await job.update({ status: payload.status, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
+      await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, payload.status);
+      await AgentPipelineService.reportToTaskThread(
+        run,
+        task,
+        payload.errorMessage ? `Запуск ${payload.status}: ${payload.errorMessage}` : summary || `Запуск ${payload.status}`,
+      );
+      return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: payload.status, proposalStatus: 'rejected' };
     }
     try {
       diff = await this.storeRunDiff(job, run, ops, payload);
@@ -426,19 +449,19 @@ export class AgentWorkerApiService {
       await proposal.update({ status: 'waiting_review', lastError: message });
     }
 
-    const terminal = payload.status === 'succeeded' ? 'succeeded' : payload.status === 'cancelled' ? 'cancelled' : 'failed';
-    await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null,
+    const runTerminal = payload.status;
+    await run.update({ status: runTerminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null,
       baseSha: proposal.baseSha, baseRef: proposal.baseBranch });
-    await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
+    await job.update({ status: runTerminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
     await task.update({ status: 'waiting_review' });
     await AgentPipelineService.reportToTaskThread(run, task,
-      payload.errorMessage ? `Запуск ${terminal}: ${payload.errorMessage}` : summary || `Workspace revision ${proposal.revision} готова к проверке`);
+      payload.errorMessage ? `Запуск ${runTerminal}: ${payload.errorMessage}` : summary || `Workspace revision ${proposal.revision} готова к проверке`);
 
     if (payload.status === 'succeeded' && ops.length > 0 && diff && !diff.truncated
       && run.pipelineSnapshot.finalAction.requireApproval !== true) {
       await AgentWorkspaceProposalService.approve(proposal.id, proposal.revision, 'system:auto');
     }
-    return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: terminal, proposalStatus: (await proposal.reload()).status };
+    return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: runTerminal, proposalStatus: (await proposal.reload()).status };
   }
 
   private static async applyWorkspaceActionResult(job: AgentRunJob, payload: WorkerResult): Promise<Record<string, unknown>> {
