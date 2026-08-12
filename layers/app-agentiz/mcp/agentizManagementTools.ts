@@ -7,7 +7,7 @@ import { AgentTaskSource } from '../models/AgentTaskSource';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentWorkerRegistryService, WorkerRegistryError } from '../services/AgentWorkerRegistryService';
 import { PIPELINE_SPEC_SCHEMA_TOOL } from '../services/PipelineSpecValidation';
-import type { AgentWorkerWorkspace } from '../types/agentiz';
+import type { AgentWorkerExecutor, AgentWorkerWorkspace } from '../types/agentiz';
 import {
   maskProjectForUI,
   maskTaskSourceForUI,
@@ -177,12 +177,12 @@ export const manageWorkerTool: IMcpTool = {
   name: 'agentiz.manageWorker',
   group: 'agentiz-actions',
   shortDescription: 'Creates and administers external worker identities safely.',
-  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects, declared workspaces and Git push roots for an external worker. A pipeline can name any absolute directory on a worker itself, but pushing from one requires setGitPushRoots here — that grant is never part of a pipeline spec. Newly issued tokens are returned once only.',
+  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects, declared workspaces, Git push roots and manual executor profiles for an external worker. A pipeline can name any absolute directory on a worker itself, but pushing from one requires setGitPushRoots here — that grant is never part of a pipeline spec. Newly issued tokens are returned once only.',
   mode: 'protected',
   inputSchema: {
     type: 'object', required: ['operation'],
     properties: {
-      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces', 'setGitPushRoots'] },
+      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces', 'setGitPushRoots', 'setManualExecutors'] },
       workerId: { type: 'string' }, name: { type: 'string' }, allowedProjectIds: { type: ['array', 'null'], items: { type: 'string' } },
       gitPushRoots: {
         type: ['array', 'null'],
@@ -206,6 +206,18 @@ export const manageWorkerTool: IMcpTool = {
                 remote: { type: 'string', description: 'Remote already configured in that checkout. Defaults to origin.' },
               },
             },
+          },
+        },
+      },
+      manualExecutors: {
+        type: ['array', 'null'],
+        description: 'setManualExecutors only. Named ACP profiles offered when manually starting a run. This REPLACES the whole list. Commands are configured here on the worker profile, never supplied by the run request.',
+        items: {
+          type: 'object', required: ['key', 'acpCommand'],
+          properties: {
+            key: { type: 'string', description: 'Unique stable key, for example "claude" or "codex".' },
+            title: { type: 'string' },
+            acpCommand: { type: 'array', minItems: 1, items: { type: 'string' } },
           },
         },
       },
@@ -238,6 +250,12 @@ export const manageWorkerTool: IMcpTool = {
         }
         const roots = Array.isArray(payload.gitPushRoots) ? payload.gitPushRoots.map(String) : null;
         return maskWorkerForUI(await AgentWorkerRegistryService.setGitPushRoots(workerId, roots));
+      }
+      if (operation === 'setManualExecutors') {
+        if (payload.manualExecutors !== null && !Array.isArray(payload.manualExecutors)) {
+          throw new Error('manualExecutors:array is required for setManualExecutors — it replaces the whole list; pass [] or null to clear it');
+        }
+        return maskWorkerForUI(await AgentWorkerRegistryService.setManualExecutors(workerId, payload.manualExecutors as AgentWorkerExecutor[] | null));
       }
       if (operation === 'rotateToken') {
         const rotated = await AgentWorkerRegistryService.rotateToken(workerId);
