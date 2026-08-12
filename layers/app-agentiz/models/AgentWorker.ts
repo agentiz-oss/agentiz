@@ -5,6 +5,7 @@ import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import type {
   AgentWorkerCapabilities,
   AgentWorkerContactState,
+  AgentWorkerExecutor,
   AgentWorkerKind,
   AgentWorkerStatus,
   AgentWorkerWorkspace,
@@ -129,6 +130,15 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   })
   @Column({ type: DataType.JSONB, allowNull: true })
   declare gitPushRoots: string[] | null;
+
+  @AdminizerField({
+    title: 'Manual executors',
+    type: 'jsoneditor',
+    tooltip: 'Runners that may be selected when manually starting a pipeline: [{ key: "claude", title: "Claude", acpCommand: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"] }, { key: "codex", title: "Codex", acpCommand: ["npx", "-y", "@agentclientprotocol/codex-acp"] }]. The command is configured by an administrator, never accepted from the launch form.',
+    views: { list: false, add: false, edit: false },
+  })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare manualExecutors: AgentWorkerExecutor[] | null;
 
   @AdminizerField({
     title: 'Capabilities',

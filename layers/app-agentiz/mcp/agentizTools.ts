@@ -397,12 +397,16 @@ const syncTool: IMcpTool = {
 const runTaskTool: IMcpTool = {
   name: 'agentiz.runTask', group: 'agentiz-actions',
   shortDescription: 'Queues the pipeline for one task.',
-  description: 'Creates a pipeline run for taskId and queues a worker job. Completion may create commits, pull requests or tracker comments according to the selected pipeline specification.',
-  mode: 'protected', inputSchema: { type: 'object', required: ['taskId'], properties: { taskId: { type: 'string' } } },
+  description: 'Creates a pipeline run for taskId and queues a worker job. Optionally provide workerId and executorKey together to select an administrator-configured worker executor (for example Codex); that pins the job to that worker. Completion may create commits, pull requests or tracker comments according to the selected pipeline specification.',
+  mode: 'protected', inputSchema: { type: 'object', required: ['taskId'], properties: { taskId: { type: 'string' }, workerId: { type: 'string' }, executorKey: { type: 'string' } } },
   async handler(params) {
-    const taskId = stringParam(objectParams(params), 'taskId');
+    const payload = objectParams(params);
+    const taskId = stringParam(payload, 'taskId');
     if (!taskId) throw new Error('taskId:string is required');
-    return runTeaser(await AgentPipelineService.runTask(taskId, 'manual'));
+    const workerId = stringParam(payload, 'workerId');
+    const executorKey = stringParam(payload, 'executorKey');
+    if (!!workerId !== !!executorKey) throw new Error('workerId and executorKey must be provided together');
+    return runTeaser(await AgentPipelineService.runTask(taskId, 'manual', { executorOverride: workerId ? { workerId, executorKey: executorKey! } : null }));
   },
 };
 

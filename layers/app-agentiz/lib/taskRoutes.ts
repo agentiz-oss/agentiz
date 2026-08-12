@@ -203,14 +203,21 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'runTask') {
           const taskId = str(req.body?.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
-          const run = await AgentPipelineService.runTask(taskId, 'manual');
+          const workerId = str(req.body?.workerId).trim();
+          const executorKey = str(req.body?.executorKey).trim();
+          if ((workerId && !executorKey) || (!workerId && executorKey)) {
+            return res.status(400).json({ message: 'workerId and executorKey must be provided together' });
+          }
+          const run = await AgentPipelineService.runTask(taskId, 'manual', {
+            executorOverride: workerId ? { workerId, executorKey } : null,
+          });
           await AgentTaskService.addComment(taskId, {
             authorKind: 'system',
             authorName: actor.name,
             authorId: actor.id,
             runId: run.id,
-            body: `Запущен пайплайн, run ${run.id}`,
-            meta: { kind: 'run.started', runId: run.id },
+            body: `Запущен пайплайн${executorKey ? ` (${executorKey})` : ''}, run ${run.id}`,
+            meta: { kind: 'run.started', runId: run.id, executorKey: executorKey || null },
           });
           return res.json({ data: run.toJSON() });
         }

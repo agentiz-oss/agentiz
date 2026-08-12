@@ -29,6 +29,7 @@ import type {
   PipelineHookDef,
   PipelineSpecDef,
   PipelineWorkerWorkspaceDef,
+  AgentRunExecutorOverride,
 } from '../types/agentiz';
 import { Op } from 'sequelize';
 
@@ -95,6 +96,7 @@ export class AgentPipelineService {
       pipelineSnapshot?: PipelineSpecDef;
       proposalId?: string | null;
       workspaceRevision?: number | null;
+      executorOverride?: AgentRunExecutorOverride | null;
     } = {},
   ): Promise<AgentRun> {
     const task = await AgentTask.findByPk(taskId);
@@ -122,6 +124,7 @@ export class AgentPipelineService {
       trigger,
       triggerCommentId,
       previousRunId: previousRun?.id ?? null,
+      executorOverride: options.executorOverride ?? null,
       pipelineSnapshot: snapshot,
       currentStageIndex: 0,
     });
@@ -273,7 +276,7 @@ export class AgentPipelineService {
   static async runTask(
     taskId: string,
     trigger: AgentRunTrigger = 'manual',
-    options: { triggerCommentId?: string | null } = {},
+    options: { triggerCommentId?: string | null; executorOverride?: AgentRunExecutorOverride | null } = {},
   ): Promise<AgentRun> {
     const run = await this.createRun(taskId, trigger, options);
     try {
@@ -595,7 +598,10 @@ export class AgentWorkerJobBuilder {
     // Only the machine holding the directory can run such a job, so the restriction is recorded on
     // the job itself and enforced by every claim query rather than checked after the fact.
     const workspace = snapshot.workspace as RunWorkspaceRef | null;
-    const requiredWorkerId = workspace?.workerId ?? null;
+    const requiredWorkerId = run.executorOverride?.workerId ?? workspace?.workerId ?? null;
+    if (workspace && run.executorOverride && workspace.workerId !== run.executorOverride.workerId) {
+      throw new Error('Selected executor belongs to a different worker than the pipeline workspace');
+    }
     // Mirrored out of the snapshot for the same reason: the claim query has to filter on it in SQL.
     const repositoryId = (snapshot.repository as { repositoryId?: string } | null)?.repositoryId ?? null;
     const proposalId = (snapshot.proposal as { id?: string } | null)?.id ?? null;
@@ -642,6 +648,7 @@ export class AgentWorkerJobBuilder {
     if (!task || !project) throw new Error(`AgentRun ${run.id}: task or project is missing`);
 
     const conversation = await this.conversationForRun(run);
+    const override = run.executorOverride ? await this.resolveExecutorOverride(run.executorOverride, project.id) : null;
     const stages = await Promise.all(orderedStages(run.pipelineSnapshot).map(async (stage, index) => {
       const role = await AgentRole.findOne({ where: { projectId: project.id, key: stage.agentRoleKey } });
       const execution = await AgentStageExecution.findOne({ where: { runId: run.id, stageIndex: index } });
@@ -655,12 +662,12 @@ export class AgentWorkerJobBuilder {
         runtime: stage.runtime ?? null,
         systemPrompt: role?.systemPrompt ?? null,
         agent: {
-          kind: String((role?.config as any)?.executor ?? 'stub'),
+          kind: override ? 'openhands-acp' : String((role?.config as any)?.executor ?? 'stub'),
           // The spec's own per-stage override wins over the role's model, so one role can run under
           // different models across stages/pipelines without cloning it.
           model: stage.model ?? role?.model ?? null,
           allowedTools: role?.allowedTools ?? [],
-          config: role?.config ?? {},
+          config: override ? { ...(role?.config ?? {}), acpCommand: override.acpCommand } : role?.config ?? {},
         },
       };
     }));
@@ -727,6 +734,10 @@ export class AgentWorkerJobBuilder {
     const proposal = workspace && finalAction.type === 'commit'
       ? await this.workspaceProposal(run, task, workspace, repository)
       : null;
+    if (override?.worker.allowedRepositoryIds?.length && repository?.repositoryId
+      && !override.worker.allowedRepositoryIds.includes(String(repository.repositoryId))) {
+      throw new Error(`Selected executor worker "${override.worker.name}" is not allowed to access this repository`);
+    }
     return {
       schemaVersion: 1,
       runId: run.id,
@@ -752,6 +763,20 @@ export class AgentWorkerJobBuilder {
       validation: { commands: [], timeoutSec: 1800 },
       limits: { jobTimeoutSec: 3600, maxOutputBytes: 10485760 },
     };
+  }
+
+  private static async resolveExecutorOverride(override: AgentRunExecutorOverride, projectId: string): Promise<{ acpCommand: string[]; worker: AgentWorker }> {
+    const worker = await AgentWorker.findByPk(override.workerId);
+    if (!worker || worker.status !== 'active') throw new Error('Selected executor worker is not active');
+    if (worker.allowedProjectIds?.length && !worker.allowedProjectIds.includes(projectId)) {
+      throw new Error(`Selected executor worker "${worker.name}" is not allowed to access this project`);
+    }
+    const executor = worker.manualExecutors?.find((item) => item?.key === override.executorKey);
+    if (!executor || !Array.isArray(executor.acpCommand) || !executor.acpCommand.length
+      || !executor.acpCommand.every((part) => typeof part === 'string' && part.trim())) {
+      throw new Error(`Executor "${override.executorKey}" is not configured on worker "${worker.name}"`);
+    }
+    return { acpCommand: executor.acpCommand, worker };
   }
 
   /**

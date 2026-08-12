@@ -4,6 +4,7 @@ import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
 import type {
   AgentWorkerCapabilities,
+  AgentWorkerExecutor,
   AgentWorkerKind,
   AgentWorkerStatus,
   AgentWorkerWorkspace,
@@ -338,6 +339,31 @@ export class AgentWorkerRegistryService {
       cleaned.push(root);
     }
     await worker.update({ gitPushRoots: cleaned.length ? cleaned : null });
+    return worker;
+  }
+
+  /** Replaces the named ACP profiles that people may choose on a manual launch. */
+  static async setManualExecutors(workerId: string, executors: AgentWorkerExecutor[] | null): Promise<AgentWorker> {
+    const worker = await AgentWorker.findByPk(workerId);
+    if (!worker) throw new WorkerRegistryError(404, 'Worker not found', 'not_found');
+    if (worker.status === 'revoked') throw new WorkerRegistryError(409, 'Cannot configure a revoked worker', 'revoked');
+    const cleaned: AgentWorkerExecutor[] = [];
+    const keys = new Set<string>();
+    for (const candidate of executors ?? []) {
+      const key = optionalString(candidate?.key, 64);
+      const title = optionalString(candidate?.title, 100);
+      const command = candidate?.acpCommand;
+      if (!key || !/^[a-z0-9][a-z0-9_-]*$/i.test(key)) {
+        throw new WorkerRegistryError(400, 'Each executor needs a key using letters, numbers, _ or -', 'bad_executor');
+      }
+      if (keys.has(key)) throw new WorkerRegistryError(400, `Executor key "${key}" is duplicated`, 'bad_executor');
+      if (!Array.isArray(command) || !command.length || !command.every((part) => typeof part === 'string' && !!part.trim())) {
+        throw new WorkerRegistryError(400, `Executor "${key}" needs a non-empty acpCommand array`, 'bad_executor');
+      }
+      keys.add(key);
+      cleaned.push({ key, ...(title ? { title } : {}), acpCommand: command.map((part) => part.trim()) });
+    }
+    await worker.update({ manualExecutors: cleaned.length ? cleaned : null });
     return worker;
   }
 

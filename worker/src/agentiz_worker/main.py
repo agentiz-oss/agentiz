@@ -588,8 +588,11 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             "summary": redact("\n".join(f"- {item['summary']}" for item in outputs)), "stageOutputs": outputs}
         if hook_records:
             result["hooks"] = hook_records
-        if repository:
-            base_sha = str((workspace_marker or {}).get("baseSha") or repository.get("baseSha") or "")
+        # A workspace proposal needs its diff whether or not a hosted repository is pinned — since
+        # `repositoryId` became optional for worker directories, `repository` alone would skip the
+        # collection and leave the proposal with nothing to review. Mirrors the failure path below.
+        if repository or (workspace_marker and proposal):
+            base_sha = str((workspace_marker or {}).get("baseSha") or (repository or {}).get("baseSha") or "")
             changes = collect_changes(workdir, base_sha,
                                       int(job.get("limits", {}).get("maxPatchBytes") or 5 * 1024 * 1024))
             result.update({

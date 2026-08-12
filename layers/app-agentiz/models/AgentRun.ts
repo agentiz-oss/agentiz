@@ -7,7 +7,7 @@ import { AgentTask } from './AgentTask';
 import { AgentTaskComment } from './AgentTaskComment';
 import { AgentStageExecution } from './AgentStageExecution';
 import { AgentRunLog } from './AgentRunLog';
-import type { AgentRunStatus, AgentRunTrigger, PipelineSpecDef } from '../types/agentiz';
+import type { AgentRunStatus, AgentRunTrigger, AgentRunExecutorOverride, PipelineSpecDef } from '../types/agentiz';
 
 /**
  * "У каждой задачи будут запуски" - one row per pipeline execution attempt for an AgentTask.
@@ -71,6 +71,10 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
     defaultValue: 'manual',
   })
   declare trigger: AgentRunTrigger;
+
+  @AdminizerField({ title: 'Manual executor override', type: 'jsoneditor', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare executorOverride: AgentRunExecutorOverride | null;
 
   /** Human comment that caused this run, when it was event-triggered. */
   @ForeignKey(() => AgentTaskComment)

@@ -58,6 +58,87 @@
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 
+## Debugging a run that "starts but nothing happens"
+
+The full ship-and-verify loop lives in [`docs/deploy-debug-guide.md`](docs/deploy-debug-guide.md);
+this is the triage that comes before it. Symptom: a run appears, no agent output ever shows up.
+Read the run's own log first — it names the layer that gave up, and there are only four places it
+can be. `agentiz.runDetails` is read-only and safe to call as often as needed:
+
+```bash
+source .env
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"limit":10}' https://agentiz.m42.cx/mcp/call/agentiz.runs
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"runId":"<id>"}' https://agentiz.m42.cx/mcp/call/agentiz.runDetails
+```
+
+The log lines are the checkpoints; the **last one present** tells you who failed:
+
+| Last log line | Reached | Read next |
+| --- | --- | --- |
+| `Run created from spec ...` | server built the run, never queued a job | `AgentPipelineService.buildSnapshot` — spec/role/repository resolution |
+| `Worker job queued` | job is in the queue, unclaimed | claim filters: `AgentWorkerApiService.claim()` **and** `AgentWorkerQueueService.claimLocalJob()`, plus the worker's `status`/`contactState`/`allowed*`/`requiredWorkerId` |
+| `Worker job claimed by <worker>` | worker took it, died before reporting | worker-side preflight — `worker/src/agentiz_worker/main.py`, `workspace_git.py` |
+| a `job.*` event (e.g. `Работа идёт в готовой папке воркера: ...`) | worker is executing | the executor/ACP session |
+
+A run whose `stages[]` are all still `pending` while the run itself is `failed` never reached an
+agent — the error is infrastructure, not the agent's output. `run.errorMessage` equals the job's
+`lastError` in that case, so `agentiz.jobs` adds nothing; grep the string in the repo (`--include=*.ts
+--include=*.py`, the worker is Python and easy to forget) to find the exact `throw`/`raise`.
+
+### The worker-side preflight ladder
+
+`workspace_git.preflight()` (`worker/src/agentiz_worker/workspace_git.py`) is where a
+`worker_workspace` run dies before its first stage, and it fails one check at a time — fixing one
+reveals the next, so expect several round trips rather than one root cause. In order: `rev-parse
+--show-toplevel` (git must accept the checkout), a clean tree **including untracked files** when no
+marker exists yet, `symbolic-ref HEAD` (no detached HEAD), `_verify_remote`, then `ls-remote` — local
+`HEAD` must equal the remote branch head, which means the worker needs working push-side credentials
+just to *start*, not only to push.
+
+Reproduce each check as the **worker's** user, not yours — the worker is a separate install with its
+own `HOME`, so per-user git config and SSH identities differ from the shell you are typing in
+(`ps -eo user,pid,cmd | grep agentiz_worker` gives the user; the install lives under
+`~<user>/.local/share/agentiz-worker`, config in `~<user>/.config/agentiz/worker.json`):
+
+```bash
+sudo -u <worker-user> git -C <workspace> rev-parse --show-toplevel     # dubious ownership?
+sudo -u <worker-user> git -C <workspace> status --porcelain=v1 -uall   # must be empty
+sudo -u <worker-user> git -C <workspace> ls-remote --heads origin      # credentials reachable?
+sudo -u <worker-user> git config --global --list --show-origin | grep safe.directory
+```
+
+`detected dubious ownership` means `.git` is owned by a different user than the worker runs as — check
+`.git` itself, not just the workspace directory; they can differ when a human created the checkout and
+the worker inherited it. The host convention here is a `safe.directory` entry in the **worker user's**
+`~/.gitconfig` (verify with `--show-origin`; `sudo -u` alone does not guarantee the `HOME` you assume).
+A `sudo -u` shell also has no ssh-agent socket, so a `Permission denied (publickey)` from that command
+is not proof the worker itself lacks access — settle it against the socket the running process actually
+holds (here: a gpg-agent one, and it turned out to hold no identities at all):
+
+```bash
+sudo -u <worker-user> bash -c 'tr "\0" "\n" < /proc/<worker-pid>/environ | grep SSH_AUTH_SOCK'
+sudo -u <worker-user> bash -c 'export SSH_AUTH_SOCK=<that socket>; ssh-add -l; ssh -o BatchMode=yes -T git@<host>'
+```
+
+A dirty workspace is not necessarily junk: a run that succeeded while git delivery was broken leaves
+its whole output uncommitted there. Read `agentiz.runs` for the last `succeeded` run on that path
+before cleaning anything.
+
+Before debugging code, check that prod is actually running the code you're reading — these drift
+independently and a fix pushed after the failed run explains the failure without any bug:
+
+```bash
+curl -s -H "X-Mcp-Key: $MCP_KEY" -d '{}' https://agentiz.m42.cx/mcp/call/agentiz.overview   # server.gitSha / buildTime
+curl -s -H "X-Mcp-Key: $MCP_KEY" -d '{}' https://agentiz.m42.cx/mcp/call/agentiz.workers    # items[].version = agentiz-worker/<v>+<sha>
+```
+
+Compare both against `git log`, and compare `buildTime` against the run's `createdAt`. If the error
+string is absent from the working tree, `git log -S'<error text>'` dates its removal — that is the
+commit that has to be deployed, and the worker is a **separate** deploy from the server. Only after
+both SHAs match the code you're reading is a re-run (`agentiz-actions.runTask`) evidence of anything.
+
 ## Calling the Agentiz MCP endpoint
 
 - Base URL: `https://agentiz.m42.cx/mcp`. Auth via header `X-Mcp-Key: <MCP_KEY>` (or query param
@@ -85,3 +166,9 @@
 - The auth status has appeared as `unauthenticated` on a first request and `authenticated` on an
   immediate retry with the same key — treat a stale/cached-looking `unauthenticated` response as
   worth one retry before assuming the key is wrong.
+
+## Signing in to the admin UI (Playwright)
+
+- Driving the Adminizer dashboard (`/dashboard`) through Playwright needs a login. The credentials
+  live in `.env` as `ADMIN_CREDS`, in `login:password` form — read them from there at call time
+  (`source .env`), same rule as `MCP_KEY`: never hardcode the value in a tracked file.

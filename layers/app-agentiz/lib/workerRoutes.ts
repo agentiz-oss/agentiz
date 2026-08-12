@@ -86,7 +86,7 @@ export const workerRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'pauseWorker' || method === 'resumeWorker' || method === 'revokeWorker'
           || method === 'deleteWorker' || method === 'rotateWorkerToken' || method === 'setWorkerProjects'
           || method === 'setWorkerRepositories' || method === 'setWorkerWorkspaces'
-          || method === 'setWorkerGitPushRoots') {
+          || method === 'setWorkerGitPushRoots' || method === 'setWorkerManualExecutors') {
           const workerId = str(req.body?.workerId);
           if (!workerId) return res.status(400).json({ message: 'workerId is required' });
           const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
@@ -103,6 +103,10 @@ export const workerRoutes: AdminizerRouteMiddleware[] = [
               const roots = Array.isArray(req.body?.gitPushRoots) ? req.body.gitPushRoots.map((item: unknown) => String(item)) : [];
               const worker = await AgentWorkerRegistryService.setGitPushRoots(workerId, roots);
               return res.json({ data: maskWorkerForUI(worker) });
+            }
+            if (method === 'setWorkerManualExecutors') {
+              const executors = Array.isArray(req.body?.manualExecutors) ? req.body.manualExecutors : [];
+              return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.setManualExecutors(workerId, executors)) });
             }
             if (method === 'pauseWorker') {
               return res.json({ data: maskWorkerForUI(await AgentWorkerRegistryService.pause(workerId, reason)) });

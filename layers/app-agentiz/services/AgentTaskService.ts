@@ -6,6 +6,8 @@ import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentTaskSource } from '../models/AgentTaskSource';
+import { AgentWorker } from '../models/AgentWorker';
+import { resolveSpecForTask } from './PipelineSpecResolver';
 import {
   createTaskManager,
   getTaskManagerAdapter,
@@ -169,11 +171,13 @@ export class AgentTaskService {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new TaskServiceError(404, 'Task not found');
 
-    const [project, runs, comments, source] = await Promise.all([
+    const [project, runs, comments, source, spec, workers] = await Promise.all([
       AgentProject.findByPk(task.projectId),
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 50 }),
       AgentTaskComment.findAll({ where: { taskId } }),
       task.sourceId ? AgentTaskSource.findByPk(task.sourceId) : Promise.resolve(null),
+      resolveSpecForTask(task),
+      AgentWorker.findAll({ where: { status: 'active' } }),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -194,6 +198,16 @@ export class AgentTaskService {
       },
       project: project ? { id: project.id, name: project.name, slug: project.slug } : null,
       source: source ? { id: source.id, name: source.name, type: source.type, isActive: source.isActive } : null,
+      manualExecutorOptions: workers
+        .filter((worker) => !worker.allowedProjectIds?.length || worker.allowedProjectIds.includes(task.projectId))
+        .filter((worker) => !spec.spec.source?.workspace?.workerId || spec.spec.source.workspace.workerId === worker.id)
+        .flatMap((worker) => (worker.manualExecutors ?? [])
+          .filter((executor) => typeof executor?.key === 'string' && !!executor.key.trim()
+            && Array.isArray(executor.acpCommand) && executor.acpCommand.length > 0
+            && executor.acpCommand.every((part) => typeof part === 'string' && !!part.trim()))
+          .map((executor) => ({
+          workerId: worker.id, executorKey: executor.key, title: executor.title || executor.key, workerName: worker.name,
+          }))),
       runs: runs.map((run) => run.toJSON()),
       latestRun: latestRun
         ? {

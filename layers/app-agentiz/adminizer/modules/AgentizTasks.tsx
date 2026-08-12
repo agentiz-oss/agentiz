@@ -49,6 +49,7 @@ interface TaskDetails {
     logs: Array<{ id: string; level: string; message: string; createdAt?: string }>;
   } | null;
   comments: TaskComment[];
+  manualExecutorOptions: Array<{ workerId: string; executorKey: string; title: string; workerName: string }>;
 }
 
 interface TaskSource {
@@ -146,6 +147,7 @@ const AgentizTasks: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
+  const [selectedExecutor, setSelectedExecutor] = useState<{ workerId: string; executorKey: string } | null>(null);
   const [showSources, setShowSources] = useState(false);
   const [showNewTask, setShowNewTask] = useState(false);
 
@@ -235,6 +237,7 @@ const AgentizTasks: React.FC = () => {
   }, [loadTasks]);
 
   useEffect(() => {
+    setSelectedExecutor(null);
     loadDetails(selectedId);
   }, [selectedId, loadDetails]);
 
@@ -295,8 +298,8 @@ const AgentizTasks: React.FC = () => {
   );
 
   const runPipeline = useCallback(
-    async (taskId: string) => {
-      const result = await post({ _method: "runTask", taskId }, "Пайплайн запущен");
+    async (taskId: string, executor?: { workerId: string; executorKey: string }) => {
+      const result = await post({ _method: "runTask", taskId, ...executor }, "Пайплайн запущен");
       if (result) {
         await loadTasks();
         await loadDetails(taskId);
@@ -770,12 +773,36 @@ const AgentizTasks: React.FC = () => {
                   ))}
                 </select>
                 <button
-                  onClick={() => runPipeline(details.task.id)}
+                  onClick={() => runPipeline(
+                    details.task.id,
+                    selectedExecutor && details.manualExecutorOptions.some((item) => item.workerId === selectedExecutor.workerId && item.executorKey === selectedExecutor.executorKey)
+                      ? selectedExecutor
+                      : undefined,
+                  )}
                   disabled={busy}
                   className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
                 >
                   Запустить пайплайн
                 </button>
+                {(details.manualExecutorOptions ?? []).length > 0 && (
+                  <select
+                    value={selectedExecutor ? `${selectedExecutor.workerId}:${selectedExecutor.executorKey}` : ""}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const choice = details.manualExecutorOptions.find((item) => `${item.workerId}:${item.executorKey}` === e.target.value);
+                      setSelectedExecutor(choice ? { workerId: choice.workerId, executorKey: choice.executorKey } : null);
+                    }}
+                    className="rounded border px-2 py-1 text-xs"
+                    title="Необязательное переопределение исполнителя из настроек воркера"
+                  >
+                    <option value="">исполнитель: по пайплайну</option>
+                    {details.manualExecutorOptions.map((option) => (
+                      <option key={`${option.workerId}:${option.executorKey}`} value={`${option.workerId}:${option.executorKey}`}>
+                        исполнитель: {option.title} · {option.workerName}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {details.task.description && (

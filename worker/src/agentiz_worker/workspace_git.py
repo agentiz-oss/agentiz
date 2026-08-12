@@ -218,8 +218,16 @@ def run_action(path: Path, job_kind: str, proposal: dict[str, Any], repository: 
             return {"summary": f"Pushed {commit_sha[:12]} to {target}", "commitSha": commit_sha, "targetBranch": target}
         _git(root, ["add", "-A"])
         tree_sha = _git(root, ["write-tree"])
-        if tree_sha != proposal.get("expectedTreeSha"):
-            raise WorkspaceGitError("Workspace tree changed after review; refusing a destructive Git action")
+        expected_tree = proposal.get("expectedTreeSha")
+        if expected_tree:
+            if tree_sha != expected_tree:
+                raise WorkspaceGitError("Workspace tree changed after review; refusing a destructive Git action")
+        elif job_kind != "workspace_reset":
+            # A run that never reported a diff leaves no reviewed tree. A commit must not invent an
+            # approval, but a reset is the operator discarding the directory on purpose — refusing it
+            # would wedge the workspace for good, since the reservation is released only when a reset
+            # completes (`AgentWorkerApiService`, proposal status "rejected").
+            raise WorkspaceGitError("Workspace proposal has no reviewed tree; commit/push is blocked")
 
         if job_kind == "workspace_reset":
             base_sha = str(proposal["baseSha"])

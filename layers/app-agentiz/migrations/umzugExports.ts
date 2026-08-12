@@ -63,6 +63,7 @@ import {
   up as upWorkspaceProposalOptionalRepository,
   down as downWorkspaceProposalOptionalRepository,
 } from './umzug/1787000700000_workspace_proposal_optional_repository';
+import { up as upManualWorkerExecutors, down as downManualWorkerExecutors } from './umzug/1787000800000_manual_worker_executors';
 
 export const umzugExports: Migration[] = [
   {
@@ -179,5 +180,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1787000700000,
     up: upWorkspaceProposalOptionalRepository,
     down: downWorkspaceProposalOptionalRepository,
+  },
+  {
+    name: 'manual_worker_executors',
+    timestamp: 1787000800000,
+    up: upManualWorkerExecutors,
+    down: downManualWorkerExecutors,
   },
 ];

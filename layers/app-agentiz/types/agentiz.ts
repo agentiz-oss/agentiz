@@ -123,6 +123,22 @@ export interface AgentWorkerCapabilities {
   [key: string]: unknown;
 }
 
+/** A named, administrator-configured ACP runner available on one worker. */
+export interface AgentWorkerExecutor {
+  /** Stable identifier used when a person selects this runner for a manual launch. */
+  key: string;
+  /** Human-readable label, for example "Claude" or "Codex". */
+  title?: string;
+  /** ACP command owned by the worker administrator, never supplied by a run request. */
+  acpCommand: string[];
+}
+
+/** An explicit manual choice is also a worker pin: another machine may not have that runner installed. */
+export interface AgentRunExecutorOverride {
+  workerId: string;
+  executorKey: string;
+}
+
 /**
  * A prepared directory on the worker's own machine, declared by an admin on the worker record.
  *

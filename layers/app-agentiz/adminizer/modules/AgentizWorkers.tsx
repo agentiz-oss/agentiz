@@ -19,6 +19,12 @@ interface WorkerWorkspace {
   git?: { pushEnabled: boolean; remote?: string };
 }
 
+interface WorkerExecutor {
+  key: string;
+  title?: string;
+  acpCommand: string[];
+}
+
 interface AgentWorker {
   id: string;
   name: string;
@@ -35,6 +41,7 @@ interface AgentWorker {
   allowedRepositoryIds?: string[] | null;
   workspaces?: WorkerWorkspace[] | null;
   gitPushRoots?: string[] | null;
+  manualExecutors?: WorkerExecutor[] | null;
 }
 
 interface RepositoryOption {
@@ -257,6 +264,47 @@ const WorkerGitPushRootsEditor: React.FC<{
         push делается git-кредами этого хоста, поэтому спека сама себе такое право выдать не может. `/` не принимается.
         Push идёт в remote `origin` — другой remote можно указать только для папки, объявленной по ключу.
       </p>
+    </div>
+  );
+};
+
+const EXECUTOR_PRESETS: Record<"claude" | "codex", WorkerExecutor> = {
+  claude: { key: "claude", title: "Claude", acpCommand: ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"] },
+  codex: { key: "codex", title: "Codex", acpCommand: ["npx", "-y", "@agentclientprotocol/codex-acp@1.1.14"] },
+};
+
+/** The manual-launch picker deliberately exposes only safe named profiles, not a command input. */
+const WorkerExecutorsEditor: React.FC<{
+  worker: AgentWorker;
+  busy: boolean;
+  onSave: (executors: WorkerExecutor[]) => void;
+}> = ({ worker, busy, onSave }) => {
+  const executors = worker.manualExecutors ?? [];
+  const add = (preset: WorkerExecutor) => onSave([
+    ...executors.filter((item) => item.key !== preset.key),
+    preset,
+  ]);
+  return (
+    <div className="mt-2 rounded border p-2">
+      <div className="text-xs font-medium">Исполнители для ручного запуска</div>
+      {executors.length === 0 ? (
+        <p className="mt-1 text-xs text-muted-foreground">Не настроены: ручной запуск использует исполнителя, заданного в пайплайне.</p>
+      ) : (
+        <ul className="mt-1 space-y-1">
+          {executors.map((executor) => (
+            <li key={executor.key} className="flex flex-wrap items-center gap-2 text-xs">
+              <strong>{executor.title || executor.key}</strong>
+              <code className="rounded border px-1">{executor.key}</code>
+              <button onClick={() => onSave(executors.filter((item) => item.key !== executor.key))} disabled={busy} className="rounded border px-1.5 py-0.5 disabled:opacity-50" style={{ borderColor: "#fca5a5", color: "#b91c1c" }}>Убрать</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button onClick={() => add(EXECUTOR_PRESETS.claude)} disabled={busy} className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50">Добавить Claude</button>
+        <button onClick={() => add(EXECUTOR_PRESETS.codex)} disabled={busy} className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50">Добавить Codex</button>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">При ручном запуске выбранный профиль закрепляет job за этой машиной. Команда ACP хранится в профиле воркера, а не передаётся из задачи.</p>
     </div>
   );
 };
@@ -601,6 +649,11 @@ const AgentizWorkers: React.FC = () => {
                     worker={worker}
                     busy={busy}
                     onSave={(workspaces) => workerAction("setWorkerWorkspaces", worker, { workspaces })}
+                  />
+                  <WorkerExecutorsEditor
+                    worker={worker}
+                    busy={busy}
+                    onSave={(manualExecutors) => workerAction("setWorkerManualExecutors", worker, { manualExecutors })}
                   />
                 </>
               )}
