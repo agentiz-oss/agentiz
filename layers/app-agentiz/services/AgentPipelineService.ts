@@ -677,13 +677,26 @@ export class AgentWorkerJobBuilder {
       ? await this.resolveWorkspace(source!.workspace as PipelineWorkerWorkspaceDef)
       : null;
     if (workspace) {
-      const reservation = workspace.key
-        ? await AgentWorkspaceProposal.findOne({ where: { reservationKey: `${workspace.workerId}:${workspace.key}` } })
-        : await AgentWorkspaceProposal.findOne({
-            where: { workerId: workspace.workerId, workspacePath: workspace.path, reservationKey: { [Op.ne]: null } },
-          });
+      // A reservation belongs to the *directory*, not to the name a spec happened to use for it:
+      // `reservationKey` spells out the declared key while `workspacePath` is the same absolute path
+      // either form resolves to. Matching only the key would let a spec rewritten from `path` to
+      // `workspaceKey` (or back) open a second proposal on a directory that is already reserved —
+      // the server would queue the job and only the worker's on-disk marker would refuse it.
+      const reservation = await AgentWorkspaceProposal.findOne({
+        where: {
+          workerId: workspace.workerId,
+          reservationKey: { [Op.ne]: null },
+          [Op.or]: [
+            { workspacePath: workspace.path },
+            ...(workspace.key ? [{ reservationKey: `${workspace.workerId}:${workspace.key}` }] : []),
+          ],
+        },
+      });
       if (reservation && reservation.id !== run.proposalId) {
-        throw new Error(`Workspace "${workspace.key ?? workspace.path}" is reserved by proposal ${reservation.id}`);
+        // Name the path as well when the spec used a key: the two differ precisely in the case this
+        // check exists for, and the id alone sent the last investigation to the wrong proposal.
+        const named = workspace.key ? `"${workspace.key}" (${workspace.path})` : `"${workspace.path}"`;
+        throw new Error(`Workspace ${named} is reserved by proposal ${reservation.id}`);
       }
     }
 
