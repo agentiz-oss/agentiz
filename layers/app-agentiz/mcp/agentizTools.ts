@@ -52,11 +52,22 @@ function taskTeaser(task: AgentTask) {
   };
 }
 
-function runTeaser(run: AgentRun) {
+/**
+ * resultSummary is agent-authored prose and can run to several KB (a whole worklog per run); across
+ * a list of runs that dwarfs everything else in the payload. Omitted by default — callers see
+ * resultSummaryLength and fetch the text itself only for the run(s) they actually need, either via
+ * `includeSummary` on the list or by calling agentiz.runDetails for one run.
+ */
+function runTeaser(run: AgentRun, opts: { includeSummary?: boolean } = {}) {
+  const includeSummary = opts.includeSummary ?? true;
   return {
     id: run.id, taskId: run.taskId, projectId: run.projectId, status: run.status, trigger: run.trigger,
     currentStageIndex: run.currentStageIndex, startedAt: run.startedAt, finishedAt: run.finishedAt,
-    resultSummary: run.resultSummary, errorMessage: run.errorMessage, commitUrl: run.commitUrl,
+    ...(includeSummary ? { resultSummary: run.resultSummary } : {
+      resultSummaryLength: run.resultSummary?.length ?? 0,
+      ...(run.resultSummary ? { resultSummaryHint: `Omitted (${run.resultSummary.length} chars). Call agentiz.runs with includeSummary=true, or agentiz.runDetails {runId:"${run.id}"}, to get it.` } : {}),
+    }),
+    errorMessage: run.errorMessage, commitUrl: run.commitUrl,
     responseUrl: run.responseUrl, createdAt: run.createdAt,
   };
 }
@@ -126,7 +137,7 @@ const overviewTool: IMcpTool = {
       },
       projects: projects.map(projectTeaser),
       taskCounts: countBy(tasks),
-      runningRuns: runs.map(runTeaser),
+      runningRuns: runs.map((run) => runTeaser(run)),
       timestamp: new Date().toISOString(),
     };
   },
@@ -224,17 +235,18 @@ const tasksTool: IMcpTool = {
 const runsTool: IMcpTool = {
   name: 'agentiz.runs', group: 'agentiz',
   shortDescription: 'Lists compact pipeline-run teasers, filterable by task, project and status.',
-  description: 'Lists compact Agentiz pipeline runs. Use agentiz.runDetails for stage outputs and logs of one selected run.',
+  description: 'Lists compact Agentiz pipeline runs. resultSummary is omitted by default (resultSummaryLength shows whether one exists) since it can be several KB of prose per run; set includeSummary=true to get it back, or call agentiz.runDetails for a single run.',
   mode: 'protected',
-  inputSchema: { type: 'object', properties: { taskId: { type: 'string' }, projectId: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', default: 50, maximum: 200 } } },
+  inputSchema: { type: 'object', properties: { taskId: { type: 'string' }, projectId: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', default: 50, maximum: 200 }, includeSummary: { type: 'boolean', default: false } } },
   async handler(params) {
     const payload = objectParams(params);
     const taskId = stringParam(payload, 'taskId');
     const projectId = stringParam(payload, 'projectId');
     const status = stringParam(payload, 'status');
+    const includeSummary = payload.includeSummary === true;
     const where = { ...(taskId ? { taskId } : {}), ...(projectId ? { projectId } : {}), ...(status ? { status } : {}) };
     const runs = await AgentRun.findAll({ where, order: [['createdAt', 'DESC']], limit: limitParam(payload) });
-    return { count: runs.length, items: runs.map(runTeaser) };
+    return { count: runs.length, items: runs.map((run) => runTeaser(run, { includeSummary })), summaryIncluded: includeSummary };
   },
 };
 
