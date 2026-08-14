@@ -75,6 +75,14 @@ describe('AgentWorkspaceProposalService', () => {
     expect(await AgentRunJob.count({ where: { proposalId: proposal.id, jobKind: 'workspace_reset' } })).toBe(1);
   });
 
+  it('queues a reset and keeps the reservation when a marked workspace fails without a reviewable diff', async () => {
+    await proposal.update({ status: 'working', latestDiffId: null });
+    const cleanedUp = await AgentWorkspaceProposalService.resetAfterUnreviewableFailure(proposal, 'OAuth session expired');
+    expect(cleanedUp).toMatchObject({ status: 'reset_queued', reservationKey: 'worker-1:repo', lastError: 'OAuth session expired' });
+    const reset = await AgentRunJob.findOne({ where: { proposalId: proposal.id, jobKind: 'workspace_reset' } });
+    expect(reset).toMatchObject({ status: 'queued', requiredWorkerId: 'worker-1' });
+  });
+
   // A worker directory pushes through its own remote, so there may be no AgentRepository at all; the
   // job then carries `repository: null` and the worker records the remote instead of verifying it.
   it('queues a push for a directory that pins no repository', async () => {

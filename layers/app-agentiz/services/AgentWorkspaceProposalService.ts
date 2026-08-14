@@ -102,6 +102,37 @@ export class AgentWorkspaceProposalService {
     return proposal;
   }
 
+  /**
+   * A pipeline can fail after the worker has written its on-disk proposal marker but before it has
+   * produced anything reviewable.  That marker must be removed by the worker; releasing the
+   * database reservation alone would make later runs fail on the stale marker forever.
+   *
+   * This deliberately keeps the reservation while the reset is queued.  If queuing fails, the
+   * proposal remains recoverable as `reset_failed`, which an operator can retry through reject.
+   */
+  static async resetAfterUnreviewableFailure(
+    proposal: AgentWorkspaceProposal,
+    reason: string,
+  ): Promise<AgentWorkspaceProposal> {
+    const [changed] = await AgentWorkspaceProposal.update({
+      status: 'reset_queued',
+      lastError: reason,
+    }, {
+      where: { id: proposal.id, revision: proposal.revision, status: { [Op.in]: ['working', 'continuing'] } },
+    });
+    if (changed !== 1) {
+      throw new WorkspaceProposalError(409, 'Proposal changed while failed workspace cleanup was being queued');
+    }
+    await proposal.reload();
+    try {
+      await this.enqueueAction(proposal, 'workspace_reset');
+    } catch (error) {
+      const cleanupError = error instanceof Error ? error.message : String(error);
+      await proposal.update({ status: 'reset_failed', lastError: `${reason}; workspace reset could not be queued: ${cleanupError}` });
+    }
+    return proposal;
+  }
+
   static async continueWork(
     proposalId: string,
     revision: number,

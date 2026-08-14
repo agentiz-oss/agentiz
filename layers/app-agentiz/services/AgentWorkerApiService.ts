@@ -409,12 +409,11 @@ export class AgentWorkerApiService {
       return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: terminal, proposalStatus: 'rejected' };
     }
     if (payload.status !== 'succeeded' && !hasReviewableChanges) {
-      await proposal.update({
-        status: 'rejected',
-        rejectedAt: new Date(),
-        reservationKey: null,
-        lastError: payload.errorMessage ?? `Workspace run ${payload.status} without changes to review`,
-      });
+      const failureReason = payload.errorMessage ?? `Workspace run ${payload.status} without changes to review`;
+      // A marker exists here: `workspaceUntouched` above is the only case where the worker failed
+      // before creating it.  Keep the reservation until a pinned reset job has removed that marker,
+      // otherwise the database says the path is free while every later worker run rejects it.
+      const cleanupProposal = await AgentWorkspaceProposalService.resetAfterUnreviewableFailure(proposal, failureReason);
       await run.update({ status: payload.status, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
       await job.update({ status: payload.status, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, payload.status);
@@ -423,7 +422,7 @@ export class AgentWorkerApiService {
         task,
         payload.errorMessage ? `Запуск ${payload.status}: ${payload.errorMessage}` : summary || `Запуск ${payload.status}`,
       );
-      return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: payload.status, proposalStatus: 'rejected' };
+      return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: payload.status, proposalStatus: cleanupProposal.status };
     }
     try {
       diff = await this.storeRunDiff(job, run, ops, payload);
