@@ -259,7 +259,7 @@ class Client:
         return self.post(f"/jobs/{job['jobId']}/secrets", job, {})
 
 
-def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None]:
+def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None, str | None]:
     runtime = stage.get("runtime")
     mode = runtime.get("mode") if isinstance(runtime, dict) else None
     agent = stage.get("agent", {})
@@ -271,7 +271,10 @@ def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None
     if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
         raise WorkerError("stage agent config requires acpCommand (or bashCommand for bash-fixture): [executable, ...args]")
     model = agent.get("model")
-    return mode, str(kind), pin_acp_command(command), (str(model) if model else None)
+    collaboration_mode = config.get("collaborationMode") if isinstance(config, dict) else None
+    if collaboration_mode is not None and collaboration_mode not in ("default", "plan"):
+        raise WorkerError("stage agent config collaborationMode must be default or plan")
+    return mode, str(kind), pin_acp_command(command), (str(model) if model else None), collaboration_mode
 
 
 def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
@@ -288,6 +291,16 @@ ACP_ADAPTER_PINS = {
 
 def pin_acp_command(command: list[str]) -> list[str]:
     """Make old role snapshots use the contract-tested adapter versions too."""
+    codex_index = next(
+        (index for index, part in enumerate(command)
+         if part == "@agentclientprotocol/codex-acp" or part.startswith("@agentclientprotocol/codex-acp@")),
+        None,
+    )
+    if codex_index is not None:
+        # Agentiz owns the form-elicitation bridge.  The upstream adapter receives the matching
+        # App Server capability through this launcher; a bare npx invocation omits it and Codex
+        # hides request_user_input from the agent.
+        return [sys.executable, "-m", "agentiz_worker.codex_acp", *command[codex_index + 1:]]
     pinned: list[str] = []
     for part in command:
         replacement = next(
@@ -354,7 +367,8 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
 
 
 def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path,
-                  on_agent_message: Any, interaction_broker: HumanInteractionBroker) -> tuple[str, str | None]:
+                  on_agent_message: Any, interaction_broker: HumanInteractionBroker,
+                  collaboration_mode: str | None = None) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -386,7 +400,7 @@ def run_openhands(mode: str, acp_command: list[str], model: str | None, message:
     try:
         if context:
             context.__enter__()
-        with install_acp_human_input(interaction_broker):
+        with install_acp_human_input(interaction_broker, collaboration_mode):
             conversation = Conversation(agent=agent, workspace=workspace, callbacks=[forward_event])
             try:
                 conversation.send_message(message)
@@ -539,7 +553,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if heartbeat_failure:
                     raise heartbeat_failure[0]
                 stage_id = stage.get("executionId")
-                mode, kind, command, model = stage_config(stage)
+                mode, kind, command, model, collaboration_mode = stage_config(stage)
                 # A container gets its own filesystem, so it would not contain the prepared
                 # directory this pipeline exists for. The server rejects the combination too; this
                 # is the guard on the side that actually owns the path.
@@ -556,12 +570,12 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if kind == "bash-fixture":
                     status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
                 else:
-                    source = "codex" if any("codex-acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
+                    source = "codex" if any("codex-acp" in part or "codex_acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
                     interaction_broker = HumanInteractionBroker(client, job, str(stage_id), source, redact)
                     status, agent_response = run_openhands(
                         mode, command, model, prompt(stage, job), settings, workdir,
                         lambda text: emit("stage.event", stage_id, text),
-                        interaction_broker,
+                        interaction_broker, collaboration_mode,
                     )
                 if heartbeat_failure:
                     raise heartbeat_failure[0]

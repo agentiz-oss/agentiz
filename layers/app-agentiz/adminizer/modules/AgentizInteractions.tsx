@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { humanInputChoices, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 
-type Field = { type?: string; title?: string; description?: string; enum?: unknown[]; default?: unknown };
+type Field = HumanInputField;
 type PendingInteraction = {
   id: string;
   runId: string;
@@ -103,14 +104,18 @@ const AgentizInteractions: React.FC = () => {
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               {Object.entries(interaction.requestedSchema?.properties ?? {}).map(([name, field]) => {
                 const value = answers[interaction.id]?.[name];
+                const choices = humanInputChoices(field);
                 return (
                   <label key={name} className="block text-xs">
                     <span className="block font-medium">{field.title ?? name}{interaction.requestedSchema.required?.includes(name) ? " *" : ""}</span>
                     {field.description && <span className="block text-muted-foreground">{field.description}</span>}
-                    {field.enum ? (
-                      <select value={String(value ?? "")} onChange={(event) => change(interaction.id, name, event.target.value)} className="mt-1 w-full rounded border px-2 py-1.5 text-sm">
+                    {choices.length > 0 ? (
+                      <select value={selectedHumanInputChoice(choices, value)} onChange={(event) => {
+                        const index = Number(event.target.value);
+                        change(interaction.id, name, Number.isInteger(index) && choices[index] ? choices[index].value : "");
+                      }} className="mt-1 w-full rounded border px-2 py-1.5 text-sm">
                         <option value="">Выберите…</option>
-                        {field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
+                        {choices.map((choice, index) => <option key={String(index)} value={String(index)}>{choice.label}</option>)}
                       </select>
                     ) : field.type === "boolean" ? (
                       <input type="checkbox" checked={Boolean(value)} onChange={(event) => change(interaction.id, name, event.target.checked)} className="mt-2" />

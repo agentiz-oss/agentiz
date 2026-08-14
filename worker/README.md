@@ -257,9 +257,23 @@ Codex `request_user_input` и Claude `AskUserQuestion` создают durable-з
 данные сервер отклоняет. При cancel или потере lease вопрос закрывается и старому attempt уже не
 может быть отвечено.
 
-Версии адаптеров являются частью проверенного контракта: worker нормализует старые незакреплённые
-snapshot-команды к `@agentclientprotocol/codex-acp@1.1.14` и
+Версии адаптеров являются частью проверенного контракта. Для Codex worker запускает закреплённый
+`@agentclientprotocol/codex-acp@1.1.14` через свой launcher: он помещает пакет в
+`$XDG_CACHE_HOME/agentiz-worker/codex-acp/1.1.14-agentiz-2`, проверяет ожидаемую сборку и добавляет
+`mcpServerOpenaiFormElicitation: true` в App Server handshake. Он также отключает ложный early
+return `codex-acp`, который считает capability формы отсутствующей, хотя Agentiz уже установил ACP
+form callback. Без этого Codex скрывает `request_user_input` или молча возвращает пустой ответ.
+Claude по-прежнему нормализуется к
 `@agentclientprotocol/claude-agent-acp@0.66.0`. Python ACP client закреплён в `pyproject.toml`.
+
+`elicitation/create` помечен в закреплённом Python ACP SDK как unstable extension. Bridge создаёт
+`ClientSideConnection` с `use_unstable_protocol=True`; иначе SDK отклоняет пришедший от Codex
+вопрос как `Method not found` ещё до вызова Agentiz API.
+
+У Codex сам `request_user_input` виден только в collaboration mode `plan`. Поэтому роль, которая
+должна задавать вопросы, явно содержит в `config` значение `"collaborationMode": "plan"`; worker
+вызывает ACP `session/set_config_option(collaboration_mode, plan)` сразу после `session/new`, до
+первого сообщения. Без этой настройки Codex честно сообщает, что инструмента нет в текущем режиме.
 
 ### Controller image
 

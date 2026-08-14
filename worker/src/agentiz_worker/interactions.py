@@ -132,7 +132,10 @@ def request_from_acp(message: str, mode: Any, kwargs: dict[str, Any]) -> HumanIn
 
 
 @contextmanager
-def install_acp_human_input(broker: HumanInteractionBroker) -> Iterator[None]:
+def install_acp_human_input(
+    broker: HumanInteractionBroker,
+    collaboration_mode: str | None = None,
+) -> Iterator[None]:
     """Expose form elicitation through OpenHands 1.40's otherwise private ACP bridge.
 
     OpenHands constructs both objects inside ``ACPAgent._start_acp_server``. Replacing those two
@@ -161,6 +164,13 @@ def install_acp_human_input(broker: HumanInteractionBroker) -> Iterator[None]:
             return None
 
     class AgentizClientSideConnection(original_connection):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            # Elicitation is an ACP unstable extension in the pinned Python SDK.  Advertising the
+            # form capability is not enough: without this router flag its incoming
+            # elicitation/create request is rejected as "Method not found".
+            kwargs["use_unstable_protocol"] = True
+            super().__init__(*args, **kwargs)
+
         async def initialize(
             self,
             protocol_version: int,
@@ -176,6 +186,18 @@ def install_acp_human_input(broker: HumanInteractionBroker) -> Iterator[None]:
                 client_info=client_info,
                 **kwargs,
             )
+
+        async def new_session(self, *args: Any, **kwargs: Any) -> Any:
+            response = await super().new_session(*args, **kwargs)
+            if collaboration_mode:
+                # Codex exposes request_user_input only in plan collaboration mode.  Set it
+                # after session/new and before OpenHands can submit the first prompt.
+                await self.set_config_option(
+                    config_id="collaboration_mode",
+                    value=collaboration_mode,
+                    session_id=response.session_id,
+                )
+            return response
 
     acp_agent_module._OpenHandsACPBridge = AgentizACPBridge
     acp_agent_module.ClientSideConnection = AgentizClientSideConnection
