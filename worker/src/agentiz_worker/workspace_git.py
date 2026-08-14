@@ -164,7 +164,17 @@ def preflight(path: Path, proposal: dict[str, Any], repository: dict[str, Any] |
             raise WorkspaceGitError("Managed workspace must start on a branch, not detached HEAD") from error
         remote_url = _verify_remote(root, remote, expected_url)
         remote_sha = _ls_remote(root, remote, base_branch)
-        if not remote_sha or remote_sha != base_sha:
+        if not remote_sha:
+            raise WorkspaceGitError(f"Local HEAD {base_sha[:12]} is not the current {remote}/{base_branch} base")
+        if remote_sha != base_sha:
+            # A declared worker workspace is maintained outside Agentiz, but a clean checkout
+            # can safely advance to its branch tip.  Never reset: a local commit that is ahead
+            # of or diverges from the remote must remain visible to its owner.
+            _git(root, ["fetch", "--no-tags", remote, f"refs/heads/{base_branch}"])
+            _git(root, ["merge", "--ff-only", "FETCH_HEAD"])
+            base_sha = _git(root, ["rev-parse", "HEAD"])
+            remote_sha = _ls_remote(root, remote, base_branch)
+        if remote_sha != base_sha:
             raise WorkspaceGitError(f"Local HEAD {base_sha[:12]} is not the current {remote}/{base_branch} base")
         marker = {"proposalId": proposal_id, "baseSha": base_sha, "baseBranch": base_branch,
                   "remote": remote, "remoteUrl": remote_url, "remoteBaseSha": remote_sha,

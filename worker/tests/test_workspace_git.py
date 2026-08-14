@@ -43,6 +43,26 @@ def test_preflight_rejects_dirty_initial_workspace(tmp_path: Path) -> None:
     assert (repo / "operator.txt").read_text() == "do not delete"
 
 
+def test_preflight_fast_forwards_clean_workspace_to_remote_base(tmp_path: Path) -> None:
+    repo, remote = fixture(tmp_path)
+    upstream = tmp_path / "upstream"
+    git(tmp_path, "clone", str(remote), str(upstream))
+    git(upstream, "config", "user.name", "Agentiz Test")
+    git(upstream, "config", "user.email", "agentiz@example.test")
+    (upstream / "README.md").write_text("base\nremote change\n")
+    git(upstream, "add", "README.md")
+    git(upstream, "commit", "-m", "advance remote")
+    git(upstream, "push", "origin", "main")
+
+    prop, repository = proposal(repo)
+    root, marker = preflight(repo, prop, repository)
+
+    assert root == repo.resolve()
+    assert marker["baseSha"] == git(remote, "rev-parse", "refs/heads/main")
+    assert git(repo, "rev-parse", "HEAD") == marker["baseSha"]
+    assert (repo / "README.md").read_text() == "base\nremote change\n"
+
+
 def test_new_branch_push_restores_original_branch(tmp_path: Path) -> None:
     repo, remote = fixture(tmp_path)
     prop, repository = proposal(repo)
