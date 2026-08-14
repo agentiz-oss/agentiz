@@ -48,11 +48,20 @@ class HumanInteractionBrokerTest(unittest.TestCase):
                 "    if (!clientSupportsFormElicitation(this.clientCapabilities)) {\n"
                 "      return { answers: {} };\n"
                 "    }\n"
+                "    if (params.autoResolutionMs === null) {\n"
+                "      return await this.connection.request(\n"
+                "        methods.client.elicitation.create,\n"
+                "        request,\n"
+                "        this.requestOptions()\n"
+                "      );\n"
+                "    }\n"
             )
             patch_openai_form_elicitation(entry)
             patched = entry.read_text()
             self.assertIn("mcpServerOpenaiFormElicitation: true", patched)
             self.assertNotIn("clientSupportsFormElicitation(this.clientCapabilities)", patched)
+            self.assertNotIn("if (params.autoResolutionMs === null)", patched)
+            self.assertIn("Agentiz questions must remain open until the person responds", patched)
             patch_openai_form_elicitation(entry)
 
     def test_codex_adapter_patch_refuses_unknown_build(self) -> None:

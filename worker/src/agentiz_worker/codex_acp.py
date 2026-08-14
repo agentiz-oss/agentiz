@@ -20,13 +20,28 @@ import tempfile
 
 CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp"
 CODEX_ACP_VERSION = "1.1.14"
-PATCH_REVISION = 2
+PATCH_REVISION = 3
 PATCH_MARKER = ".agentiz-openai-form-elicitation.json"
 
 _NEEDLE = "experimentalApi: true,\n        requestAttestation: false"
 _REPLACEMENT = "experimentalApi: true,\n        requestAttestation: false,\n        mcpServerOpenaiFormElicitation: true"
 _USER_INPUT_GUARD = "    if (!clientSupportsFormElicitation(this.clientCapabilities)) {\n      return { answers: {} };\n    }"
 _USER_INPUT_REPLACEMENT = "    // Agentiz owns the ACP form client and installs its callback before this session starts."
+_AUTO_RESOLUTION_GUARD = """    if (params.autoResolutionMs === null) {
+      return await this.connection.request(
+        methods.client.elicitation.create,
+        request,
+        this.requestOptions()
+      );
+    }"""
+_AUTO_RESOLUTION_REPLACEMENT = """    // Agentiz questions must remain open until the person responds.  Codex's default
+    // auto-resolution timer is suitable for interactive terminals, but would otherwise let the
+    // ACP turn finish while Agentiz is still waiting for the answer.
+    return await this.connection.request(
+      methods.client.elicitation.create,
+      request,
+      this.requestOptions()
+    );"""
 
 
 class CodexAcpPatchError(RuntimeError):
@@ -36,14 +51,20 @@ class CodexAcpPatchError(RuntimeError):
 def patch_openai_form_elicitation(adapter_entry: Path) -> None:
     """Add Codex's form-extension opt-in, failing closed on an unknown adapter build."""
     source = adapter_entry.read_text(encoding="utf-8")
-    if _REPLACEMENT in source and _USER_INPUT_REPLACEMENT in source:
+    if _REPLACEMENT in source and _USER_INPUT_REPLACEMENT in source and _AUTO_RESOLUTION_REPLACEMENT in source:
         return
-    if source.count(_NEEDLE) != 1 or source.count(_USER_INPUT_GUARD) != 1:
+    if (
+        source.count(_NEEDLE) != 1
+        or source.count(_USER_INPUT_GUARD) != 1
+        or source.count(_AUTO_RESOLUTION_GUARD) != 1
+    ):
         raise CodexAcpPatchError(
             f"{adapter_entry} is not the expected {CODEX_ACP_PACKAGE}@{CODEX_ACP_VERSION} build; refusing to patch it"
         )
     adapter_entry.write_text(
-        source.replace(_NEEDLE, _REPLACEMENT, 1).replace(_USER_INPUT_GUARD, _USER_INPUT_REPLACEMENT, 1),
+        source.replace(_NEEDLE, _REPLACEMENT, 1)
+        .replace(_USER_INPUT_GUARD, _USER_INPUT_REPLACEMENT, 1)
+        .replace(_AUTO_RESOLUTION_GUARD, _AUTO_RESOLUTION_REPLACEMENT, 1),
         encoding="utf-8",
     )
 
