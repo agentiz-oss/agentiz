@@ -13,6 +13,7 @@ export default defineConfig({
         AgentizPipelines: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizPipelines.tsx'),
         AgentizWorkers: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizWorkers.tsx'),
         AgentizRunDetail: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizRunDetail.tsx'),
+        AgentizRuns: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizRuns.tsx'),
         AgentizInteractions: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizInteractions.tsx'),
         AgentizRepositories: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizRepositories.tsx'),
         AgentizGitlab: path.resolve(__dirname, 'layers/app-agentiz-gitlab-integration/adminizer/modules/AgentizGitlab.tsx'),

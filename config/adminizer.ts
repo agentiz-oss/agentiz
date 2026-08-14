@@ -53,6 +53,14 @@ export const adminizerConfig: AdminizerConfig = {
                 section: 'Agentiz',
             },
             {
+                id: 'agentiz-runs',
+                title: 'Запуски',
+                link: '/dashboard/agentiz-runs',
+                type: 'self',
+                icon: 'directions_run',
+                section: 'Agentiz',
+            },
+            {
                 id: 'agentiz-interactions',
                 title: 'Нужен ответ',
                 link: '/dashboard/agentiz-interactions',
