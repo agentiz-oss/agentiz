@@ -9,6 +9,7 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentPipelineService } from '../services/AgentPipelineService';
 import { AgentRunInteractionService, InteractionError, type InteractionActor } from '../services/AgentRunInteractionService';
 import { AgentWorkspaceProposalService, WorkspaceProposalError } from '../services/AgentWorkspaceProposalService';
+import { adminizerModuleUrl } from './adminizerModuleUrl';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -78,7 +79,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
 
       return req.Inertia.render({
         component: 'module',
-        props: { moduleComponent: '/dashboard/modules/AgentizRunDetail.js' },
+        props: { moduleComponent: adminizerModuleUrl('AgentizRunDetail') },
       });
     },
   },
@@ -178,7 +179,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         }
         return req.Inertia.render({
           component: 'module',
-          props: { moduleComponent: '/dashboard/modules/AgentizInteractions.js' },
+          props: { moduleComponent: adminizerModuleUrl('AgentizInteractions') },
         });
       } catch (error) {
         return routeError(res, error);
