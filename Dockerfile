@@ -14,7 +14,7 @@ ARG GITHUB_NPM_TOKEN=""
 ENV NODE_OPTIONS=--network-family-autoselection-attempt-timeout=5000
 
 RUN corepack enable && corepack prepare yarn@4.14.1 --activate
-COPY package.json ./
+COPY package.json yarn.lock ./
 # patches referenced from package.json > resolutions, must be in place before install
 COPY .yarn/patches ./.yarn/patches
 RUN set -eu; \
@@ -44,7 +44,7 @@ COPY . .
 COPY --from=deps /app/package.json ./package.json
 COPY --from=deps /app/.yarnrc.yml ./.yarnrc.yml
 
-# Build adminizer UI modules consumed from /dashboard/modules/*
+# Build adminizer UI modules consumed from /dashboard/modules/*.
 RUN npm run build:vite \
     && test -f /app/dist/modules/AgentizHome.js
 
@@ -80,8 +80,18 @@ ENV NODE_ENV=${NODE_ENV}
 ENV GIT_SHA=${GIT_SHA}
 ENV BUILD_TIME=${BUILD_TIME}
 
-COPY --from=builder /app .
+# Source comes from the build context (which excludes node_modules); take only the generated UI
+# from builder. The final image therefore receives exactly one dependency graph, below.
+COPY . .
+COPY --from=builder /app/dist ./dist
 COPY --from=focus_production /app/node_modules ./node_modules
+
+# Fail the build, not the dashboard, if that ever happens again.
+RUN node -e "const fs=require('fs'),p='/app/node_modules/adminizer/assets';\
+const app=fs.readFileSync(p+'/app.js','utf8');\
+const missing=[...new Set(app.match(/\.\/[A-Za-z0-9_-]+\.js/g)||[])].map(m=>m.slice(2)).filter(f=>!fs.existsSync(p+'/'+f));\
+if(missing.length){console.error('adminizer assets/app.js references missing chunks: '+missing.join(', '));process.exit(1);}\
+console.log('adminizer assets: '+'app.js chunks resolved');"
 
 RUN chmod +x /app/bootstrap.sh
 
