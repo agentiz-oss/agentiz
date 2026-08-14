@@ -385,12 +385,6 @@ export class AgentTaskService {
     return { ...comment.toJSON(), triggeredRunId: run?.id ?? null };
   }
 
-  static async deleteComment(commentId: string): Promise<void> {
-    const comment = await AgentTaskComment.findByPk(commentId);
-    if (!comment) throw new TaskServiceError(404, 'Comment not found');
-    await comment.destroy();
-  }
-
   /**
    * The two comment-capable connectors — a generic task manager and a git provider — expose the
    * same two methods, so callers that only comment do not care which one they got.

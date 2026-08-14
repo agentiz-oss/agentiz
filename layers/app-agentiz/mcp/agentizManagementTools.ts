@@ -106,14 +106,15 @@ function projectWhere(entity: ManagedEntity, projectId: string | undefined): Par
 /**
  * Controlled CRUD for user-managed Agentiz business records. Run history, queue leases and worker
  * telemetry deliberately remain immutable through this tool: their lifecycle is owned by workers
- * and the existing run/cancel actions.
+ * and the existing run/cancel actions. Task comments are retained as an immutable discussion
+ * history and cannot be deleted.
  */
 export const manageBusinessDataTool: IMcpTool = {
   name: 'agentiz.manage',
   group: 'agentiz-actions',
   groupDescription: 'State-changing Agentiz operations. Inspect the target first and call deliberately.',
   shortDescription: 'Reads and manages Agentiz projects, roles, pipeline specs, task sources, tasks and comments.',
-  description: `Controlled CRUD for user-managed Agentiz business records. entity selects the record type; delete requires confirm=true. Secrets can be set but are always masked in returned records. Before writing a pipelineSpec, call ${PIPELINE_SPEC_SCHEMA_TOOL} — its "spec" field is a validated JSON document and a wrong shape is rejected.`,
+  description: `Controlled CRUD for user-managed Agentiz business records. entity selects the record type; delete requires confirm=true, except taskComment records, which are retained and cannot be deleted. Secrets can be set but are always masked in returned records. Before writing a pipelineSpec, call ${PIPELINE_SPEC_SCHEMA_TOOL} — its "spec" field is a validated JSON document and a wrong shape is rejected.`,
   mode: 'protected',
   inputSchema: {
     type: 'object',
@@ -132,6 +133,7 @@ export const manageBusinessDataTool: IMcpTool = {
     const entity = entityParam(payload);
     const operation = requiredString(payload, 'operation') as ManagedOperation;
     if (!['list', 'get', 'create', 'update', 'delete'].includes(operation)) throw new Error(`Unsupported operation: ${operation}`);
+    if (operation === 'delete' && entity === 'taskComment') throw new Error('Task comments cannot be deleted');
     const definition = definitions[entity];
 
     if (operation === 'list') {

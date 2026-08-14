@@ -868,17 +868,6 @@ const AgentizTasks: React.FC = () => {
                               отправить в трекер
                             </button>
                           )}
-                          <button
-                            onClick={async () => {
-                              if (!window.confirm("Удалить комментарий?")) return;
-                              const r = await post({ _method: "deleteComment", commentId: comment.id });
-                              if (r) await loadDetails(details.task.id);
-                            }}
-                            disabled={busy}
-                            className="text-xs underline disabled:opacity-50"
-                          >
-                            удалить
-                          </button>
                         </div>
                       </li>
                     );

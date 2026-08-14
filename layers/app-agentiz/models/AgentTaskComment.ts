@@ -20,6 +20,7 @@ import type { AgentTaskCommentAuthorKind, AgentTaskCommentOrigin } from '../type
   model: 'AgentTaskComment',
   title: 'Task Comments',
   icon: 'forum',
+  remove: false,
   navbar: {
     visible: false,
     section: 'Agentiz',

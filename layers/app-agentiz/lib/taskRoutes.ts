@@ -181,13 +181,6 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
           });
         }
 
-        if (method === 'deleteComment') {
-          const commentId = str(req.body?.commentId);
-          if (!commentId) return res.status(400).json({ message: 'commentId is required' });
-          await AgentTaskService.deleteComment(commentId);
-          return res.json({ data: { deleted: true } });
-        }
-
         if (method === 'publishComment') {
           const commentId = str(req.body?.commentId);
           if (!commentId) return res.status(400).json({ message: 'commentId is required' });
