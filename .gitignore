@@ -79,3 +79,4 @@ Thumbs.db
 .idea/
 *.swp
 *~
+.playwright-cli
