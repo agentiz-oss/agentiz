@@ -5,6 +5,7 @@ import { bearerToken, verifyMobileToken } from './mobileAuth';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
 import { MobileInteractionService } from '../services/MobileInteractionService';
 import { MobileProjectService } from '../services/MobileProjectService';
+import { MobileRunService } from '../services/MobileRunService';
 import { MobileTaskService } from '../services/MobileTaskService';
 import type { AgentRunInteractionAction } from '../../app-agentiz/types/agentiz';
 
@@ -147,6 +148,19 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   router.post('/tasks/:id/run', requireAuth, async (req: AuthedRequest, res) => {
     try {
       res.status(202).json({ data: await MobileTaskService.run(req.params.id, ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * What is running right now across every project the caller owns, plus the last finished runs.
+   * The per-task history below answers "how did this task go"; this answers "is anything going on",
+   * which the app otherwise could not ask without opening every task in turn.
+   */
+  router.get('/runs', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileRunService.board(ownerOf(req)) });
     } catch (error) {
       errorResponse(res, error);
     }

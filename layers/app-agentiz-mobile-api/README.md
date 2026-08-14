@@ -23,6 +23,7 @@ session cookies.
 | GET    | `/auth/me`       | Bearer JWT  | The current user.                                   |
 | GET    | `/projects`      | Bearer JWT  | Projects owned by the current user (secrets masked).|
 | GET    | `/projects/:id`  | Bearer JWT  | One owned project, or 404.                           |
+| GET    | `/runs`          | Bearer JWT  | Runs in flight across all owned projects, plus recent ones. |
 | GET    | `/tasks/:id/runs` | Bearer JWT | Compact history of a task's pipeline runs.            |
 | GET    | `/tasks/:taskId/runs/:runId` | Bearer JWT | Full result, stages and log of one run.       |
 | POST   | `/tasks/:taskId/runs/:runId/cancel` | Bearer JWT | Requests cancellation of a run.             |
