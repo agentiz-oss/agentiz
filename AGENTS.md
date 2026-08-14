@@ -126,6 +126,26 @@ A dirty workspace is not necessarily junk: a run that succeeded while git delive
 its whole output uncommitted there. Read `agentiz.runs` for the last `succeeded` run on that path
 before cleaning anything.
 
+### A workspace still held by an earlier proposal
+
+`Workspace is reserved by proposal <id>` (no workspace name in the text — the quoted variant comes
+from the server, this one from the worker's on-disk marker) names a proposal from a **previous** run
+on that directory, never the run you are reading: that run's own proposal is already `rejected`,
+which is why the message reads as though a resolved proposal were blocking. Find the actual holder
+and release it, both through MCP:
+
+```bash
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"holding":true}' https://agentiz.m42.cx/mcp/call/agentiz.proposals
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"action":"reject","proposalId":"<id>"}' https://agentiz.m42.cx/mcp/call/agentiz.manageProposal
+```
+
+`reject` queues `workspace_reset` on the owning worker; the reservation and the marker are dropped
+only when that job reports success, so watch `agentiz.jobs`. `approvable:false` in the listing means
+approve is closed for good on that revision — a run that failed before changing anything leaves an
+empty diff, and reject is then the only exit.
+
 Before debugging code, check that prod is actually running the code you're reading — these drift
 independently and a fix pushed after the failed run explains the failure without any bug:
 
@@ -148,9 +168,9 @@ both SHAs match the code you're reading is a re-run (`agentiz-actions.runTask`) 
 - `GET /mcp` returns the compact tool catalogue (groups + tool list). Without a valid key it only
   shows the public `general` group (just `health`). With a valid key it also shows `agentiz`
   (read-only: overview, projects, tasks, runs, runDetails, configuration, pipelineSpecSchema,
-  workers, workerDetails, jobs) and `agentiz-actions` (state-changing: sync, runTask, cancelRun,
-  manage, manageWorker), plus more `general` tools (adminizer.user, system.listApps,
-  system.toggleApp).
+  workers, workerDetails, jobs, proposals) and `agentiz-actions` (state-changing: sync, runTask,
+  cancelRun, manage, manageWorker, manageProposal), plus more `general` tools (adminizer.user,
+  system.listApps, system.toggleApp).
 - `PipelineSpec.spec` is validated against `layers/app-agentiz/schemas/pipeline-spec.schema.json`.
   Anything writing a spec — the MCP `agentiz.manage` tool, Adminizer's generic CRUD, the admin
   assistant's `create_model_record` skill — reads that shape through `agentiz.pipelineSpecSchema`,

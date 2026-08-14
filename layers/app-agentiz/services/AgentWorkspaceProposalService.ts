@@ -28,6 +28,18 @@ export class AgentWorkspaceProposalService {
     return { proposal, revisions };
   }
 
+  /**
+   * Whether a reviewed revision is complete enough to be committed and pushed.
+   *
+   * A run that failed before touching anything still leaves a revision behind — empty patch, zero
+   * operations — and approving that would invent an approval nobody gave. Exposed because callers
+   * outside the review UI (the MCP proposal tools) have to be able to say *why* approve is closed
+   * without restating the rule and letting the two drift apart.
+   */
+  static isApprovableDiff(diff: AgentRunDiff | null): boolean {
+    return !!diff && !!diff.treeSha && !!diff.patchSha256 && !diff.truncated && (diff.ops?.length ?? 0) > 0;
+  }
+
   static async approve(
     proposalId: string,
     revision: number,
@@ -40,7 +52,7 @@ export class AgentWorkspaceProposalService {
       throw new WorkspaceProposalError(409, `Proposal cannot be approved while it is ${proposal.status}`);
     }
     const diff = await AgentRunDiff.findOne({ where: { proposalId, revision } });
-    if (!diff || !diff.treeSha || !diff.patchSha256 || diff.truncated || (diff.ops?.length ?? 0) === 0) {
+    if (!this.isApprovableDiff(diff)) {
       throw new WorkspaceProposalError(409, 'The complete reviewed diff is unavailable; commit/push is blocked');
     }
     const branch = edits.targetBranch?.trim() || proposal.targetBranch;

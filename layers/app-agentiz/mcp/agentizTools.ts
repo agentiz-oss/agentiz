@@ -14,6 +14,7 @@ import { AgentWorkerApiService } from '../services/AgentWorkerApiService';
 import { AgentWorkerQueueService } from '../services/AgentWorkerQueueService';
 import { pipelineSpecSchema, PIPELINE_SPEC_RULES } from '../services/PipelineSpecValidation';
 import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
+import { agentizProposalMcpTools } from './agentizProposalTools';
 
 type Params = Record<string, unknown>;
 
@@ -439,4 +440,5 @@ export const agentizMcpTools: IMcpTool[] = [
   overviewTool, projectsTool, tasksTool, runsTool, runDetailsTool, configurationTool,
   pipelineSpecSchemaTool, workersTool, workerDetailsTool, jobsTool,
   syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
+  ...agentizProposalMcpTools,
 ];
