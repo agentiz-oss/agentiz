@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { DiffViewer } from "./components/diff-viewer";
 
 /**
  * One pipeline run in full: its stages, its log and — when it changed code — the diff, with a
@@ -490,9 +491,9 @@ const AgentizRunDetail: React.FC = () => {
                   </div>
                 )}
                 {displayedDiff.patch && (
-                  <pre className="mt-2 max-h-96 overflow-auto rounded border p-2 text-xs" style={{ backgroundColor: "#f8fafc" }}>
-                    {displayedDiff.patch}
-                  </pre>
+                  <div className="mt-3">
+                    <DiffViewer patch={displayedDiff.patch} persistKey="agentiz.diffViewMode" />
+                  </div>
                 )}
                 {/* Only offered while the change is still held: applying twice is refused by the
                     server, and a button that always fails is worse than no button. */}
