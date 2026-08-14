@@ -134,6 +134,41 @@ describe('AgentRunInteractionService', () => {
     expect(await AgentRunInteraction.count()).toBe(1);
   });
 
+  it('accepts Codex Other answers while preserving their content for the adapter', async () => {
+    const interaction = await AgentRunInteractionService.create(job, {
+      ...request('request-other'),
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          next_action: {
+            type: 'string',
+            oneOf: [{ const: 'report' }, { const: 'repeat' }],
+            _meta: { codex: { isOther: true } },
+          },
+          next_action__other: {
+            type: 'string',
+            _meta: { codex: { questionId: 'next_action', isOtherAnswer: true } },
+          },
+        },
+      },
+    });
+
+    await expect(AgentRunInteractionService.answer(
+      interaction.id,
+      'accept',
+      { next_action: '' },
+      { id: 7, name: 'owner' },
+    )).rejects.toMatchObject({ status: 400 });
+
+    const answered = await AgentRunInteractionService.answer(
+      interaction.id,
+      'accept',
+      { next_action: '', next_action__other: 'Check disk space too' },
+      { id: 7, name: 'owner' },
+    );
+    expect(answered.responseContent).toEqual({ next_action: '', next_action__other: 'Check disk space too' });
+  });
+
   it('keeps the run waiting until every question is delivered and orphans an expired attempt', async () => {
     const first = await AgentRunInteractionService.create(job, request('request-1'));
     const second = await AgentRunInteractionService.create(job, request('request-2'));

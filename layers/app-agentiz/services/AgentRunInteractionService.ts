@@ -51,6 +51,32 @@ function plainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Codex represents an "Other" answer as a sibling `<question>__other` field, but leaves the
+ * option field's `oneOf` in the JSON Schema.  Its adapter intentionally gives the sibling
+ * priority.  Omit the option field from validation in that one case: it is optional in the Codex
+ * schema and the complete, unmodified content is still sent back to the adapter afterwards.
+ */
+function contentForValidation(schema: Record<string, unknown>, content: Record<string, unknown>): Record<string, unknown> {
+  const properties = plainObject(schema.properties) ? schema.properties : {};
+  const validationContent = { ...content };
+  for (const [otherName, definition] of Object.entries(properties)) {
+    if (!plainObject(definition) || !plainObject(definition._meta) || !plainObject(definition._meta.codex)) continue;
+    const codex = definition._meta.codex;
+    const questionId = typeof codex.questionId === 'string' ? codex.questionId : null;
+    if (codex.isOtherAnswer !== true || !questionId) continue;
+    const otherAnswer = content[otherName];
+    const question = properties[questionId];
+    const questionMeta = plainObject(question) && plainObject(question._meta) && plainObject(question._meta.codex)
+      ? question._meta.codex
+      : null;
+    if (typeof otherAnswer === 'string' && otherAnswer.trim() && questionMeta?.isOther === true) {
+      delete validationContent[questionId];
+    }
+  }
+  return validationContent;
+}
+
 function validateRequest(input: HumanInputRequest): void {
   if (!input.externalRequestId || input.externalRequestId.length > 256) {
     throw new InteractionError(400, 'externalRequestId is required and must be at most 256 characters');
@@ -199,7 +225,7 @@ export class AgentRunInteractionService {
       if (row.status !== 'pending') throw new InteractionError(409, `Interaction is already ${row.status}`);
       if (action === 'accept') {
         const validate = ajv.compile(row.requestedSchema);
-        if (!validate(content)) {
+        if (!validate(contentForValidation(row.requestedSchema, content!))) {
           const detail = ajv.errorsText(validate.errors, { separator: '; ' });
           throw new InteractionError(400, `Response does not match requestedSchema: ${detail}`);
         }
