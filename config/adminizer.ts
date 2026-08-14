@@ -53,6 +53,14 @@ export const adminizerConfig: AdminizerConfig = {
                 section: 'Agentiz',
             },
             {
+                id: 'agentiz-interactions',
+                title: 'Нужен ответ',
+                link: '/dashboard/agentiz-interactions',
+                type: 'self',
+                icon: 'live_help',
+                section: 'Agentiz',
+            },
+            {
                 id: 'agentiz-gitlab',
                 title: 'GitLab-интеграции',
                 link: '/dashboard/agentiz-gitlab',
