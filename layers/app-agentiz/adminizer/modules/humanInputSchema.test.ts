@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { humanInputChoices, selectedHumanInputChoice } from './humanInputSchema';
+import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice } from './humanInputSchema';
 
 describe('humanInputChoices', () => {
   it('uses a oneOf title for display but preserves its const for the agent response', () => {
@@ -21,5 +21,15 @@ describe('humanInputChoices', () => {
     const choices = humanInputChoices({ enum: [1, 2] });
     expect(choices[1]).toMatchObject({ value: 2, label: '2' });
     expect(selectedHumanInputChoice(choices, 2)).toBe('1');
+  });
+
+  it('requires a oneOf choice unless its paired Other field has an answer', () => {
+    const properties = {
+      cpu_next_step: { title: 'Дальше', oneOf: [{ const: 'report', title: 'Отчёт' }] },
+      cpu_next_step__other: { type: 'string' },
+    };
+    expect(missingHumanInputChoice(properties, { cpu_next_step: '' })).toBe('Дальше');
+    expect(missingHumanInputChoice(properties, { cpu_next_step: 'report' })).toBeNull();
+    expect(missingHumanInputChoice(properties, { cpu_next_step: '', cpu_next_step__other: 'Свой вариант' })).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
-import { humanInputChoices, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
+import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 import { DiffViewer } from "./components/diff-viewer";
 
 /**
@@ -183,6 +183,12 @@ const AgentizRunDetail: React.FC = () => {
   }, [runId, load]);
 
   const answerInteraction = useCallback(async (interaction: RunInteraction, action: "accept" | "decline" | "cancel") => {
+    const content = answers[interaction.id] ?? {};
+    const missingChoice = action === "accept" ? missingHumanInputChoice(interaction.requestedSchema.properties, content) : null;
+    if (missingChoice) {
+      setError(`Выберите вариант для поля «${missingChoice}» или заполните поле Other.`);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -190,7 +196,7 @@ const AgentizRunDetail: React.FC = () => {
         _method: "answerInteraction",
         interactionId: interaction.id,
         action,
-        content: action === "accept" ? (answers[interaction.id] ?? {}) : null,
+        content: action === "accept" ? content : null,
       });
       await load(runId);
     } catch (e: any) {

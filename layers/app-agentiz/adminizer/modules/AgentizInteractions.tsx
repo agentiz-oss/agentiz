@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
-import { humanInputChoices, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
+import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 
 type Field = HumanInputField;
 type PendingInteraction = {
@@ -54,6 +54,12 @@ const AgentizInteractions: React.FC = () => {
   }, [load]);
 
   const answer = useCallback(async (interaction: PendingInteraction, action: "accept" | "decline" | "cancel") => {
+    const content = answers[interaction.id] ?? {};
+    const missingChoice = action === "accept" ? missingHumanInputChoice(interaction.requestedSchema.properties, content) : null;
+    if (missingChoice) {
+      setError(`Выберите вариант для поля «${missingChoice}» или заполните поле Other.`);
+      return;
+    }
     setBusy(interaction.id);
     setError(null);
     try {
@@ -61,7 +67,7 @@ const AgentizInteractions: React.FC = () => {
         _method: "answerInteraction",
         interactionId: interaction.id,
         action,
-        content: action === "accept" ? answers[interaction.id] ?? {} : null,
+        content: action === "accept" ? content : null,
       });
       await load();
     } catch (e: any) {

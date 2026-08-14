@@ -39,3 +39,22 @@ export function selectedHumanInputChoice(choices: HumanInputChoice[], value: unk
   const index = choices.findIndex((choice) => Object.is(choice.value, value));
   return index < 0 ? '' : String(index);
 }
+
+/**
+ * ACP/Codex marks choice questions optional in JSON Schema so a sibling `__other` field can be
+ * supplied instead.  A plain form submit with neither is not a meaningful answer, though, and
+ * would submit an empty string that fails the choice's `oneOf` validation on the server.
+ */
+export function missingHumanInputChoice(
+  properties: Record<string, HumanInputField> | undefined,
+  content: Record<string, unknown>,
+): string | null {
+  for (const [name, field] of Object.entries(properties ?? {})) {
+    const choices = humanInputChoices(field);
+    if (choices.length === 0 || selectedHumanInputChoice(choices, content[name]) !== '') continue;
+    const other = content[`${name}__other`];
+    if (typeof other === 'string' && other.trim()) continue;
+    return field.title ?? name;
+  }
+  return null;
+}
