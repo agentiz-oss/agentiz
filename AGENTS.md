@@ -73,13 +73,17 @@
   it serves devices registered with a raw APNs token, which only Apple can accept. Every provider
   answers the same `PushResult`, and only `reason: 'invalid-token'` deletes a device row.
 - Push providers read their configuration through `pushSetting()`
-  (`layers/app-agentiz-mobile-api/lib/push/settings.ts`), never `process.env` directly: a row in
-  `agentiz_mobile_push_settings` overrides the environment variable of the same name, which is how a
-  credential is installed over MCP (`agentiz.managePushSettings`) on a deployment whose `.env` is
-  behind a deploy. A write validates, then calls `resetPushProviders()` — the cached provider pair is
-  what makes a change take effect without a restart, and it lives on a `Symbol.for` global for the
-  same reason every other registry here does. Stored values are write-only: `describe()` masks, and
-  nothing anywhere returns a stored credential.
+  (`layers/app-agentiz-mobile-api/lib/push/settings.ts`), never `process.env` directly. The values are
+  **app-manager settings** — slots declared in the layer's `settings` collection, stored in the
+  platform's `settings` table — not a table of this layer's own, so a credential can be installed over
+  MCP (`agentiz.managePushSettings`) on a deployment whose `.env` is behind a deploy. Two consequences
+  of using that mechanism: `process.env` **wins** over a stored value (`SettingStorage.get` checks it
+  first), which is why every read reports its `source` and a shadowed write comes back as a warning
+  instead of doing nothing visible; and app-manager logs `Setting saved in database: <key>: <value>`
+  on save, so a stored credential reaches the application log. A write validates, then calls
+  `resetPushProviders()` — the cached provider pair is what makes a change take effect without a
+  restart, and it lives on a `Symbol.for` global for the same reason every other registry here does.
+  Stored values are write-only through this layer: `describe()` masks and nothing returns a credential.
 - Agentiz sends into Adminizer's own notification subsystem (the bell) through one seam,
   `layers/app-agentiz/lib/notifications/dashboardNotifications.ts`, under its own class `agentiz`
   (permission token `notification-agentiz`, registered by adminizer's base service). Two things about

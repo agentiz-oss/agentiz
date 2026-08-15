@@ -4,11 +4,10 @@ import type { IMcpTool } from '@nodeknit/app-mcp';
 import { createMobileApiRouter, MOBILE_API_BASE } from './lib/mobileApiRouter';
 import { createMobileAssistantWebviewRouter } from './lib/mobileAssistantWebviewRouter';
 import { closePushProviders, pushProviderSummary } from './lib/push/providers';
-import { clearPushSettingOverlay } from './lib/push/settings';
+import { forgetPushSettingStorage, pushSettingSlots, usePushSettingStorage } from './lib/push/settings';
 import { pushSettingsMcpTools } from './mcp/pushSettingsTools';
 import { migrations } from './migrations';
 import { MobileDevice } from './models/MobileDevice';
-import { MobilePushSetting } from './models/MobilePushSetting';
 import { MobilePushService } from './services/MobilePushService';
 import { PushSettingsService } from './services/PushSettingsService';
 import type { InteractionNotifier } from '../app-agentiz/lib/interactionNotifiers';
@@ -33,11 +32,22 @@ export class AppAgentizMobileApi extends AbstractApp {
   }
 
   /**
-   * The two tables this layer owns: the push tokens of installed apps, and the push credentials
-   * themselves. Everything else it serves still belongs to app-agentiz or app-adminizer.
+   * The one table this layer owns: the push tokens of installed apps. Everything else it serves
+   * still belongs to app-agentiz, app-adminizer or — for the push credentials below — app-manager.
    */
   @Collection
-  models: any[] = [MobileDevice, MobilePushSetting];
+  models: any[] = [MobileDevice];
+
+  /**
+   * Push credentials and switches, as app-manager settings: they live in the platform's `settings`
+   * table and can be changed without a deploy. Declaring the slots is what makes them storable at
+   * all — app-manager refuses a key with no registered slot.
+   *
+   * The environment keeps priority over a stored value (app-manager's rule), which
+   * `agentiz.pushSettings` reports per setting so a shadowed one is visible rather than puzzling.
+   */
+  @Collection
+  settings: any[] = pushSettingSlots;
 
   @Collection
   migrations: any[] = migrations.umzug;
@@ -84,9 +94,10 @@ export class AppAgentizMobileApi extends AbstractApp {
       `${MOBILE_API_BASE}/assistant`,
       createMobileAssistantWebviewRouter(this.appManager.sequelize, adminizerApp.adminizer),
     );
-    // Before anything reports on push: settings stored in the database override the environment,
-    // and until they are loaded the summary below would describe the wrong configuration.
-    await PushSettingsService.load();
+    // The settings collection has been processed by now, so the slots already carry whatever was
+    // stored; this hands the providers the storage to read them from, and the writer its model.
+    usePushSettingStorage(this.appManager);
+    PushSettingsService.use(this.appManager);
 
     console.log(`[AppAgentizMobileApi] mobile API mounted at ${MOBILE_API_BASE}`);
     console.log(`[AppAgentizMobileApi] mobile assistant WebView mounted at ${MOBILE_API_BASE}/assistant`);
@@ -100,7 +111,8 @@ export class AppAgentizMobileApi extends AbstractApp {
   async unmount(): Promise<void> {
     // The APNs provider keeps one long-lived HTTP/2 session to Apple; nothing else to tear down.
     closePushProviders();
-    clearPushSettingOverlay();
+    forgetPushSettingStorage();
+    PushSettingsService.forget();
   }
 }
 

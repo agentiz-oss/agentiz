@@ -1,27 +1,41 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { vi } from 'vitest';
-vi.mock('@nodeknit/app-adminizer', () => ({
-  AdminizerField: (): PropertyDecorator => (_target: object, _key: string | symbol): void => {},
-  AdminizerModel: (): ClassDecorator => (_target: Function): void => {},
-}));
-
 import { Sequelize } from 'sequelize-typescript';
-import { MobilePushSetting } from '../models/MobilePushSetting';
-import { clearPushSettingOverlay, pushSetting } from '../lib/push/settings';
+import { SettingStorage } from '@nodeknit/app-manager/dist/lib/SettingStorage.js';
+import { DataTypes, Model } from 'sequelize';
+import {
+  forgetPushSettingStorage,
+  PUSH_SETTING_SLOTS,
+  pushSetting,
+  pushSettingSlots,
+  usePushSettingStorage,
+} from '../lib/push/settings';
 import { pushProviders, resetPushProviders } from '../lib/push/providers';
 import { PushSettingsService } from './PushSettingsService';
 
 /**
- * Installing a push credential without a deploy. Two properties matter more than the mechanics:
- * a value that cannot work is refused rather than stored, and a value that is stored never comes
- * back out — the table holds keys that can notify every install of the app.
+ * Installing a push credential without a deploy. Three properties matter more than the mechanics:
+ * a value that cannot work is refused rather than stored, a value that is stored never comes back
+ * out, and a value the environment overrides is *reported* — app-manager gives `.env` priority, so
+ * a stored setting that changes nothing is the failure mode to make visible.
+ *
+ * The storage is app-manager's own (SettingStorage plus the `settings` table), not a stand-in: the
+ * priority rule under test is theirs, and a stub would be free to get it wrong.
  */
 describe('PushSettingsService', () => {
   let sequelize: Sequelize;
+  let appManager: any;
   const env = { ...process.env };
 
+  /** app-manager's Setting model, minus the hooks that need a whole AppManager to fire. */
+  class Setting extends Model {}
+
   beforeAll(async () => {
-    sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: [MobilePushSetting] });
+    sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false });
+    Setting.init(
+      { key: { type: DataTypes.STRING, primaryKey: true }, value: { type: DataTypes.JSON } },
+      { sequelize, modelName: 'Setting', tableName: 'settings', timestamps: false },
+    );
+    await sequelize.sync({ force: true });
   });
 
   afterAll(async () => {
@@ -29,19 +43,28 @@ describe('PushSettingsService', () => {
   });
 
   beforeEach(async () => {
-    await sequelize.sync({ force: true });
-    clearPushSettingOverlay();
-    resetPushProviders();
+    await Setting.destroy({ where: {} });
+    // A fresh storage per test, with this layer's slots registered exactly as the collection does.
+    const settingStorage = new SettingStorage();
+    for (const slotClass of pushSettingSlots) {
+      const slot = new slotClass();
+      settingStorage.setSettingSlot(slot.key, slot as any);
+    }
+    appManager = { settingStorage, sequelize };
+    // The real Setting writes back into storage from a model hook; here the hook is the test's job.
+    Setting.addHook('afterSave', (instance: any) => settingStorage.set(instance.key, instance.value));
+
+    usePushSettingStorage(appManager);
+    PushSettingsService.use(appManager);
     process.env = { ...env };
-    delete process.env.PUSH_PROVIDER;
-    delete process.env.PUSH_GATEWAY_URL;
-    delete process.env.PUSH_GATEWAY_API_KEY;
-    delete process.env.AGENTIZ_FCM_SERVICE_ACCOUNT;
+    for (const key of Object.keys(PUSH_SETTING_SLOTS)) delete process.env[key];
+    resetPushProviders();
   });
 
   afterEach(() => {
     process.env = { ...env };
-    clearPushSettingOverlay();
+    forgetPushSettingStorage();
+    PushSettingsService.forget();
     resetPushProviders();
   });
 
@@ -61,13 +84,21 @@ describe('PushSettingsService', () => {
     expect(pushSetting('PUSH_GATEWAY_URL')).toBe('https://push.example.com');
   });
 
+  it('stores the value in app-manager settings, not in a table of our own', async () => {
+    await PushSettingsService.set({ AGENTIZ_APNS_BUNDLE_ID: 'cx.m42.agentoz' });
+
+    const row = await Setting.findOne({ where: { key: 'AGENTIZ_APNS_BUNDLE_ID' } });
+    expect((row as any)?.value).toBe('cx.m42.agentoz');
+    expect(appManager.settingStorage.getSettingSlot('AGENTIZ_APNS_BUNDLE_ID').value).toBe('cx.m42.agentoz');
+  });
+
   it('never gives a stored credential back', async () => {
     await PushSettingsService.set({ PUSH_GATEWAY_API_KEY: 'push_sk_live_secret' });
 
     const view = PushSettingsService.describe();
     const key = view.settings.find((setting) => setting.key === 'PUSH_GATEWAY_API_KEY');
 
-    expect(key).toMatchObject({ source: 'database', secret: true });
+    expect(key).toMatchObject({ source: 'settings', secret: true });
     expect(key?.value).not.toContain('secret');
     expect(JSON.stringify(view)).not.toContain('push_sk_live_secret');
   });
@@ -78,20 +109,37 @@ describe('PushSettingsService', () => {
 
     const by = Object.fromEntries(PushSettingsService.describe().settings.map((s) => [s.key, s]));
 
-    expect(by.AGENTIZ_APNS_TEAM_ID.source).toBe('database');
+    expect(by.AGENTIZ_APNS_TEAM_ID.source).toBe('settings');
     expect(by.AGENTIZ_APNS_BUNDLE_ID).toMatchObject({ source: 'environment', value: 'cx.m42.agentoz' });
     expect(by.AGENTIZ_APNS_KEY_ID.source).toBe('unset');
+  });
+
+  it('says so when the environment shadows what was just stored', async () => {
+    process.env.PUSH_PROVIDER = 'firebase';
+
+    const summary = await PushSettingsService.set({ PUSH_PROVIDER: 'gateway' });
+
+    // Stored, and still not in force: app-manager reads process.env first. Silently doing nothing
+    // here is the difference between a puzzling afternoon and a one-line answer.
+    expect(pushSetting('PUSH_PROVIDER')).toBe('firebase');
+    expect(summary.settings.find((s) => s.key === 'PUSH_PROVIDER')).toMatchObject({
+      source: 'environment',
+      shadowedByEnvironment: true,
+    });
+    expect(summary.warnings.join(' ')).toMatch(/PUSH_PROVIDER in the environment overrides it/);
   });
 
   it('removing a setting falls back to the environment, it does not turn push off', async () => {
     process.env.PUSH_PROVIDER = 'firebase';
     await PushSettingsService.set({ PUSH_PROVIDER: 'gateway' });
-    expect(pushSetting('PUSH_PROVIDER')).toBe('gateway');
 
     await PushSettingsService.set({ PUSH_PROVIDER: null });
 
     expect(pushSetting('PUSH_PROVIDER')).toBe('firebase');
-    expect(await MobilePushSetting.count()).toBe(0);
+    expect(await Setting.count()).toBe(0);
+
+    delete process.env.PUSH_PROVIDER;
+    expect(pushSetting('PUSH_PROVIDER')).toBeUndefined();
   });
 
   describe('refuses what cannot work, before storing it', () => {
@@ -109,7 +157,7 @@ describe('PushSettingsService', () => {
     for (const [key, value, message] of rejected) {
       it(`${key}=${value}`, async () => {
         await expect(PushSettingsService.set({ [key]: value })).rejects.toThrow(message);
-        expect(await MobilePushSetting.count()).toBe(0);
+        expect(await Setting.count()).toBe(0);
       });
     }
 
@@ -124,7 +172,7 @@ describe('PushSettingsService', () => {
       })).rejects.toThrow(/not a URL/);
 
       // A half-applied credential change is worse than a rejected one.
-      expect(await MobilePushSetting.count()).toBe(0);
+      expect(await Setting.count()).toBe(0);
       expect(pushSetting('PUSH_PROVIDER')).toBeUndefined();
     });
   });
@@ -143,10 +191,12 @@ describe('PushSettingsService', () => {
     });
   });
 
-  it('survives the table not being there yet', async () => {
-    await sequelize.getQueryInterface().dropTable('agentiz_mobile_push_settings');
+  it('falls back to the environment alone when the layer is not mounted', async () => {
+    forgetPushSettingStorage();
+    PushSettingsService.forget();
+    process.env.PUSH_PROVIDER = 'gateway';
 
-    // First boot with the migration still pending: the environment stays in charge, nothing throws.
-    await expect(PushSettingsService.load()).resolves.toBeUndefined();
+    expect(pushSetting('PUSH_PROVIDER')).toBe('gateway');
+    await expect(PushSettingsService.set({ PUSH_PROVIDER: 'firebase' })).rejects.toThrow(/not mounted/);
   });
 });

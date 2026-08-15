@@ -152,13 +152,17 @@ Adminizer cookie and the OpenHarness API key are never exposed to page JavaScrip
 
 ## Configuration
 
-Every push variable below can also be set at runtime, through the MCP tools
-`agentiz.pushSettings` (what is set, and whether it came from the database or the environment) and
-`agentiz.managePushSettings` (set it; `null` removes it and falls back to the variable). A stored
-setting overrides the variable of the same name and takes effect on the next notification — the
-provider pair is rebuilt, not the process. Values are validated before being stored, and credentials
-are write-only: nothing reads them back. That is what makes installing a Firebase service account or
-an APNs key possible on a deployment whose `.env` is behind a deploy.
+Every push variable below is also an app-manager setting, so it can be set at runtime through the
+MCP tools `agentiz.pushSettings` (what is set, and whether it came from the environment or the
+settings table) and `agentiz.managePushSettings` (set it; `null` removes it and falls back to the
+variable). A change takes effect on the next notification — the provider pair is rebuilt, not the
+process. Values are validated before being stored, and credentials are write-only here: nothing
+reads them back. That is what makes installing a Firebase service account or an APNs key possible on
+a deployment whose `.env` is behind a deploy.
+
+The environment keeps priority, because that is app-manager's rule: a variable present in `.env`
+shadows the stored value, which every read reports per setting (`shadowedByEnvironment`) rather than
+leaving it to be discovered.
 
 | Variable                        | Default              | Meaning                                             |
 | ------------------------------- | -------------------- | --------------------------------------------------- |

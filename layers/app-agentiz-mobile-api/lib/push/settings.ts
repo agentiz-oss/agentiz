@@ -1,17 +1,21 @@
 /**
  * Where every push provider reads its configuration.
  *
- * Two sources, in order: an overlay that an administrator has set (stored in
- * `agentiz_mobile_push_settings` and loaded into memory by `PushSettingsService`), then the process
- * environment. The environment stays the way a deployment is *configured*; the overlay is how it is
- * *administered* when editing `.env` and restarting is not on the table — which is the whole reason
- * a push credential can be installed over MCP.
+ * These are app-manager settings — declared as slots in the layer's `settings` collection, stored in
+ * the `settings` table, held in `appManager.settingStorage`. Not a table of this layer's own: the
+ * platform already has one mechanism for "a value an administrator can change without a deploy", and
+ * a second one would mean two places to look for the same kind of answer.
+ *
+ * **The environment wins.** That is app-manager's rule (`SettingStorage.get` checks `process.env`
+ * first), and it is the reason a value set here can look ignored: a key that is also in `.env` keeps
+ * the `.env` value until that variable is removed. `pushSettingSource()` reports which of the two
+ * answered, and PushSettingsService turns a shadowed write into a warning rather than a surprise.
  *
  * Read synchronously, because sending is on the worker's `requestHumanInput` path and must not wait
- * on a query. The overlay is small, and it is refreshed only when somebody changes it.
+ * on a query — `settingStorage` is in memory, loaded when the collection was processed.
  *
- * No provider imports a model, and this module imports none either: the layer's models load the
- * overlay in, not the other way round.
+ * No provider imports a model or the AppManager: the layer hands the manager in at mount, and until
+ * it does (or in a unit test) everything here falls back to the environment on its own.
  */
 
 /** Every setting a push provider reads. The name is the environment variable's name, deliberately. */
@@ -42,14 +46,81 @@ const SECRET_KEYS: ReadonlySet<string> = new Set<string>([
   'AGENTIZ_APNS_KEY',
 ]);
 
-// Shared mutable state on a global symbol: under tsx this module can be instantiated twice (ESM +
-// CJS graphs), and an overlay set in one copy would be invisible to the provider reading the other.
-const OVERLAY_KEY = Symbol.for('agentiz.push.settingsOverlay');
+/** The shape app-manager's SettingHandler instantiates. Not imported: the package exports no type. */
+export interface PushSettingSlot {
+  key: string;
+  type: 'string' | 'boolean' | 'json' | 'number';
+  name?: string;
+  description?: string;
+  value?: unknown;
+}
 
-function overlay(): Map<string, string> {
-  const holder = globalThis as unknown as Record<symbol, Map<string, string>>;
-  if (!holder[OVERLAY_KEY]) holder[OVERLAY_KEY] = new Map();
-  return holder[OVERLAY_KEY];
+/** What `settingStorage` has to look like for this module — the two methods it actually calls. */
+interface SettingStorageLike {
+  get(settingClass: new () => PushSettingSlot): unknown;
+  getSettingSlot(key: string): PushSettingSlot | undefined;
+}
+
+interface AppManagerLike {
+  settingStorage?: SettingStorageLike;
+}
+
+function slot(
+  settingKey: PushSettingKey,
+  settingName: string,
+  settingDescription: string,
+  settingType: PushSettingSlot['type'] = 'string',
+) {
+  // A class, because app-manager's SettingHandler does `new item()` on every collection entry.
+  return class implements PushSettingSlot {
+    key = settingKey;
+    type = settingType;
+    name = settingName;
+    description = settingDescription;
+  };
+}
+
+/**
+ * The slots this layer contributes to app-manager's `settings` collection.
+ *
+ * Declaring them is what makes a value storable at all: `Setting.beforeSave` refuses a key with no
+ * registered slot, which is also why an unknown key cannot be written by accident.
+ */
+export const PUSH_SETTING_SLOTS: Record<PushSettingKey, new () => PushSettingSlot> = {
+  PUSH_PROVIDER: slot('PUSH_PROVIDER', 'Push provider', 'How FCM tokens are delivered: "firebase" (directly) or "gateway".'),
+  AGENTIZ_FCM_SERVICE_ACCOUNT: slot('AGENTIZ_FCM_SERVICE_ACCOUNT', 'Firebase service account', 'Service-account JSON, inline or a path to the file. Enables Android push.'),
+  PUSH_GATEWAY_URL: slot('PUSH_GATEWAY_URL', 'Push gateway URL', 'Base URL of the push gateway, used when the provider is "gateway".'),
+  PUSH_GATEWAY_API_KEY: slot('PUSH_GATEWAY_API_KEY', 'Push gateway API key', 'Bearer key the gateway accepts.'),
+  PUSH_GATEWAY_TIMEOUT_MS: slot('PUSH_GATEWAY_TIMEOUT_MS', 'Push gateway timeout', 'Hard timeout on a gateway request, in milliseconds.', 'number'),
+  AGENTIZ_APNS_KEY: slot('AGENTIZ_APNS_KEY', 'APNs key', 'Contents of the .p8 signing key, or a path to it.'),
+  AGENTIZ_APNS_KEY_ID: slot('AGENTIZ_APNS_KEY_ID', 'APNs key id', 'The 10-character Key ID of that .p8.'),
+  AGENTIZ_APNS_TEAM_ID: slot('AGENTIZ_APNS_TEAM_ID', 'Apple team id', 'The 10-character Apple developer team id.'),
+  AGENTIZ_APNS_BUNDLE_ID: slot('AGENTIZ_APNS_BUNDLE_ID', 'App bundle id', "The app's bundle id, sent to Apple as the APNs topic."),
+  AGENTIZ_APNS_ENV: slot('AGENTIZ_APNS_ENV', 'APNs environment', '"production", or "sandbox" for development builds of the app.'),
+};
+
+export const pushSettingSlots: (new () => PushSettingSlot)[] = Object.values(PUSH_SETTING_SLOTS);
+
+// The AppManager reference lives on a global symbol: under tsx this module can be instantiated twice
+// (ESM + CJS graphs), and a manager registered in one copy would be invisible to the provider
+// reading the other.
+const MANAGER_KEY = Symbol.for('agentiz.push.settingsManager');
+
+function holder(): Record<symbol, AppManagerLike | null> {
+  return globalThis as unknown as Record<symbol, AppManagerLike | null>;
+}
+
+/** Called by the layer at mount. Until then, and in unit tests, the environment is the only source. */
+export function usePushSettingStorage(appManager: AppManagerLike): void {
+  holder()[MANAGER_KEY] = appManager;
+}
+
+export function forgetPushSettingStorage(): void {
+  holder()[MANAGER_KEY] = null;
+}
+
+function storage(): SettingStorageLike | null {
+  return holder()[MANAGER_KEY]?.settingStorage ?? null;
 }
 
 export function isPushSettingKey(key: string): key is PushSettingKey {
@@ -60,34 +131,37 @@ export function isSecretPushSetting(key: string): boolean {
   return SECRET_KEYS.has(key);
 }
 
-/** The value in force: what an administrator set, else the environment, else nothing. */
+function fromEnv(key: PushSettingKey): string | undefined {
+  const value = process.env[key];
+  return value === undefined || value === '' ? undefined : value;
+}
+
+/** The value stored in the settings table, ignoring the environment. */
+export function storedPushSetting(key: PushSettingKey): string | undefined {
+  const value = storage()?.getSettingSlot(key)?.value;
+  return value === undefined || value === null || value === '' ? undefined : String(value);
+}
+
+/** The value in force: the environment if it names this key, else what an administrator stored. */
 export function pushSetting(key: PushSettingKey): string | undefined {
-  const stored = overlay().get(key);
-  if (stored !== undefined && stored !== '') return stored;
-  const fromEnv = process.env[key];
-  return fromEnv === undefined || fromEnv === '' ? undefined : fromEnv;
+  const value = fromEnv(key);
+  return value ?? storedPushSetting(key);
 }
 
-export type PushSettingSource = 'database' | 'environment' | 'unset';
+export type PushSettingSource = 'environment' | 'settings' | 'unset';
 
-/** Which of the two sources answered — the first thing to check when a change "did not apply". */
+/**
+ * Which source answered. The first thing to check when a change "did not apply": app-manager gives
+ * the environment priority, so a key present in `.env` shadows anything stored.
+ */
 export function pushSettingSource(key: PushSettingKey): PushSettingSource {
-  if (overlay().has(key)) return 'database';
-  return process.env[key] ? 'environment' : 'unset';
+  if (fromEnv(key) !== undefined) return 'environment';
+  return storedPushSetting(key) === undefined ? 'unset' : 'settings';
 }
 
-/** Replaces the whole overlay. Called by PushSettingsService after it reads or writes the table. */
-export function replacePushSettingOverlay(values: Record<string, string>): void {
-  const map = overlay();
-  map.clear();
-  for (const [key, value] of Object.entries(values)) {
-    if (isPushSettingKey(key)) map.set(key, value);
-  }
-}
-
-/** Test seam, and what `unmount()` leaves behind. */
-export function clearPushSettingOverlay(): void {
-  overlay().clear();
+/** True when a stored value exists but the environment is what the providers actually read. */
+export function isShadowedByEnvironment(key: PushSettingKey): boolean {
+  return fromEnv(key) !== undefined && storedPushSetting(key) !== undefined;
 }
 
 /**

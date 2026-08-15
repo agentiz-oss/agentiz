@@ -1,40 +1,48 @@
 import { existsSync } from 'fs';
-import { MobilePushSetting } from '../models/MobilePushSetting';
 import {
   isPushSettingKey,
   isSecretPushSetting,
+  isShadowedByEnvironment,
   maskPushSetting,
   PUSH_SETTING_KEYS,
   pushSetting,
   pushSettingSource,
-  replacePushSettingOverlay,
+  storedPushSetting,
   type PushSettingKey,
+  type PushSettingSource,
 } from '../lib/push/settings';
 import { pushProviders, pushProviderSummary, resetPushProviders } from '../lib/push/providers';
 
 /**
  * Installing and inspecting push credentials at runtime.
  *
- * The point of the table behind this is that a deployment can be given a Firebase service account
- * or an APNs key — or moved between `firebase` and `gateway` — without editing `.env` and
- * restarting, which on this installation means going through MCP rather than through a shell.
+ * The point is that a deployment can be given a Firebase service account or an APNs key — or moved
+ * between `firebase` and `gateway` — without editing `.env` and restarting, which on this
+ * installation means going through MCP rather than through a shell.
  *
- * Two rules make that safe to expose:
+ * The values live in app-manager's `settings` table, through the slots this layer declares
+ * (`lib/push/settings.ts`); this service is the validation, the masking and the cache reset around
+ * them. Three rules make that safe to expose:
  *
  * - **Values never come back.** `describe()` reports where a setting came from and whether it is
- *   present; the secrets themselves are write-only from the moment they arrive.
- * - **What cannot work is refused, not stored.** A service account that is not a service account,
- *   a gateway URL that is not a URL, `PUSH_PROVIDER=carrier-pigeon` — all rejected with the reason,
+ *   present; a credential is write-only from the moment it arrives.
+ * - **What cannot work is refused, not stored.** A service account that is not a service account, a
+ *   gateway URL that is not a URL, `PUSH_PROVIDER=carrier-pigeon` — rejected with the reason,
  *   because the alternative is a silent failure at 3am inside the worker's request.
+ * - **A shadowed write is reported, not silently lost.** app-manager gives `process.env` priority
+ *   over a stored setting, so storing a key that `.env` also names changes nothing until that
+ *   variable goes away. That comes back as a warning on the very call that stored it.
  */
 
 export interface PushSettingView {
   key: PushSettingKey;
-  /** `database` (set here), `environment` (from `.env`), or `unset`. */
-  source: ReturnType<typeof pushSettingSource>;
-  /** The value, or `••••••••` for a credential, or null when nothing is set. */
+  /** `environment` (from `.env`, and it wins), `settings` (stored here), or `unset`. */
+  source: PushSettingSource;
+  /** The value in force, or `••••••••` for a credential, or null when nothing is set. */
   value: string | null;
   secret: boolean;
+  /** True when something is stored but `.env` overrides it — the reason a change "did nothing". */
+  shadowedByEnvironment?: boolean;
 }
 
 export interface PushSettingsSummary {
@@ -46,33 +54,59 @@ export interface PushSettingsSummary {
   warnings: string[];
 }
 
+/** The app-manager Setting row, addressed by model name so no deep import into the package is needed. */
+interface SettingRow {
+  key: string;
+  value: unknown;
+  update(values: Record<string, unknown>): Promise<unknown>;
+  destroy(): Promise<unknown>;
+}
+
+interface SettingModel {
+  findOne(options: { where: { key: string } }): Promise<SettingRow | null>;
+  create(values: { key: string; value: unknown }): Promise<SettingRow>;
+}
+
+interface AppManagerLike {
+  sequelize?: { models?: Record<string, unknown> };
+}
+
+// Set at mount, read when something is written. Not held by the providers: they only ever read, and
+// reading goes through settingStorage.
+const MANAGER_KEY = Symbol.for('agentiz.push.settingsWriter');
+
+function holder(): Record<symbol, AppManagerLike | null> {
+  return globalThis as unknown as Record<symbol, AppManagerLike | null>;
+}
+
 export class PushSettingsService {
-  /**
-   * Loads the stored settings into the in-memory overlay the providers read.
-   *
-   * Called once on mount. A failure here must not stop the layer: push is optional, and a table
-   * that is not there yet (first boot, migration pending) simply means the environment is in charge.
-   */
-  static async load(): Promise<void> {
-    try {
-      const rows = await MobilePushSetting.findAll();
-      replacePushSettingOverlay(Object.fromEntries(rows.map((row) => [row.key, row.value])));
-      resetPushProviders();
-    } catch (error) {
-      console.warn(
-        '[app-agentiz-mobile-api] push settings could not be loaded; using the environment only:',
-        error instanceof Error ? error.message : error,
-      );
+  /** Called by the layer at mount, with the same AppManager the settings collection was processed by. */
+  static use(appManager: AppManagerLike): void {
+    holder()[MANAGER_KEY] = appManager;
+    // Slots were filled from the database while the collection was processed, before this runs; the
+    // providers may already have been built against the environment alone.
+    resetPushProviders();
+  }
+
+  static forget(): void {
+    holder()[MANAGER_KEY] = null;
+  }
+
+  private static model(): SettingModel {
+    const model = holder()[MANAGER_KEY]?.sequelize?.models?.Setting as SettingModel | undefined;
+    if (!model) {
+      throw new Error('settings storage is unavailable: app-agentiz-mobile-api is not mounted');
     }
+    return model;
   }
 
   /**
    * Writes settings and makes them effective immediately.
    *
    * `null` removes a setting, which falls back to the environment variable of the same name rather
-   * than to nothing — deleting a row is "stop overriding", not "turn push off".
+   * than to nothing — deleting a value is "stop overriding", not "turn push off".
    */
-  static async set(values: Record<string, string | null>, updatedBy?: string): Promise<PushSettingsSummary> {
+  static async set(values: Record<string, string | null>, _updatedBy?: string): Promise<PushSettingsSummary> {
     const entries = Object.entries(values);
     if (entries.length === 0) throw new Error('nothing to set: pass at least one setting');
 
@@ -94,17 +128,25 @@ export class PushSettingsService {
       prepared.push({ key, value: validate(key, value) });
     }
 
+    const model = PushSettingsService.model();
     for (const { key, value } of prepared) {
+      const existing = await model.findOne({ where: { key } });
       if (value === null) {
-        await MobilePushSetting.destroy({ where: { key } });
+        // The slot keeps its value in memory after the row goes, so it is cleared explicitly.
+        if (existing) await existing.destroy();
+        clearSlotValue(key);
+      } else if (existing) {
+        // Through the instance, not the model: app-manager's hooks are what write the value back
+        // into settingStorage, and a bulk update would skip them.
+        await existing.update({ value });
       } else {
-        const existing = await MobilePushSetting.findByPk(key);
-        if (existing) await existing.update({ value, updatedBy: updatedBy ?? null });
-        else await MobilePushSetting.create({ key, value, updatedBy: updatedBy ?? null } as any);
+        await model.create({ key, value });
       }
     }
 
-    await PushSettingsService.load();
+    // A provider caches its credentials and its HTTP/2 session; without this the next notification
+    // would still go out with the old ones.
+    resetPushProviders();
     return PushSettingsService.describe();
   }
 
@@ -123,10 +165,18 @@ export class PushSettingsService {
         source: pushSettingSource(key),
         value: maskPushSetting(key, pushSetting(key)),
         secret: isSecretPushSetting(key),
+        ...(isShadowedByEnvironment(key) ? { shadowedByEnvironment: true } : {}),
       })),
       warnings: warningsFor(),
     };
   }
+}
+
+/** Drops the in-memory value of a removed setting, which app-manager leaves in place on destroy. */
+function clearSlotValue(key: PushSettingKey): void {
+  const manager = holder()[MANAGER_KEY] as { settingStorage?: { getSettingSlot(key: string): any } } | null;
+  const slot = manager?.settingStorage?.getSettingSlot(key);
+  if (slot) delete slot.value;
 }
 
 /**
@@ -211,8 +261,14 @@ function validate(key: PushSettingKey, value: string): string {
 /** Combinations that are stored happily but deliver nothing — worth saying out loud, not refusing. */
 function warningsFor(): string[] {
   const warnings: string[] = [];
-  const provider = (pushSetting('PUSH_PROVIDER') ?? 'firebase').toLowerCase();
 
+  for (const key of PUSH_SETTING_KEYS) {
+    if (isShadowedByEnvironment(key)) {
+      warnings.push(`${key} is set here but ${key} in the environment overrides it; remove it from .env for this value to take effect`);
+    }
+  }
+
+  const provider = (pushSetting('PUSH_PROVIDER') ?? 'firebase').toLowerCase();
   if (provider === 'gateway') {
     if (!pushSetting('PUSH_GATEWAY_URL')) warnings.push('PUSH_PROVIDER=gateway but PUSH_GATEWAY_URL is not set');
     if (!pushSetting('PUSH_GATEWAY_API_KEY')) warnings.push('PUSH_PROVIDER=gateway but PUSH_GATEWAY_API_KEY is not set');
@@ -231,3 +287,6 @@ function warningsFor(): string[] {
   }
   return warnings;
 }
+
+/** Re-exported so callers do not have to reach into lib/push for the one thing they may need. */
+export { storedPushSetting };
