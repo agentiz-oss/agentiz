@@ -2,6 +2,7 @@ import { ApnsPushProvider } from './ApnsPushProvider';
 import { FirebasePushProvider } from './FirebasePushProvider';
 import { GatewayPushProvider } from './GatewayPushProvider';
 import type { MobilePushTransport, PushProvider } from './index';
+import { pushSetting } from './settings';
 
 /**
  * Where the choice of transport is made — once, at start-up, from configuration.
@@ -29,11 +30,20 @@ export interface PushProviders {
   apns: PushProvider;
 }
 
-let providers: PushProviders | null = null;
+// Not a module-level `let`: an administrator changing a credential resets this cache, and under tsx
+// a module can be instantiated twice — a reset applied to one copy would leave the other still
+// sending with the old provider.
+const PROVIDERS_KEY = Symbol.for('agentiz.push.providers');
+
+function cache(): { value: PushProviders | null } {
+  const holder = globalThis as unknown as Record<symbol, { value: PushProviders | null }>;
+  if (!holder[PROVIDERS_KEY]) holder[PROVIDERS_KEY] = { value: null };
+  return holder[PROVIDERS_KEY];
+}
 
 /** Reads `PUSH_PROVIDER`, defaulting to the behaviour that predates this setting. */
 export function configuredProviderName(): PushProviderName {
-  const raw = (process.env.PUSH_PROVIDER ?? 'firebase').trim().toLowerCase();
+  const raw = (pushSetting('PUSH_PROVIDER') ?? 'firebase').trim().toLowerCase();
   if (raw === 'gateway') return 'gateway';
   if (raw && raw !== 'firebase' && raw !== 'fcm') {
     console.warn(`[app-agentiz-mobile-api] unknown PUSH_PROVIDER "${raw}"; falling back to firebase`);
@@ -51,8 +61,9 @@ export function createPushProviders(): PushProviders {
 
 /** The process-wide pair, built on first use and kept — both providers cache credentials and sockets. */
 export function pushProviders(): PushProviders {
-  if (!providers) providers = createPushProviders();
-  return providers;
+  const held = cache();
+  if (!held.value) held.value = createPushProviders();
+  return held.value;
 }
 
 /** The provider that can address a device registered with this transport. */
@@ -79,13 +90,20 @@ export function pushProviderSummary(): string {
 
 /** Releases long-lived resources; call from the layer's `unmount()`. */
 export function closePushProviders(): void {
-  if (!providers) return;
-  providers.fcm.close?.();
-  providers.apns.close?.();
-  providers = null;
+  const held = cache();
+  if (!held.value) return;
+  held.value.fcm.close?.();
+  held.value.apns.close?.();
+  held.value = null;
 }
 
-/** Test seam: forget the resolved pair so the next call re-reads the environment. */
+/**
+ * Forgets the resolved pair so the next send re-reads configuration.
+ *
+ * Called after an administrator changes a setting (PushSettingsService), which is what makes a new
+ * credential or a new `PUSH_PROVIDER` take effect without restarting the process — and also the
+ * test seam for the environment-driven path.
+ */
 export function resetPushProviders(): void {
   closePushProviders();
 }

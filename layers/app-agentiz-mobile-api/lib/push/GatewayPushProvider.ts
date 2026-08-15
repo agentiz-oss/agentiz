@@ -6,6 +6,7 @@ import {
   type PushProvider,
   type PushResult,
 } from './index';
+import { pushSetting } from './settings';
 import { toFcmMessage } from './FirebasePushProvider';
 
 /**
@@ -28,9 +29,9 @@ export class GatewayPushProvider implements PushProvider {
   private readonly timeoutMs: number;
 
   constructor(
-    url = process.env.PUSH_GATEWAY_URL,
-    apiKey = process.env.PUSH_GATEWAY_API_KEY,
-    timeoutMs = Number(process.env.PUSH_GATEWAY_TIMEOUT_MS ?? PUSH_HTTP_TIMEOUT_MS),
+    url = pushSetting('PUSH_GATEWAY_URL'),
+    apiKey = pushSetting('PUSH_GATEWAY_API_KEY'),
+    timeoutMs = Number(pushSetting('PUSH_GATEWAY_TIMEOUT_MS') ?? PUSH_HTTP_TIMEOUT_MS),
   ) {
     // Trailing slash trimmed here rather than at every call site; the path is appended verbatim.
     this.url = (url ?? '').trim().replace(/\/+$/, '');

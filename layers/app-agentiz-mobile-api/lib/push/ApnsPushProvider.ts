@@ -7,6 +7,7 @@ import {
   type PushProvider,
   type PushResult,
 } from './index';
+import { pushSetting } from './settings';
 
 /**
  * APNs over HTTP/2 with a token-based `.p8` key.
@@ -117,10 +118,10 @@ export class ApnsPushProvider implements PushProvider {
 
   private config(): ApnsCredentials | null {
     if (this.credentials !== undefined) return this.credentials;
-    const key = credentialSource(process.env.AGENTIZ_APNS_KEY);
-    const keyId = (process.env.AGENTIZ_APNS_KEY_ID ?? '').trim();
-    const teamId = (process.env.AGENTIZ_APNS_TEAM_ID ?? '').trim();
-    const topic = (process.env.AGENTIZ_APNS_BUNDLE_ID ?? '').trim();
+    const key = credentialSource(pushSetting('AGENTIZ_APNS_KEY'));
+    const keyId = (pushSetting('AGENTIZ_APNS_KEY_ID') ?? '').trim();
+    const teamId = (pushSetting('AGENTIZ_APNS_TEAM_ID') ?? '').trim();
+    const topic = (pushSetting('AGENTIZ_APNS_BUNDLE_ID') ?? '').trim();
     if (!key || !keyId || !teamId || !topic) {
       if (key || keyId || teamId || topic) {
         console.warn('[app-agentiz-mobile-api] APNs is half-configured; push to iOS stays off. Needs AGENTIZ_APNS_KEY, _KEY_ID, _TEAM_ID and _BUNDLE_ID');
@@ -135,7 +136,7 @@ export class ApnsPushProvider implements PushProvider {
       topic,
       // Sandbox is opt-in: a development build talking to the production host simply gets
       // BadDeviceToken, which is a far clearer symptom than the reverse.
-      host: (process.env.AGENTIZ_APNS_ENV ?? 'production') === 'sandbox'
+      host: (pushSetting('AGENTIZ_APNS_ENV') ?? 'production') === 'sandbox'
         ? 'https://api.sandbox.push.apple.com'
         : 'https://api.push.apple.com',
     };

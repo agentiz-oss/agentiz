@@ -72,6 +72,14 @@
   the backend then holds **no** Firebase credentials. `ApnsPushProvider` is not part of that choice —
   it serves devices registered with a raw APNs token, which only Apple can accept. Every provider
   answers the same `PushResult`, and only `reason: 'invalid-token'` deletes a device row.
+- Push providers read their configuration through `pushSetting()`
+  (`layers/app-agentiz-mobile-api/lib/push/settings.ts`), never `process.env` directly: a row in
+  `agentiz_mobile_push_settings` overrides the environment variable of the same name, which is how a
+  credential is installed over MCP (`agentiz.managePushSettings`) on a deployment whose `.env` is
+  behind a deploy. A write validates, then calls `resetPushProviders()` — the cached provider pair is
+  what makes a change take effect without a restart, and it lives on a `Symbol.for` global for the
+  same reason every other registry here does. Stored values are write-only: `describe()` masks, and
+  nothing anywhere returns a stored credential.
 - Agentiz sends into Adminizer's own notification subsystem (the bell) through one seam,
   `layers/app-agentiz/lib/notifications/dashboardNotifications.ts`, under its own class `agentiz`
   (permission token `notification-agentiz`, registered by adminizer's base service). Two things about

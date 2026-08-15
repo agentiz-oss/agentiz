@@ -8,6 +8,7 @@ import {
   type PushProvider,
   type PushResult,
 } from './index';
+import { pushSetting } from './settings';
 
 /**
  * FCM HTTP v1, spoken directly — the original transport, now behind {@link PushProvider}.
@@ -34,7 +35,7 @@ export class FirebasePushProvider implements PushProvider {
   private account: ServiceAccount | null | undefined;
   private cachedToken: { value: string; expiresAt: number } | null = null;
 
-  constructor(private readonly rawCredential = process.env.AGENTIZ_FCM_SERVICE_ACCOUNT) {}
+  constructor(private readonly rawCredential = pushSetting('AGENTIZ_FCM_SERVICE_ACCOUNT')) {}
 
   configured(): boolean {
     return this.serviceAccount() !== null;

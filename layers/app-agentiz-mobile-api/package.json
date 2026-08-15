@@ -7,6 +7,7 @@
   "main": "index.ts",
   "appDependencies": {
     "app-adminizer": "*",
-    "app-agentiz": "*"
+    "app-agentiz": "*",
+    "app-mcp": "*"
   }
 }

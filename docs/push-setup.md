@@ -149,6 +149,61 @@ Provisioning profile после изменения capability надо **пер�
 
 ---
 
+## Часть B½. Установка настроек без правки `.env` — через MCP
+
+Всё, что выше кладётся в `.env`, можно вместо этого установить на работающем сервере. Настройка
+ляжет в таблицу `agentiz_mobile_push_settings` и **перекроет** одноимённую переменную окружения;
+рестарт не нужен — следующее уведомление уходит уже с новыми кредами.
+
+Когда это нужно: `.env` за деплоем, а креды получены сейчас; или надо быстро переключить провайдера
+и вернуть обратно. Когда не нужно: если есть доступ к `.env` — переменная окружения остаётся
+нормальным способом сконфигурировать инсталляцию.
+
+Посмотреть, что настроено (значения секретов **не возвращаются никогда**, только «есть/нет»):
+
+```bash
+source .env
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{}' https://agentiz.m42.cx/mcp/call/agentiz.pushSettings
+```
+
+В ответе для каждой настройки — `source`: `database` (установлена здесь), `environment` (из `.env`)
+или `unset`. Плюс `pushEnabled` и `warnings` — конфигурации, которые сохранены, но доставить ничего
+не смогут (выбран `gateway` без URL, заполнены не все четыре `AGENTIZ_APNS_*`).
+
+Установить (`settings` — объект; `null` в значении **удаляет** настройку, и она возвращается к
+переменной окружения, а не к «выключено»):
+
+```bash
+# сервисный аккаунт Firebase — самим JSON или путём к файлу
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d "{\"settings\":{\"AGENTIZ_FCM_SERVICE_ACCOUNT\":$(jq -Rs . < firebase-service-account.json)}}" \
+  https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
+
+# переключить на шлюз
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"settings":{"PUSH_PROVIDER":"gateway","PUSH_GATEWAY_URL":"http://push-gateway:3000","PUSH_GATEWAY_API_KEY":"push_sk_..."}}' \
+  https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
+
+# ключ APNs — содержимым .p8 или путём
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d "{\"settings\":{\"AGENTIZ_APNS_KEY\":$(jq -Rs . < AuthKey_ABC123DEFG.p8),\"AGENTIZ_APNS_KEY_ID\":\"ABC123DEFG\",\"AGENTIZ_APNS_TEAM_ID\":\"5K5GDFV386\",\"AGENTIZ_APNS_BUNDLE_ID\":\"cx.m42.agentoz\",\"AGENTIZ_APNS_ENV\":\"production\"}}" \
+  https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
+
+# вернуться к тому, что написано в .env
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"settings":{"PUSH_PROVIDER":null}}' https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
+```
+
+Значения проверяются **до** записи: `PUSH_PROVIDER` только `firebase`/`gateway`, service account —
+что это JSON с `project_id`/`client_email`/`private_key` (или существующий файл), URL — что это
+http/https, Key ID и Team ID — что это 10-символьные идентификаторы Apple, `.p8` — что это PEM или
+существующий файл. Если в одном вызове несколько настроек и хоть одна не прошла — **не применяется
+ни одна**: наполовину применённая смена кредов хуже отклонённой.
+
+Обратной стороны у этого нет: **прочитать записанный секрет нельзя ничем** — ни этим инструментом,
+ни через админку. Потеряли — устанавливайте заново.
+
 ## Часть C. Что где лежит в итоге
 
 | Файл / переменная | Где | Что сломается без него |
@@ -160,7 +215,9 @@ Provisioning profile после изменения capability надо **пер�
 | `PUSH_PROVIDER` | `.env` сервера | по умолчанию `firebase` |
 
 Ни один из этих файлов не коммитится. Полный список переменных с дефолтами —
-`layers/app-agentiz-mobile-api/README.md`, шаблон — `.env.example`.
+`layers/app-agentiz-mobile-api/README.md`, шаблон — `.env.example`. Любая из переменных может быть
+перекрыта настройкой из базы (часть B½); что именно сейчас в силе — показывает
+`agentiz.pushSettings`.
 
 ---
 

@@ -1,11 +1,16 @@
 import { AbstractApp, AppManager, Collection } from '@nodeknit/app-manager';
 import type { AdminizerRouteMiddleware, AppAdminizer } from '@nodeknit/app-adminizer';
+import type { IMcpTool } from '@nodeknit/app-mcp';
 import { createMobileApiRouter, MOBILE_API_BASE } from './lib/mobileApiRouter';
 import { createMobileAssistantWebviewRouter } from './lib/mobileAssistantWebviewRouter';
 import { closePushProviders, pushProviderSummary } from './lib/push/providers';
+import { clearPushSettingOverlay } from './lib/push/settings';
+import { pushSettingsMcpTools } from './mcp/pushSettingsTools';
 import { migrations } from './migrations';
 import { MobileDevice } from './models/MobileDevice';
+import { MobilePushSetting } from './models/MobilePushSetting';
 import { MobilePushService } from './services/MobilePushService';
+import { PushSettingsService } from './services/PushSettingsService';
 import type { InteractionNotifier } from '../app-agentiz/lib/interactionNotifiers';
 
 /**
@@ -28,11 +33,11 @@ export class AppAgentizMobileApi extends AbstractApp {
   }
 
   /**
-   * The one table this layer owns: the push tokens of installed apps. Everything else it serves
-   * still belongs to app-agentiz or app-adminizer.
+   * The two tables this layer owns: the push tokens of installed apps, and the push credentials
+   * themselves. Everything else it serves still belongs to app-agentiz or app-adminizer.
    */
   @Collection
-  models: any[] = [MobileDevice];
+  models: any[] = [MobileDevice, MobilePushSetting];
 
   @Collection
   migrations: any[] = migrations.umzug;
@@ -44,6 +49,13 @@ export class AppAgentizMobileApi extends AbstractApp {
    */
   @Collection
   interactionNotifiers: InteractionNotifier[] = [new MobilePushService()];
+
+  /**
+   * Push configuration over MCP: what is set and where it came from, and a way to install a
+   * credential without editing `.env` and restarting the process.
+   */
+  @Collection
+  mcpTools: IMcpTool[] = pushSettingsMcpTools;
 
   @Collection
   adminizerMiddlewares: AdminizerRouteMiddleware[] = [{
@@ -72,6 +84,10 @@ export class AppAgentizMobileApi extends AbstractApp {
       `${MOBILE_API_BASE}/assistant`,
       createMobileAssistantWebviewRouter(this.appManager.sequelize, adminizerApp.adminizer),
     );
+    // Before anything reports on push: settings stored in the database override the environment,
+    // and until they are loaded the summary below would describe the wrong configuration.
+    await PushSettingsService.load();
+
     console.log(`[AppAgentizMobileApi] mobile API mounted at ${MOBILE_API_BASE}`);
     console.log(`[AppAgentizMobileApi] mobile assistant WebView mounted at ${MOBILE_API_BASE}/assistant`);
     console.log(
@@ -84,6 +100,7 @@ export class AppAgentizMobileApi extends AbstractApp {
   async unmount(): Promise<void> {
     // The APNs provider keeps one long-lived HTTP/2 session to Apple; nothing else to tear down.
     closePushProviders();
+    clearPushSettingOverlay();
   }
 }
 
