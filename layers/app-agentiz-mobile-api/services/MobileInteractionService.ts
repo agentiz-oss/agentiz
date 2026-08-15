@@ -125,6 +125,26 @@ export class MobileInteractionService {
   }
 
   /**
+   * One question by id — what a tapped push notification opens. Returned whatever its status, so
+   * the app can say "уже отвечен" instead of showing an empty screen when somebody got there first;
+   * a question in a project the caller does not own is a 404 like everywhere else.
+   */
+  static async getForOwner(interactionId: string, ownerId: number | string) {
+    const interaction = await AgentRunInteraction.findByPk(interactionId);
+    if (!interaction) throw new MobileAuthError(404, 'Interaction not found');
+    const project = await AgentProject.findByPk(interaction.projectId);
+    if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
+      throw new MobileAuthError(404, 'Interaction not found');
+    }
+    const [stage, run] = await Promise.all([
+      AgentStageExecution.findByPk(interaction.stageExecutionId),
+      AgentRun.findByPk(interaction.runId),
+    ]);
+    const task = run ? await AgentTask.findByPk(run.taskId) : null;
+    return this.row(interaction, { project, stage, task });
+  }
+
+  /**
    * Answers one question. `accept` carries the filled-in form and is validated against the
    * interaction's own `requestedSchema` by the core service; `decline` and `cancel` carry nothing
    * and let the agent continue without an answer.

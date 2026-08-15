@@ -2,14 +2,22 @@ import { AbstractApp, AppManager, Collection } from '@nodeknit/app-manager';
 import type { AdminizerRouteMiddleware, AppAdminizer } from '@nodeknit/app-adminizer';
 import { createMobileApiRouter, MOBILE_API_BASE } from './lib/mobileApiRouter';
 import { createMobileAssistantWebviewRouter } from './lib/mobileAssistantWebviewRouter';
+import { closePushProviders, pushProviderSummary } from './lib/push/providers';
+import { migrations } from './migrations';
+import { MobileDevice } from './models/MobileDevice';
+import { MobilePushService } from './services/MobilePushService';
+import type { InteractionNotifier } from '../app-agentiz/lib/interactionNotifiers';
 
 /**
  * Mobile API layer for Agentiz.
  *
  * Gives the mobile client a small, machine-facing JSON surface: a UserAP login exchanged for a JWT
- * bearer token, then owner-scoped read access to Agentiz projects. It owns no models and no admin
- * pages — it reuses UserAP (from app-adminizer) and AgentProject (from app-agentiz) and simply
- * exposes them, over its own router, outside the admin panel's `/dashboard` prefix.
+ * bearer token, then owner-scoped read access to Agentiz projects. It reuses UserAP (from
+ * app-adminizer) and AgentProject (from app-agentiz) and simply exposes them, over its own router,
+ * outside the admin panel's `/dashboard` prefix.
+ *
+ * The single thing it owns is `MobileDevice` — the push tokens of installed apps — because a device
+ * is a property of this API's clients, not of the pipeline domain.
  */
 export class AppAgentizMobileApi extends AbstractApp {
   appId: string = 'app-agentiz-mobile-api';
@@ -18,6 +26,24 @@ export class AppAgentizMobileApi extends AbstractApp {
   constructor(appManager: AppManager) {
     super(appManager);
   }
+
+  /**
+   * The one table this layer owns: the push tokens of installed apps. Everything else it serves
+   * still belongs to app-agentiz or app-adminizer.
+   */
+  @Collection
+  models: any[] = [MobileDevice];
+
+  @Collection
+  migrations: any[] = migrations.umzug;
+
+  /**
+   * Turns a new agent question into a push on the project owner's phones. app-agentiz owns the
+   * `interactionNotifiers` collection and emits the event; the credentials, the device rows and the
+   * push providers live here.
+   */
+  @Collection
+  interactionNotifiers: InteractionNotifier[] = [new MobilePushService()];
 
   @Collection
   adminizerMiddlewares: AdminizerRouteMiddleware[] = [{
@@ -48,10 +74,16 @@ export class AppAgentizMobileApi extends AbstractApp {
     );
     console.log(`[AppAgentizMobileApi] mobile API mounted at ${MOBILE_API_BASE}`);
     console.log(`[AppAgentizMobileApi] mobile assistant WebView mounted at ${MOBILE_API_BASE}/assistant`);
+    console.log(
+      MobilePushService.configured()
+        ? `[AppAgentizMobileApi] push notifications enabled via ${pushProviderSummary()}`
+        : `[AppAgentizMobileApi] push notifications are off (${pushProviderSummary()})`,
+    );
   }
 
   async unmount(): Promise<void> {
-    // Nothing to tear down: no timers, no DB writes, no owned models.
+    // The APNs provider keeps one long-lived HTTP/2 session to Apple; nothing else to tear down.
+    closePushProviders();
   }
 }
 

@@ -7,6 +7,7 @@ import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
+import { notifyInteractionCreated } from '../lib/interactionNotifiers';
 import type { AgentRunInteractionAction } from '../types/agentiz';
 import type { AgentTaskStatus } from '../types/agentiz';
 
@@ -152,6 +153,16 @@ export class AgentRunInteractionService {
       ]);
       await this.recomputeTaskForRun(job.runId);
       await this.log(interaction, 'info', 'Agent is waiting for human input', { interactionId: interaction.id, source: interaction.source });
+      // Only for a genuinely new question: findOrCreate above is what makes a retried worker
+      // request idempotent, and a re-delivery must not turn into a second push. Not awaited —
+      // see notifyInteractionCreated.
+      notifyInteractionCreated({
+        interactionId: interaction.id,
+        projectId: interaction.projectId,
+        runId: interaction.runId,
+        source: interaction.source,
+        message: interaction.message,
+      });
     }
     return interaction;
   }

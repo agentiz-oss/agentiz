@@ -21,6 +21,15 @@ export const adminizerConfig: AdminizerConfig = {
     security: {
       csrf: false
     },
+    // The bell in the panel's header. Agentiz sends its own class of notifications into it
+    // (layers/app-agentiz/lib/notifications) — a pending agent question today, more later. Behind
+    // an env flag because the subsystem is marked experimental in adminizer: turning it off must
+    // not need a rebuild, and with it off Agentiz simply sends nothing.
+    notifications: {
+        enabled: (process.env.ADMINIZER_NOTIFICATIONS ?? "true") === "true",
+        enableGeneral: true,
+        initTab: "agentiz",
+    },
     aiAssistant: {
         enabled: (process.env.OPENHARNESS_ENABLED ?? "true") === "true",
         defaultModel: "agentiz-assistant",

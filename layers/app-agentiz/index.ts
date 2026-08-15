@@ -41,6 +41,10 @@ import {
 } from './lib/git';
 import type { GitProviderAdapter } from './lib/git';
 import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
+import { InteractionNotifierCollectionHandler } from './lib/InteractionNotifierCollection';
+import { registerInteractionNotifier, unregisterInteractionNotifier } from './lib/interactionNotifiers';
+import { DashboardInteractionNotifier } from './lib/notifications/DashboardInteractionNotifier';
+import { forgetAdminizerNotifications, useAdminizerNotifications } from './lib/notifications/dashboardNotifications';
 import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTaskManager';
 import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerCollection';
 import type { TaskManagerAdapter } from './lib/taskManager';
@@ -114,6 +118,19 @@ export class AppAgentiz extends AbstractApp {
 
     @Collection
     taskManagers: TaskManagerAdapter[] = [githubIssuesTaskManagerAdapter];
+
+    /**
+     * Listeners for "an agent is waiting for a human". app-agentiz owns the event and contributes
+     * no *push* notifier: reaching a phone means tokens, credentials and device bookkeeping, which
+     * belong to the layer that owns those devices (app-agentiz-mobile-api).
+     *
+     * The one listener it does contribute is DashboardInteractionNotifier — the Adminizer bell,
+     * whose recipient is a user of the panel this layer already runs inside, so no credential and
+     * no device registry enters the core. It is registered from `mount()` (it needs the Adminizer
+     * instance), not declared as a collection item.
+     */
+    @CollectionHandler('interactionNotifiers')
+    interactionNotifiersHandler = new InteractionNotifierCollectionHandler();
 
     @Collection
     adminizerMiddlewares: AdminizerRouteMiddleware[] = [
@@ -316,6 +333,19 @@ export class AppAgentiz extends AbstractApp {
         // it never finds anything here — go straight to appStorage with the real key instead.
         const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
         const mcpApp = this.appManager.appStorage.get('app-mcp')?.appInstance as AppMCP | undefined;
+
+        if (adminizerApp) {
+            // Second channel for a pending question: the panel's own bell. Registered here rather
+            // than through the `interactionNotifiers` collection because the notifier needs the
+            // Adminizer instance — tying it to that instance being there is honest, and a panel
+            // started without `notifications.enabled` simply reports back false.
+            const notifications = useAdminizerNotifications(adminizerApp.adminizer);
+            registerInteractionNotifier(new DashboardInteractionNotifier());
+            console.log(notifications
+                ? '[AppAgentiz] dashboard notifications enabled (class "agentiz")'
+                : '[AppAgentiz] dashboard notifications are off (set notifications.enabled in the adminizer config)');
+        }
+
         if (adminizerApp && mcpApp) {
             // Adminizer 5.0.0-build.12 ships read/update data skills but no create; add it here
             // until a build that ships create_model_record itself lands (then `add()` below would
@@ -344,6 +374,8 @@ export class AppAgentiz extends AbstractApp {
         }
         unregisterTaskGitProviderResolver(this.appId);
         unregisterTaskRepositoryResolver(this.appId);
+        unregisterInteractionNotifier('app-agentiz:interaction-dashboard');
+        forgetAdminizerNotifications();
         AgentWorkerQueueService.stop();
         AgentJobReaperService.stop();
     }

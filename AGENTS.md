@@ -55,6 +55,32 @@
   (`worker/src/agentiz_worker/main.py`): the ACP server applies it to the session after it starts
   (`set_config_option`/`set_session_model`), not via a CLI flag or env var — `claude-agent-acp`
   otherwise falls back to `ANTHROPIC_MODEL`/its own default.
+- A new agent question (`AgentRunInteractionService.create`) is announced through the
+  `interactionNotifiers` collection (`layers/app-agentiz/lib/interactionNotifiers.ts`) — app-agentiz
+  owns the event and contributes no *push* listener, because reaching a phone means device tokens and
+  credentials. Today there are two listeners: `MobilePushService` in the mobile-api layer, and
+  `DashboardInteractionNotifier` in app-agentiz itself — the second is not an exception to that rule,
+  its recipient is a user of the panel app-agentiz already runs inside, so no credential enters the
+  core. Delivery is
+  fire-and-forget on purpose: it runs inside the worker's `requestHumanInput` call and must never
+  delay or fail it — which is also why nothing there retries, only classifies. Push credentials are
+  optional everywhere — with none configured nothing is sent and `/devices` still stores tokens.
+- *How* a push travels is chosen once, from `PUSH_PROVIDER`, and never branched on again:
+  `MobilePushService` builds one FCM-HTTP-v1-shaped `PushMessage` and sends it through a
+  `PushProvider` (`layers/app-agentiz-mobile-api/lib/push/`). `firebase` (default) signs and posts to
+  FCM here; `gateway` forwards the identical body to `POST {PUSH_GATEWAY_URL}/v1/messages:send` and
+  the backend then holds **no** Firebase credentials. `ApnsPushProvider` is not part of that choice —
+  it serves devices registered with a raw APNs token, which only Apple can accept. Every provider
+  answers the same `PushResult`, and only `reason: 'invalid-token'` deletes a device row.
+- Agentiz sends into Adminizer's own notification subsystem (the bell) through one seam,
+  `layers/app-agentiz/lib/notifications/dashboardNotifications.ts`, under its own class `agentiz`
+  (permission token `notification-agentiz`, registered by adminizer's base service). Two things about
+  that subsystem decide how anything is written into it: `title`/`message` are `STRING(255)`, and the
+  shipped bell renders **only** those two — `metadata` is JSON and unlimited but invisible, so it is
+  storage for ids and links, never for what a person has to read. Always pass `userId`: an
+  unaddressed notification goes to every user holding the permission. The whole thing is off unless
+  `notifications.enabled` is set in `config/adminizer.ts` (env `ADMINIZER_NOTIFICATIONS`), and the
+  seam is a silent no-op when it is — callers never check.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 
