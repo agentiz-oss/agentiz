@@ -4,6 +4,7 @@ import type { IMcpTool } from '@nodeknit/app-mcp';
 import { createMobileApiRouter, MOBILE_API_BASE } from './lib/mobileApiRouter';
 import { createMobileAssistantWebviewRouter } from './lib/mobileAssistantWebviewRouter';
 import { closePushProviders, pushProviderSummary } from './lib/push/providers';
+import { installPushSettingLogRedaction } from './lib/push/redactSettingLog';
 import { forgetPushSettingStorage, pushSettingSlots, usePushSettingStorage } from './lib/push/settings';
 import { pushSettingsMcpTools } from './mcp/pushSettingsTools';
 import { migrations } from './migrations';
@@ -94,6 +95,9 @@ export class AppAgentizMobileApi extends AbstractApp {
       `${MOBILE_API_BASE}/assistant`,
       createMobileAssistantWebviewRouter(this.appManager.sequelize, adminizerApp.adminizer),
     );
+    // Before anything can store a credential: app-manager logs every setting's value on save, and a
+    // service account or a `.p8` must not reach the log. See lib/push/redactSettingLog.ts.
+    installPushSettingLogRedaction(this.appManager);
     // The settings collection has been processed by now, so the slots already carry whatever was
     // stored; this hands the providers the storage to read them from, and the writer its model.
     usePushSettingStorage(this.appManager);

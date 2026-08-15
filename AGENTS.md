@@ -80,7 +80,11 @@
   of using that mechanism: `process.env` **wins** over a stored value (`SettingStorage.get` checks it
   first), which is why every read reports its `source` and a shadowed write comes back as a warning
   instead of doing nothing visible; and app-manager logs `Setting saved in database: <key>: <value>`
-  on save, so a stored credential reaches the application log. A write validates, then calls
+  on save, from `Setting.beforeSaveHook` in the package — which would put a service account or a
+  `.p8` in `logs/app.log` and on stdout, so `lib/push/redactSettingLog.ts` wraps the winston format
+  and masks the value of every key `isSecretPushSetting()` names. It wraps both `AppManager.logger`
+  as imported *and* the running instance's own class logger: under tsx those are not always the same
+  object, and wrapping only the wrong one fails silently. A write validates, then calls
   `resetPushProviders()` — the cached provider pair is what makes a change take effect without a
   restart, and it lives on a `Symbol.for` global for the same reason every other registry here does.
   Stored values are write-only through this layer: `describe()` masks and nothing returns a credential.
@@ -196,6 +200,21 @@ Compare both against `git log`, and compare `buildTime` against the run's `creat
 string is absent from the working tree, `git log -S'<error text>'` dates its removal — that is the
 commit that has to be deployed, and the worker is a **separate** deploy from the server. Only after
 both SHAs match the code you're reading is a re-run (`agentiz-actions.runTask`) evidence of anything.
+
+A prod SHA that lags the branch you're on usually means **no build was ever triggered**, not a broken
+one — check that before reading CI logs for a failure that does not exist:
+
+```bash
+gh run list --branch "$(git branch --show-current)" --limit 5   # empty output = never built
+gh pr list --state all --limit 5
+```
+
+`.github/workflows/container.yml` (the server image) fires only on push to `main`/`master`, on `v*`
+tags, on `pull_request` and on `workflow_dispatch`; `worker-release.yml` only on the `worker` /
+`worker-v*` tags. A feature branch with no PR therefore produces no run at all, and prod keeps
+serving the last `main` build — consistent, just old. Ways forward: `gh pr create --fill` (runs the
+checks, publishes no branch image), `gh workflow run container.yml --ref <branch>`, or merge to
+`main`. The worker is a separate deploy either way.
 
 ## Calling the Agentiz MCP endpoint
 
