@@ -3,7 +3,9 @@ import cors from 'cors';
 import type { Model, Sequelize } from 'sequelize';
 import { bearerToken, verifyMobileToken } from './mobileAuth';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
+import { MobileDeviceService } from '../services/MobileDeviceService';
 import { MobileInteractionService } from '../services/MobileInteractionService';
+import { MobilePushService } from '../services/MobilePushService';
 import { MobileProjectService } from '../services/MobileProjectService';
 import { MobileRunService } from '../services/MobileRunService';
 import { MobileTaskService } from '../services/MobileTaskService';
@@ -81,6 +83,52 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
     res.json({ user: MobileAuthService.toAuthUser(req.mobileUser) });
   });
 
+  // Express types a route parameter as `string | string[]` (a `:id*` pattern can repeat), which no
+  // service here accepts. One place to collapse it, rather than a cast at every call site.
+  const idOf = (req: AuthedRequest, name = 'id') => String((req.params as Record<string, unknown>)[name] ?? '');
+
+  /**
+   * Push registration. The app calls this after it signs in and again whenever the OS hands it a
+   * new token, so it is an idempotent upsert keyed by the token itself.
+   *
+   * `pushEnabled` tells the client whether the server can actually deliver anything — without
+   * credentials the endpoint still records tokens (so enabling push later needs no app change) and
+   * says so, which is the difference between "не настроено" and "не работает" in the app's settings.
+   */
+  router.post('/devices', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
+      const device = await MobileDeviceService.register(userId, {
+        token: String(req.body?.token ?? ''),
+        platform: String(req.body?.platform ?? ''),
+        transport: req.body?.transport === undefined ? undefined : String(req.body.transport),
+        appVersion: req.body?.appVersion === undefined ? null : String(req.body.appVersion),
+        deviceName: req.body?.deviceName === undefined ? null : String(req.body.deviceName),
+      });
+      res.json({
+        data: { id: device.id, platform: device.platform, transport: device.transport },
+        pushEnabled: MobilePushService.configured(),
+      });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Signing out: the phone stops being reachable for this user's questions. The token may be given
+   * in the path or in the body — an FCM registration token is opaque and long, and putting it in a
+   * URL is only safe as long as it happens to contain nothing that needs escaping.
+   */
+  router.delete(['/devices', '/devices/:token'], requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
+      await MobileDeviceService.unregister(userId, String(req.params.token ?? req.body?.token ?? ''));
+      res.json({ ok: true });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
   router.get('/projects', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const ownerId = MobileAuthService.toAuthUser(req.mobileUser).id;
@@ -93,11 +141,11 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   router.get('/projects/:id', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const ownerId = MobileAuthService.toAuthUser(req.mobileUser).id;
-      const project = await MobileProjectService.getForOwner(req.params.id, ownerId);
+      const project = await MobileProjectService.getForOwner(idOf(req), ownerId);
       if (!project) return res.status(404).json({ message: 'Project not found' });
-      res.json({ data: project });
+      return res.json({ data: project });
     } catch (error) {
-      errorResponse(res, error);
+      return errorResponse(res, error);
     }
   });
 
@@ -112,7 +160,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
 
   router.get('/projects/:id/tasks', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.json({ data: await MobileTaskService.listForProject(req.params.id, ownerOf(req)) });
+      res.json({ data: await MobileTaskService.listForProject(idOf(req), ownerOf(req)) });
     } catch (error) {
       errorResponse(res, error);
     }
@@ -122,7 +170,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
     try {
       const tags = Array.isArray(req.body?.tags) ? req.body.tags.map(String) : [];
       const data = await MobileTaskService.create(
-        req.params.id,
+        idOf(req),
         ownerOf(req),
         {
           title: String(req.body?.title ?? ''),
@@ -139,7 +187,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
 
   router.get('/tasks/:id', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.json({ data: await MobileTaskService.detail(req.params.id, ownerOf(req)) });
+      res.json({ data: await MobileTaskService.detail(idOf(req), ownerOf(req)) });
     } catch (error) {
       errorResponse(res, error);
     }
@@ -147,7 +195,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
 
   router.post('/tasks/:id/run', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.status(202).json({ data: await MobileTaskService.run(req.params.id, ownerOf(req)) });
+      res.status(202).json({ data: await MobileTaskService.run(idOf(req), ownerOf(req)) });
     } catch (error) {
       errorResponse(res, error);
     }
@@ -168,7 +216,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
 
   router.get('/tasks/:id/runs', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.json({ data: await MobileTaskService.runs(String(req.params.id), ownerOf(req)) });
+      res.json({ data: await MobileTaskService.runs(idOf(req), ownerOf(req)) });
     } catch (error) {
       errorResponse(res, error);
     }
@@ -203,6 +251,19 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
     }
   });
 
+  /**
+   * One question, by the id a push notification carried. Separate from the list because a push may
+   * be tapped minutes later: by then the question can already be gone from `/interactions`, and the
+   * app still has to show *something* rather than an empty list it cannot explain.
+   */
+  router.get('/interactions/:id', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileInteractionService.getForOwner(idOf(req), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
   router.post('/interactions/:id/answer', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const action = String(req.body?.action ?? '') as AgentRunInteractionAction;
@@ -213,7 +274,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
         ? raw as Record<string, unknown>
         : null;
       const data = await MobileInteractionService.answer(
-        String(req.params.id),
+        idOf(req),
         ownerOf(req),
         action,
         content,
@@ -228,7 +289,7 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   router.post('/tasks/:id/comments', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const data = await MobileTaskService.addComment(
-        req.params.id,
+        idOf(req),
         ownerOf(req),
         String(req.body?.body ?? ''),
         actorOf(req),
