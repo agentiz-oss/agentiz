@@ -99,7 +99,13 @@ export class MobileTaskService {
     };
   }
 
-  private static async runDetail(run: AgentRun) {
+  /**
+   * [withDiff] is false for the copy of the latest run embedded in a task's detail: only the run
+   * screen renders the patch, and it always loads the run through its own endpoint. Sending it
+   * with the task instead would put up to AGENTIZ_MAX_PATCH_BYTES (5 MB by default) on the wire —
+   * and into the task's cache entry — every time somebody opens a task, to render nothing.
+   */
+  private static async runDetail(run: AgentRun, withDiff = true) {
     const [stages, logs, job, interactions, diff] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
       AgentRunLog.findAll({ where: { runId: run.id }, order: [['createdAt', 'ASC']], limit: 500 }),
@@ -109,7 +115,7 @@ export class MobileTaskService {
       // A run in `waiting_input` is blocked on one of these until somebody answers it, so a run's
       // record is incomplete without them — answered ones stay as the history of what was asked.
       MobileInteractionService.forRun(run.id),
-      this.displayedDiff(run),
+      withDiff ? this.displayedDiff(run) : null,
     ]);
     const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
     return {
@@ -186,7 +192,7 @@ export class MobileTaskService {
         description: task.description,
         runCount: runs.length,
       },
-      latestRun: latestRun ? await this.runDetail(latestRun) : null,
+      latestRun: latestRun ? await this.runDetail(latestRun, false) : null,
       // Surfaced at task level too: a question can belong to a run the task screen is not showing
       // in full, and a blocked run must not be something the reader has to go hunting for.
       pendingInteractions,
