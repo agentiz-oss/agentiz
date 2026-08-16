@@ -6,6 +6,7 @@ import { createMobileAssistantWebviewRouter } from './lib/mobileAssistantWebview
 import { closePushProviders, pushProviderSummary } from './lib/push/providers';
 import { installPushSettingLogRedaction } from './lib/push/redactSettingLog';
 import { forgetPushSettingStorage, pushSettingSlots, usePushSettingStorage } from './lib/push/settings';
+import { deviceMcpTools } from './mcp/deviceTools';
 import { pushSettingsMcpTools } from './mcp/pushSettingsTools';
 import { migrations } from './migrations';
 import { MobileDevice } from './models/MobileDevice';
@@ -62,11 +63,12 @@ export class AppAgentizMobileApi extends AbstractApp {
   interactionNotifiers: InteractionNotifier[] = [new MobilePushService()];
 
   /**
-   * Push configuration over MCP: what is set and where it came from, and a way to install a
-   * credential without editing `.env` and restarting the process.
+   * Push over MCP: what is configured and where it came from, a way to install a credential without
+   * editing `.env` and restarting — and the registered devices, which answer the first question any
+   * undelivered notification raises.
    */
   @Collection
-  mcpTools: IMcpTool[] = pushSettingsMcpTools;
+  mcpTools: IMcpTool[] = [...pushSettingsMcpTools, ...deviceMcpTools];
 
   @Collection
   adminizerMiddlewares: AdminizerRouteMiddleware[] = [{
