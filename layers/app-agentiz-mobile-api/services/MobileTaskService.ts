@@ -1,7 +1,9 @@
 import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentRun } from '../../app-agentiz/models/AgentRun';
+import { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
 import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { AgentRunLog } from '../../app-agentiz/models/AgentRunLog';
+import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
@@ -69,8 +71,36 @@ export class MobileTaskService {
     };
   }
 
+  /**
+   * The diff the run screen shows — the row the dashboard also picks (`proposal ? latestDiff :
+   * diff` in AgentizRunDetail): for a workspace run the proposal's latest revision supersedes the
+   * run's own row, because a later "continue" run may have amended the change this run started.
+   * Resolved server-side so the response carries one `diff` field either way.
+   *
+   * Shaped down to what a phone renders. `ops`, `patchSha256` and `treeSha` stay behind: the
+   * mobile client applies nothing, so the operations are dead weight next to a patch that is
+   * already capped by AGENTIZ_MAX_PATCH_BYTES at write time.
+   */
+  private static async displayedDiff(run: AgentRun) {
+    let row: AgentRunDiff | null = null;
+    if (run.proposalId) {
+      const proposal = await AgentWorkspaceProposal.findByPk(run.proposalId);
+      if (proposal?.latestDiffId) row = await AgentRunDiff.findByPk(proposal.latestDiffId);
+    }
+    row ??= await AgentRunDiff.findOne({ where: { runId: run.id } });
+    if (!row) return null;
+    return {
+      patch: row.patch,
+      truncated: row.truncated,
+      stats: row.stats,
+      baseSha: row.baseSha,
+      appliedAt: row.appliedAt,
+      appliedCommitSha: row.appliedCommitSha,
+    };
+  }
+
   private static async runDetail(run: AgentRun) {
-    const [stages, logs, job, interactions] = await Promise.all([
+    const [stages, logs, job, interactions, diff] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
       AgentRunLog.findAll({ where: { runId: run.id }, order: [['createdAt', 'ASC']], limit: 500 }),
       // A run has one durable queue job. Its `result` is the exact terminal payload accepted
@@ -79,6 +109,7 @@ export class MobileTaskService {
       // A run in `waiting_input` is blocked on one of these until somebody answers it, so a run's
       // record is incomplete without them — answered ones stay as the history of what was asked.
       MobileInteractionService.forRun(run.id),
+      this.displayedDiff(run),
     ]);
     const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
     return {
@@ -100,6 +131,7 @@ export class MobileTaskService {
       })),
       workerResult: job?.result ?? null,
       interactions,
+      diff,
     };
   }
 
