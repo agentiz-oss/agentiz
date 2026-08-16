@@ -157,8 +157,8 @@ MCP tools `agentiz.pushSettings` (what is set, and whether it came from the envi
 settings table) and `agentiz.managePushSettings` (set it; `null` removes it and falls back to the
 variable). A change takes effect on the next notification — the provider pair is rebuilt, not the
 process. Values are validated before being stored, and credentials are write-only here: nothing
-reads them back. That is what makes installing a Firebase service account or an APNs key possible on
-a deployment whose `.env` is behind a deploy.
+reads them back. That is what makes installing a Firebase service account possible on a deployment
+whose `.env` is behind a deploy.
 
 The environment keeps priority, because that is app-manager's rule: a variable present in `.env`
 shadows the stored value, which every read reports per setting (`shadowedByEnvironment`) rather than
@@ -173,14 +173,10 @@ leaving it to be discovered.
 | `PUSH_GATEWAY_URL`              | —                    | Base URL of the push gateway, e.g. `http://push-gateway:3000`. |
 | `PUSH_GATEWAY_API_KEY`          | —                    | Bearer key for the gateway. Required with the URL, or the provider stays off. |
 | `PUSH_GATEWAY_TIMEOUT_MS`       | `10000`              | Hard timeout on a gateway request — an unreachable gateway must not hold the caller. |
-| `AGENTIZ_APNS_KEY`              | —                    | APNs `.p8` private key, inline or a path.           |
-| `AGENTIZ_APNS_KEY_ID`           | —                    | Key ID of that `.p8`.                               |
-| `AGENTIZ_APNS_TEAM_ID`          | —                    | Apple developer team id.                            |
-| `AGENTIZ_APNS_BUNDLE_ID`        | —                    | The app's bundle id, sent as the APNs topic.        |
-| `AGENTIZ_APNS_ENV`              | `production`         | `sandbox` for development builds of the app.        |
 
-All four `AGENTIZ_APNS_*` values are required together; a half-configured set logs a warning and
-leaves iOS push off rather than failing at send time.
+iOS has no variables of its own. Both platforms register FCM tokens, so the APNs `.p8` is uploaded to
+the Firebase console rather than to this server, and which of Apple's two hosts a token belongs to is
+Google's decision — a TestFlight build and one run from Xcode both work with nothing to match them.
 
 ## Example
 

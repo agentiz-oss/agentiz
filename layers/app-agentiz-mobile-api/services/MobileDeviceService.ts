@@ -1,17 +1,12 @@
 import { Op } from 'sequelize';
 import { MobileDevice } from '../models/MobileDevice';
-import type { MobilePushPlatform, MobilePushTransport } from '../lib/push';
+import type { MobilePushPlatform } from '../lib/push';
 import { MobileAuthError } from './MobileAuthService';
-
-/** Which service delivers to a platform's tokens, unless the client says otherwise. */
-const DEFAULT_TRANSPORT: Record<MobilePushPlatform, MobilePushTransport> = {
-  android: 'fcm',
-  ios: 'apns',
-};
 
 export interface DeviceRegistration {
   token: string;
   platform: string;
+  /** Accepted and ignored: every token is an FCM one. Older builds still send it. */
   transport?: string;
   appVersion?: string | null;
   deviceName?: string | null;
@@ -34,16 +29,14 @@ export class MobileDeviceService {
     if (platform !== 'android' && platform !== 'ios') {
       throw new MobileAuthError(400, 'platform must be "android" or "ios"');
     }
-    const requested = String(input.transport ?? '').trim().toLowerCase();
-    const transport: MobilePushTransport = requested === 'fcm' || requested === 'apns'
-      ? requested
-      : DEFAULT_TRANSPORT[platform];
+    // `transport` in the body is not read at all: there is one way to reach a phone, and a device
+    // that claims another would still be sent to FCM. Refusing it would only break an older build
+    // for no gain, since its token is an FCM token either way.
 
     const existing = await MobileDevice.findOne({ where: { token } });
     const values = {
       userId,
       platform: platform as MobilePushPlatform,
-      transport,
       appVersion: input.appVersion ?? null,
       deviceName: input.deviceName ?? null,
       lastSeenAt: new Date(),

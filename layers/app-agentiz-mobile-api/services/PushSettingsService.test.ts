@@ -85,11 +85,11 @@ describe('PushSettingsService', () => {
   });
 
   it('stores the value in app-manager settings, not in a table of our own', async () => {
-    await PushSettingsService.set({ AGENTIZ_APNS_BUNDLE_ID: 'cx.m42.agentoz' });
+    await PushSettingsService.set({ PUSH_GATEWAY_URL: 'https://push.example.com' });
 
-    const row = await Setting.findOne({ where: { key: 'AGENTIZ_APNS_BUNDLE_ID' } });
-    expect((row as any)?.value).toBe('cx.m42.agentoz');
-    expect(appManager.settingStorage.getSettingSlot('AGENTIZ_APNS_BUNDLE_ID').value).toBe('cx.m42.agentoz');
+    const row = await Setting.findOne({ where: { key: 'PUSH_GATEWAY_URL' } });
+    expect((row as any)?.value).toBe('https://push.example.com');
+    expect(appManager.settingStorage.getSettingSlot('PUSH_GATEWAY_URL').value).toBe('https://push.example.com');
   });
 
   it('never gives a stored credential back', async () => {
@@ -104,14 +104,14 @@ describe('PushSettingsService', () => {
   });
 
   it('reports where each value came from', async () => {
-    process.env.AGENTIZ_APNS_BUNDLE_ID = 'cx.m42.agentoz';
-    await PushSettingsService.set({ AGENTIZ_APNS_TEAM_ID: '5K5GDFV386' });
+    process.env.PUSH_GATEWAY_URL = 'https://from-env.example.com';
+    await PushSettingsService.set({ PUSH_GATEWAY_TIMEOUT_MS: '5000' });
 
     const by = Object.fromEntries(PushSettingsService.describe().settings.map((s) => [s.key, s]));
 
-    expect(by.AGENTIZ_APNS_TEAM_ID.source).toBe('settings');
-    expect(by.AGENTIZ_APNS_BUNDLE_ID).toMatchObject({ source: 'environment', value: 'cx.m42.agentoz' });
-    expect(by.AGENTIZ_APNS_KEY_ID.source).toBe('unset');
+    expect(by.PUSH_GATEWAY_TIMEOUT_MS.source).toBe('settings');
+    expect(by.PUSH_GATEWAY_URL).toMatchObject({ source: 'environment', value: 'https://from-env.example.com' });
+    expect(by.PUSH_GATEWAY_API_KEY.source).toBe('unset');
   });
 
   it('says so when the environment shadows what was just stored', async () => {
@@ -149,9 +149,7 @@ describe('PushSettingsService', () => {
       ['PUSH_GATEWAY_TIMEOUT_MS', '5', /between 100 and 60000/],
       ['AGENTIZ_FCM_SERVICE_ACCOUNT', '{"project_id":"p"}', /missing client_email, private_key/],
       ['AGENTIZ_FCM_SERVICE_ACCOUNT', '{not json', /not valid JSON/],
-      ['AGENTIZ_APNS_KEY_ID', 'SHORT', /10-character/],
-      ['AGENTIZ_APNS_ENV', 'staging', /production.*sandbox/],
-      ['AGENTIZ_APNS_KEY', '/nowhere/AuthKey.p8', /contents of the .p8/],
+      ['AGENTIZ_FCM_SERVICE_ACCOUNT', '/nowhere/service-account.json', /no such file/],
     ];
 
     for (const [key, value, message] of rejected) {
@@ -184,10 +182,10 @@ describe('PushSettingsService', () => {
       expect(PushSettingsService.describe().warnings.join(' ')).toMatch(/PUSH_GATEWAY_URL is not set/);
     });
 
-    it('names a half-configured APNs set, which is the silent one', async () => {
-      await PushSettingsService.set({ AGENTIZ_APNS_KEY_ID: 'ABC123DEFG', AGENTIZ_APNS_TEAM_ID: '5K5GDFV386' });
+    it('names firebase selected with no service account, which is the silent one', async () => {
+      await PushSettingsService.set({ PUSH_PROVIDER: 'firebase' });
 
-      expect(PushSettingsService.describe().warnings.join(' ')).toMatch(/half-configured.*AGENTIZ_APNS_KEY/s);
+      expect(PushSettingsService.describe().warnings.join(' ')).toMatch(/AGENTIZ_FCM_SERVICE_ACCOUNT is not set/);
     });
   });
 

@@ -86,10 +86,7 @@ describe('push providers', () => {
       expect(createPushProviders().fcm.name).toBe('firebase');
     });
 
-    it('keeps APNs on its own axis: a raw Apple token can only go to Apple', () => {
-      process.env.PUSH_PROVIDER = 'gateway';
-      expect(createPushProviders().apns.name).toBe('apns');
-    });
+
   });
 
   describe('FirebasePushProvider', () => {

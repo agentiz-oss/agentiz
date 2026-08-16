@@ -101,12 +101,11 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
       const device = await MobileDeviceService.register(userId, {
         token: String(req.body?.token ?? ''),
         platform: String(req.body?.platform ?? ''),
-        transport: req.body?.transport === undefined ? undefined : String(req.body.transport),
         appVersion: req.body?.appVersion === undefined ? null : String(req.body.appVersion),
         deviceName: req.body?.deviceName === undefined ? null : String(req.body.deviceName),
       });
       res.json({
-        data: { id: device.id, platform: device.platform, transport: device.transport },
+        data: { id: device.id, platform: device.platform },
         pushEnabled: MobilePushService.configured(),
       });
     } catch (error) {

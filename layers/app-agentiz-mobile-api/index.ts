@@ -113,7 +113,7 @@ export class AppAgentizMobileApi extends AbstractApp {
   }
 
   async unmount(): Promise<void> {
-    // The APNs provider keeps one long-lived HTTP/2 session to Apple; nothing else to tear down.
+    // The push provider holds a kept-alive HTTP connection; nothing else to tear down.
     closePushProviders();
     forgetPushSettingStorage();
     PushSettingsService.forget();

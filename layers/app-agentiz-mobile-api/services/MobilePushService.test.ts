@@ -9,14 +9,9 @@ vi.mock('@nodeknit/app-adminizer', () => ({
 // lib/push/providers.test.ts.
 type Send = (message: any) => Promise<any>;
 const sendFcmPush = vi.fn<Send>(async () => ({ success: true, messageId: 'fcm-1' }));
-const sendApnsPush = vi.fn<Send>(async () => ({ success: true, messageId: 'apns-1' }));
 vi.mock('../lib/push/providers', () => ({
   pushConfigured: () => true,
-  providerFor: (transport: string) => ({
-    name: transport,
-    configured: () => true,
-    send: (message: any) => (transport === 'apns' ? sendApnsPush(message) : sendFcmPush(message)),
-  }),
+  pushProvider: () => ({ name: 'fcm', configured: () => true, send: (message: any) => sendFcmPush(message) }),
 }));
 
 import { Sequelize } from 'sequelize-typescript';
@@ -61,9 +56,7 @@ describe('MobilePushService', () => {
 
   beforeEach(async () => {
     sendFcmPush.mockClear();
-    sendApnsPush.mockClear();
     sendFcmPush.mockImplementation(async () => ({ success: true, messageId: 'fcm-1' }));
-    sendApnsPush.mockImplementation(async () => ({ success: true, messageId: 'apns-1' }));
     await sequelize.sync({ force: true });
 
     const project = await AgentProject.create({ name: 'Owned', slug: 'owned', ownerId: OWNER } as any);
@@ -124,16 +117,14 @@ describe('MobilePushService', () => {
     message: interaction.message,
   });
 
-  it('reaches every device of the project owner, over the transport each one registered with', async () => {
+  it('reaches every device of the project owner — both platforms over FCM', async () => {
     await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
     await MobileDeviceService.register(OWNER, { token: 'ios-token', platform: 'ios' });
 
     await new MobilePushService().notifyCreated(event());
 
-    expect(sendFcmPush).toHaveBeenCalledTimes(1);
-    expect(sendApnsPush).toHaveBeenCalledTimes(1);
-    expect(sendFcmPush.mock.calls[0][0].token).toBe('android-token');
-    expect(sendApnsPush.mock.calls[0][0].token).toBe('ios-token');
+    expect(sendFcmPush).toHaveBeenCalledTimes(2);
+    expect(sendFcmPush.mock.calls.map((call) => call[0].token)).toEqual(['android-token', 'ios-token']);
 
     const message = sendFcmPush.mock.calls[0][0] as any;
     // The tap target. Everything else in the payload is context the app could re-fetch; this it
@@ -159,9 +150,9 @@ describe('MobilePushService', () => {
 
     await new MobilePushService().notifyCreated(event());
 
-    // An iOS device on an FCM token would get these forwarded by FCM; on a raw APNs token the APNs
-    // provider applies them itself. Either way the message says the same thing.
-    const message = sendApnsPush.mock.calls[0][0] as any;
+    // Forwarded to Apple by FCM itself — that is the whole reason the block travels in the message
+    // rather than being assembled next to a connection of ours.
+    const message = sendFcmPush.mock.calls[0][0] as any;
     expect(message.apns.payload.aps['thread-id']).toBe(`agentiz-run-${runId}`);
     expect(message.apns.payload.aps.badge).toBe(1);
   });
@@ -203,7 +194,17 @@ describe('MobilePushService', () => {
 
     expect(await MobileDeviceService.forUser(STRANGER)).toHaveLength(0);
     await new MobilePushService().notifyCreated(event());
-    expect(sendApnsPush).toHaveBeenCalledTimes(1);
+    expect(sendFcmPush).toHaveBeenCalledTimes(1);
+  });
+
+  /** An older build still names a transport; it is accepted and ignored rather than rejected. */
+  it('takes a registration that names a transport, and sends to it all the same', async () => {
+    await MobileDeviceService.register(OWNER, { token: 'ios-token', platform: 'ios', transport: 'apns' });
+
+    await new MobilePushService().notifyCreated(event());
+
+    expect(sendFcmPush).toHaveBeenCalledTimes(1);
+    expect(sendFcmPush.mock.calls[0][0].token).toBe('ios-token');
   });
 
   it('rejects a registration without a usable platform', async () => {

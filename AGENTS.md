@@ -69,9 +69,15 @@
   `MobilePushService` builds one FCM-HTTP-v1-shaped `PushMessage` and sends it through a
   `PushProvider` (`layers/app-agentiz-mobile-api/lib/push/`). `firebase` (default) signs and posts to
   FCM here; `gateway` forwards the identical body to `POST {PUSH_GATEWAY_URL}/v1/messages:send` and
-  the backend then holds **no** Firebase credentials. `ApnsPushProvider` is not part of that choice —
-  it serves devices registered with a raw APNs token, which only Apple can accept. Every provider
-  answers the same `PushResult`, and only `reason: 'invalid-token'` deletes a device row.
+  the backend then holds **no** Firebase credentials. Both platforms travel this one route: iOS
+  carries the Firebase SDK and registers an FCM token, so the `apns` block of the message is applied
+  by FCM rather than by us. Talking to Apple directly (`ApnsPushProvider`, `AGENTIZ_APNS_*`) was
+  removed — with it went tracking which APNs host a token belongs to, which Google now decides per
+  token; that is why a TestFlight build and a build run from Xcode both work with no setting to
+  match them. `MobileDevice` therefore records no transport at all — one route means the column
+  could not differ — and `POST /devices` accepts an older build's `transport` field and ignores it.
+  Every provider answers the same `PushResult`, and only `reason: 'invalid-token'` deletes a device
+  row.
 - Push providers read their configuration through `pushSetting()`
   (`layers/app-agentiz-mobile-api/lib/push/settings.ts`), never `process.env` directly. The values are
   **app-manager settings** — slots declared in the layer's `settings` collection, stored in the

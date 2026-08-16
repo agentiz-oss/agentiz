@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { Column, DataType, Default, Model, Table } from 'sequelize-typescript';
-import type { MobilePushPlatform, MobilePushTransport } from '../lib/push';
+import type { MobilePushPlatform } from '../lib/push';
 
 /**
  * One installation of the mobile app that can be reached with a push notification.
@@ -12,8 +12,8 @@ import type { MobilePushPlatform, MobilePushTransport } from '../lib/push';
  * address. `userId` is a UserAP id — the same identity the mobile JWT carries — which is what makes
  * "notify whoever owns this project" answerable.
  *
- * Rows are disposable. A transport that reports a token as gone (FCM `UNREGISTERED`, APNs 410)
- * deletes it, and the app registers a fresh one on its next launch.
+ * Rows are disposable: a token FCM reports as gone (`UNREGISTERED`) is deleted, and the app
+ * registers a fresh one on its next launch.
  */
 @AdminizerModel({
   model: 'MobileDevice',
@@ -38,16 +38,7 @@ export class MobileDevice extends Model<
   @Column({ type: DataType.ENUM('android', 'ios'), allowNull: false })
   declare platform: MobilePushPlatform;
 
-  /**
-   * Which service delivers to this token. Derived from the platform when the device registers, but
-   * stored rather than recomputed: an iOS build could move from direct APNs to FCM without every
-   * already-registered token suddenly being sent to the wrong service.
-   */
-  @Column({ type: DataType.ENUM('fcm', 'apns'), allowNull: false })
-  declare transport: MobilePushTransport;
-
-  // Text, not a string: an APNs token is 64 hex chars and an FCM registration token has no
-  // documented upper bound at all.
+  // Text, not a string: an FCM registration token has no documented upper bound at all.
   @Column({ type: DataType.TEXT, allowNull: false })
   declare token: string;
 

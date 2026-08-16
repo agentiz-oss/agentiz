@@ -19,8 +19,6 @@ import { readFileSync } from 'fs';
  */
 
 export type MobilePushPlatform = 'android' | 'ios';
-/** How a device is addressed: an FCM registration token, or a raw APNs device token. */
-export type MobilePushTransport = 'fcm' | 'apns';
 
 /** Android-specific delivery options, same names and meaning as FCM HTTP v1's `AndroidConfig`. */
 export interface AndroidPushConfig {
@@ -33,9 +31,12 @@ export interface AndroidPushConfig {
   [key: string]: unknown;
 }
 
-/** APNs-specific delivery options, same shape as FCM HTTP v1's `ApnsConfig`. */
+/**
+ * APNs-specific delivery options, same shape as FCM HTTP v1's `ApnsConfig`. Still here with iOS on
+ * FCM: this is the block FCM itself applies when it forwards a message to Apple.
+ */
 export interface ApnsPushConfig {
-  /** `apns-*` request headers; used verbatim when talking to Apple directly. */
+  /** `apns-*` request headers, applied by FCM. */
   headers?: Record<string, string>;
   /** The APNs payload — `aps` plus any custom keys. */
   payload?: { aps?: Record<string, unknown>; [key: string]: unknown };
@@ -72,7 +73,7 @@ export type PushFailureReason = 'invalid-token' | 'rate-limited' | 'temporary-er
 
 export interface PushSuccess {
   success: true;
-  /** Whatever the far side called it — FCM's `name`, APNs' `apns-id`. Empty when it named nothing. */
+  /** Whatever the far side called it — FCM's `name`. Empty when it named nothing. */
   messageId: string;
 }
 
@@ -116,12 +117,12 @@ export function pushFailure(reason: PushFailureReason, error?: string): PushResu
  * nothing above them can tell which one is installed.
  */
 export interface PushProvider {
-  /** For logs and diagnostics — `firebase`, `gateway`, `apns`. */
+  /** For logs and diagnostics — `firebase`, `gateway`. */
   readonly name: string;
   /** False when its credentials are absent; the caller then skips it instead of failing sends. */
   configured(): boolean;
   send(message: PushMessage): Promise<PushResult>;
-  /** Releases anything long-lived (APNs keeps an HTTP/2 session). */
+  /** Releases anything long-lived, such as a kept-alive HTTP connection. */
   close?(): void;
 }
 
@@ -160,5 +161,5 @@ export function classifyHttpFailure(status: number, body: string): PushFailureRe
 }
 
 // The providers import these types and helpers from here and are imported directly
-// (`./push/FirebasePushProvider`, `./push/GatewayPushProvider`, `./push/ApnsPushProvider`) rather than
-// re-exported, so this module stays a leaf and there is no import cycle to reason about.
+// (`./push/FirebasePushProvider`, `./push/GatewayPushProvider`) rather than re-exported, so this
+// module stays a leaf and there is no import cycle to reason about.

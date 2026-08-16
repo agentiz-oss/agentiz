@@ -3,19 +3,22 @@
 Что настраивается: сервер узнаёт, что агент задал вопрос, и присылает уведомление на телефон
 владельца проекта; тап по уведомлению открывает экран этого вопроса.
 
-Дорог две, и они независимы:
+Дорога одна, обе платформы идут через FCM:
 
 ```
 Android ──FCM-токен──▶ сервер ──▶ FCM (Google) ──▶ телефон
-iOS     ──APNs-токен─▶ сервер ──▶ APNs (Apple) ──▶ телефон
+iOS     ──FCM-токен──▶ сервер ──▶ FCM (Google) ──▶ APNs (Apple) ──▶ телефон
 ```
 
-iOS ходит в Apple **напрямую**, не через FCM: приложение регистрирует «сырой» APNs-токен, и в
-iOS-сборке нет ни Firebase SDK, ни CocoaPods. Поэтому Firebase нужен **только для Android**, а
-ключ Apple — **только для iOS**. Ни один из них не обязателен: без настроек пуши просто не
-отправляются, вопрос всё равно виден в приложении и в дашборде (см. «Если ничего не настроено»).
+С Apple разговаривает Google: приложение на обеих платформах регистрирует FCM-токен, а `.p8`
+загружается в консоль Firebase. Прямой путь в APNs со стороны сервера был и удалён — вместе с ним
+исчезла необходимость знать, из какой сборки (sandbox или production) пришёл токен.
 
-Всё, что ниже, — одноразовые действия. Порядок частей A и B неважен, делайте нужную.
+Поэтому Firebase нужен для обеих платформ, а ключ Apple — для iOS, но не серверу. Ничего из этого не
+обязательно: без настроек пуши просто не отправляются, вопрос всё равно виден в приложении и в
+дашборде (см. «Если ничего не настроено»).
+
+Всё, что ниже, — одноразовые действия. Часть A нужна всегда, часть B — если нужен iOS.
 
 ---
 
@@ -88,64 +91,54 @@ iOS-сборке нет ни Firebase SDK, ни CocoaPods. Поэтому Fireba
 
 ---
 
-## Часть B. iOS: ключ APNs
+## Часть B. iOS: ключ APNs — в Firebase, не на сервер
 
-Нужен один файл `.p8` и три идентификатора. Всё делается в https://developer.apple.com/account
-(нужна роль Account Holder или Admin).
+iOS ходит через FCM, как и Android: приложение регистрирует **FCM-токен**, а с Apple разговаривает
+Google. Поэтому ключ `.p8` загружается в консоль Firebase, а на сервере Agentiz никаких
+`AGENTIZ_APNS_*` больше нет — их удалили вместе с прямым APNs-провайдером.
+
+Смысл этого выбора один: окружение APNs (sandbox против production) определяет Google по самой
+регистрации. Сборка из Xcode и сборка из TestFlight работают одновременно, и подгонять под них
+настройку сервера не нужно — раньше это была самая частая причина «токен есть, пуш не доходит».
 
 ### B1. Ключ APNs (`.p8`)
 
-1. **Certificates, Identifiers & Profiles → Keys → +** (Create a key).
-2. Имя любое (`Agentiz APNs`), поставить галку **Apple Push Notifications service (APNs)** →
-   Continue → Register.
-3. **Download** — файл `AuthKey_XXXXXXXXXX.p8`. **Скачать можно один раз**, второй раз Apple его не
-   отдаст; потерян — заводится новый ключ.
-4. `XXXXXXXXXX` в имени файла — это **Key ID**, он же показан на странице ключа.
+1. https://developer.apple.com/account → **Certificates, Identifiers & Profiles → Keys → +**.
+2. Имя любое (`Agentiz APNs`), галка **Apple Push Notifications service (APNs)** → Continue → Register.
+3. **Download** — файл `AuthKey_XXXXXXXXXX.p8`. **Скачать можно один раз**; потерян — заводится новый.
+4. `XXXXXXXXXX` в имени файла — это **Key ID**.
 
-Один ключ работает на все приложения команды и на sandbox, и на production — плодить ключи на
-каждое приложение не нужно (лимит: два ключа APNs на аккаунт).
+Один ключ работает на все приложения команды и на оба окружения (лимит: два ключа APNs на аккаунт).
 
-### B2. Три идентификатора
+### B2. Загрузка ключа в Firebase
 
-| Что | Где взять | Пример |
-| --- | --- | --- |
-| Key ID | имя файла `AuthKey_XXXXXXXXXX.p8` или страница ключа | `ABC123DEFG` |
-| Team ID | developer.apple.com → Membership details | `5K5GDFV386` |
-| Bundle ID | App ID приложения; в этом проекте `BUNDLE_ID` в `mobile-client/.env` | `cx.m42.agentoz` |
+Firebase → Project settings → **Cloud Messaging** → APNs Authentication Key → **Upload**: сам `.p8`,
+Key ID и Team ID (developer.apple.com → Membership details, например `5K5GDFV386`).
 
-Bundle ID должен совпадать **точно** — он уходит в заголовок `apns-topic`, и при расхождении Apple
-отвечает `DeviceTokenNotForTopic`.
+### B3. iOS-приложение в Firebase
 
-### B3. Capability у App ID
+**Add app → iOS**, bundle id — точно `cx.m42.agentoz` (значение `BUNDLE_ID` в
+`mobile-client/iosApp/Configuration/Config.xcconfig`). Скачать `GoogleService-Info.plist` и положить
+в `mobile-client/iosApp/iosApp/`. Файл в `.gitignore`: это конфиг инсталляции, не артефакт репозитория.
 
-**Identifiers** → нужный App ID → включить **Push Notifications** → Save. Если App ID создавался
-давно, галка может быть снята — без неё устройство не получит токен.
-Provisioning profile после изменения capability надо **перевыпустить и пересобрать** приложение
-(см. `mobile-client/SECRETS-SETUP.md`).
+Без него приложение не запустится вовсе — `FirebaseApp.configure()` падает, если plist отсутствует.
 
-### B4. Переменные сервера
+### B4. SDK в Xcode-проекте
 
-       sudo install -m 600 -o agentiz -g agentiz ~/Downloads/AuthKey_ABC123DEFG.p8 \
-         /etc/agentiz/AuthKey_ABC123DEFG.p8
+В Xcode: **File → Add Package Dependencies** → `https://github.com/firebase/firebase-ios-sdk` →
+подключить к таргету продукт **FirebaseMessaging**. `iosApp/iosApp/iOSApp.swift` импортирует его
+безусловно, так что до этого шага iOS-сборка не компилируется.
 
-`.env`:
+### B5. Capability у App ID
 
-       AGENTIZ_APNS_KEY=/etc/agentiz/AuthKey_ABC123DEFG.p8
-       AGENTIZ_APNS_KEY_ID=ABC123DEFG
-       AGENTIZ_APNS_TEAM_ID=5K5GDFV386
-       AGENTIZ_APNS_BUNDLE_ID=cx.m42.agentoz
-       AGENTIZ_APNS_ENV=production
+**Identifiers** → нужный App ID → включить **Push Notifications** → Save. Без неё устройство не
+получит APNs-токен, который Firebase обменивает на свой. После смены capability provisioning profile
+надо **перевыпустить и пересобрать** приложение (см. `mobile-client/SECRETS-SETUP.md`).
 
-Все четыре — **вместе**: при неполном наборе сервер пишет в лог
-`APNs is half-configured; push to iOS stays off` и iOS-пуши остаются выключены, вместо того чтобы
-падать на отправке. Как и с FCM, `AGENTIZ_APNS_KEY` принимает и путь, и сам PEM строкой.
+### B6. Что настраивается на сервере
 
-**`AGENTIZ_APNS_ENV` — самая частая причина «токен есть, пуш не доходит».** Сборка из Xcode
-(development-профиль) регистрируется в **sandbox**, сборка из TestFlight/App Store — в
-**production**, и это разные серверы Apple с разными токенами. Токен из development-сборки,
-отправленный на production-хост, получает `BadDeviceToken`. Для отладочных сборок:
-
-       AGENTIZ_APNS_ENV=sandbox
+Ничего отдельного для iOS. Работает тот же service account Firebase, что и для Android
+(`AGENTIZ_FCM_SERVICE_ACCOUNT`), — блок `apns` едет внутри общего сообщения, и FCM применяет его сам.
 
 ---
 
@@ -174,7 +167,7 @@ curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
 
 В ответе для каждой настройки — `source`: `environment` (из `.env`, и оно в силе), `settings`
 (установлена здесь) или `unset`. Плюс `pushEnabled` и `warnings` — конфигурации, которые сохранены,
-но доставить ничего не смогут: выбран `gateway` без URL, заполнены не все четыре `AGENTIZ_APNS_*`,
+но доставить ничего не смогут: выбран `gateway` без URL, выбран `firebase` без service account,
 значение перекрыто переменной окружения.
 
 Установить (`settings` — объект; `null` в значении **удаляет** настройку, и она возвращается к
@@ -191,11 +184,6 @@ curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
   -d '{"settings":{"PUSH_PROVIDER":"gateway","PUSH_GATEWAY_URL":"http://push-gateway:3000","PUSH_GATEWAY_API_KEY":"push_sk_..."}}' \
   https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
 
-# ключ APNs — содержимым .p8 или путём
-curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
-  -d "{\"settings\":{\"AGENTIZ_APNS_KEY\":$(jq -Rs . < AuthKey_ABC123DEFG.p8),\"AGENTIZ_APNS_KEY_ID\":\"ABC123DEFG\",\"AGENTIZ_APNS_TEAM_ID\":\"5K5GDFV386\",\"AGENTIZ_APNS_BUNDLE_ID\":\"cx.m42.agentoz\",\"AGENTIZ_APNS_ENV\":\"production\"}}" \
-  https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
-
 # вернуться к тому, что написано в .env
 curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
   -d '{"settings":{"PUSH_PROVIDER":null}}' https://agentiz.m42.cx/mcp/call/agentiz.managePushSettings
@@ -203,23 +191,24 @@ curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
 
 Значения проверяются **до** записи: `PUSH_PROVIDER` только `firebase`/`gateway`, service account —
 что это JSON с `project_id`/`client_email`/`private_key` (или существующий файл), URL — что это
-http/https, Key ID и Team ID — что это 10-символьные идентификаторы Apple, `.p8` — что это PEM или
-существующий файл. Если в одном вызове несколько настроек и хоть одна не прошла — **не применяется
-ни одна**: наполовину применённая смена кредов хуже отклонённой.
+http/https, таймаут — что это число в разумных пределах. Если в одном вызове несколько настроек и
+хоть одна не прошла — **не применяется ни одна**: наполовину применённая смена кредов хуже
+отклонённой.
 
 **Прочитать записанный секрет нельзя ничем** — ни этим инструментом, ни через админку; потеряли,
-устанавливайте заново. Одно предостережение: app-manager при сохранении настройки пишет в свой лог
-строку `Setting saved in database: <ключ>: <значение>`, то есть сам секрет попадает в лог
-приложения. Файлы логов надо считать настолько же чувствительными, насколько и креды.
+устанавливайте заново. app-manager при сохранении пишет в лог строку
+`Setting saved in database: <ключ>: <значение>`, но значения секретных ключей в ней замаскированы —
+`layers/app-agentiz-mobile-api/lib/push/redactSettingLog.ts` подменяет их на `••••••••` до того, как
+строка дойдёт до транспорта.
 
 ## Часть C. Что где лежит в итоге
 
 | Файл / переменная | Где | Что сломается без него |
 | --- | --- | --- |
 | `mobile-client/composeApp/google-services.json` | в дереве сборки Android | Android-приложение не получит FCM-токен |
-| `AGENTIZ_FCM_SERVICE_ACCOUNT` | `.env` сервера | сервер не сможет отправить в FCM (Android молчит) |
-| `AGENTIZ_APNS_KEY` + `_KEY_ID` + `_TEAM_ID` + `_BUNDLE_ID` | `.env` сервера | iOS-пуши выключены |
-| `AGENTIZ_APNS_ENV` | `.env` сервера | пуши уходят «не на тот» APNs (см. B4) |
+| `mobile-client/iosApp/iosApp/GoogleService-Info.plist` | в дереве сборки iOS | iOS-приложение падает на старте (`FirebaseApp.configure()`) |
+| `.p8` в консоли Firebase | Firebase → Cloud Messaging | FCM не сможет доставить в APNs, iOS молчит |
+| `AGENTIZ_FCM_SERVICE_ACCOUNT` | `.env` сервера | сервер не сможет отправить в FCM — молчат обе платформы |
 | `PUSH_PROVIDER` | `.env` сервера | по умолчанию `firebase` |
 
 Ни один из этих файлов не коммитится. Полный список переменных с дефолтами —
@@ -241,7 +230,7 @@ http/https, Key ID и Team ID — что это 10-символьные иден
 `AGENTIZ_FCM_SERVICE_ACCOUNT` в этом случае из `.env` убирается совсем — service account из части
 A3 переезжает в конфиг шлюза (`FIREBASE_SERVICE_ACCOUNT`). Тело запроса к FCM при этом не меняется
 ни на байт, так что переключение туда-обратно — это правка `.env` и рестарт, приложение
-пересобирать не надо. iOS не затрагивается вообще: APNs-токены в шлюз не ходят.
+пересобирать не надо. iOS идёт тем же путём — её токены такие же FCM-токены.
 
 Части A1–A2 (проект Firebase и `google-services.json`) нужны всё равно — без них Android-приложению
 неоткуда взять токен.
@@ -286,7 +275,7 @@ A3 переезжает в конфиг шлюза (`FIREBASE_SERVICE_ACCOUNT`).
 
 | reason | Что произошло | Что делать |
 | --- | --- | --- |
-| `invalid-token` | FCM `UNREGISTERED` / APNs `BadDeviceToken`, `Unregistered`, `DeviceTokenNotForTopic` | ничего: строка устройства удаляется сама, приложение зарегистрирует новый токен. Если это повторяется у всех iOS — почти наверняка `AGENTIZ_APNS_ENV` (см. B4) |
+| `invalid-token` | FCM `UNREGISTERED`, `INVALID_ARGUMENT` | ничего: строка устройства удаляется сама, приложение зарегистрирует новый токен |
 | `rate-limited` | 429 от FCM/APNs | ничего; следующий вопрос уведомит снова, повторов сервер не делает намеренно |
 | `temporary-error` | 5xx или таймаут | то же самое; если постоянно — сеть/недоступен шлюз |
 | `unknown` | 401/403 (плохие креды), 400 (кривое сообщение) | это конфигурация: неверный service account, отозванный `.p8`, не тот Team ID |
@@ -325,16 +314,11 @@ A3 переезжает в конфиг шлюза (`FIREBASE_SERVICE_ACCOUNT`).
 
 ---
 
-## Если позже переводить iOS на FCM
+## Что осталось от прямого APNs
 
-Сейчас это не нужно, но если появится причина (единый канал, статистика в консоли Firebase), то
-меняется только сторона приложения плюс одна настройка Firebase:
+Ничего. `ApnsPushProvider`, настройки `AGENTIZ_APNS_*`, учёт окружения токена и колонка
+`MobileDevice.transport` удалены — последняя миграцией `drop_device_transport`: при одном способе
+доставки колонка не различала бы ничего.
 
-1. Firebase → Project settings → **Cloud Messaging** → APNs Authentication Key → загрузить тот же
-   `.p8` с Key ID и Team ID.
-2. Добавить в Firebase iOS-приложение, скачать `GoogleService-Info.plist`, подключить Firebase SDK
-   в iOS-сборку.
-3. Приложение регистрирует **FCM-токен** и шлёт его с `"transport":"fcm"` на `/devices`.
-
-Серверную часть менять не придётся: блок `apns` уже едет внутри того же сообщения, и FCM применит
-его сам. Переменные `AGENTIZ_APNS_*` после этого можно убрать.
+`POST /devices` по-прежнему принимает поле `transport` в теле и молча его игнорирует: у старой сборки
+токен всё равно окажется FCM-токеном, и отказывать ей не за что.

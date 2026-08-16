@@ -5,7 +5,7 @@ import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteractio
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import type { InteractionCreatedEvent, InteractionNotifier } from '../../app-agentiz/lib/interactionNotifiers';
 import { isInvalidToken, isRetryable, pushFailureOf, type PushMessage, type PushResult } from '../lib/push';
-import { providerFor, pushConfigured } from '../lib/push/providers';
+import { pushConfigured, pushProvider } from '../lib/push/providers';
 import { MobileDevice } from '../models/MobileDevice';
 import { MobileDeviceService } from './MobileDeviceService';
 
@@ -30,7 +30,7 @@ function truncate(text: string, limit: number): string {
  * without a round trip while the app is still starting up.
  *
  * Nothing here knows how a message travels. It builds one `PushMessage` and hands it to the
- * provider that can address each device (`lib/push/providers.ts`), so `PUSH_PROVIDER=firebase` and
+ * configured provider (`lib/push/providers.ts`), so `PUSH_PROVIDER=firebase` and
  * `PUSH_PROVIDER=gateway` run exactly this code.
  */
 export class MobilePushService implements InteractionNotifier {
@@ -117,7 +117,7 @@ export class MobilePushService implements InteractionNotifier {
    */
   private static async deliver(devices: MobileDevice[], message: PushMessage): Promise<void> {
     const results = await Promise.all(devices.map(async (device) => {
-      const result: PushResult = await providerFor(device.transport).send({ ...message, token: device.token });
+      const result: PushResult = await pushProvider().send({ ...message, token: device.token });
       const failure = pushFailureOf(result);
       if (failure && failure.reason !== 'invalid-token') {
         const kind = isRetryable(result) ? 'failed (retryable)' : 'failed';

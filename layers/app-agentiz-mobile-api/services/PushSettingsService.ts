@@ -47,7 +47,7 @@ export interface PushSettingView {
 
 export interface PushSettingsSummary {
   provider: string;
-  providers: { fcm: { name: string; configured: boolean }; apns: { configured: boolean } };
+  providers: { fcm: { name: string; configured: boolean } };
   pushEnabled: boolean;
   settings: PushSettingView[];
   /** Configurations that are accepted but cannot deliver — a half-filled APNs set, say. */
@@ -157,9 +157,8 @@ export class PushSettingsService {
       provider: pushProviderSummary(),
       providers: {
         fcm: { name: resolved.fcm.name, configured: resolved.fcm.configured() },
-        apns: { configured: resolved.apns.configured() },
       },
-      pushEnabled: resolved.fcm.configured() || resolved.apns.configured(),
+      pushEnabled: resolved.fcm.configured(),
       settings: PUSH_SETTING_KEYS.map((key) => ({
         key,
         source: pushSettingSource(key),
@@ -232,27 +231,6 @@ function validate(key: PushSettingKey, value: string): string {
       }
       return String(Math.round(ms));
     }
-    case 'AGENTIZ_APNS_KEY': {
-      if (value.includes('BEGIN PRIVATE KEY')) return value;
-      if (!existsSync(value)) {
-        throw new Error('AGENTIZ_APNS_KEY: expected the contents of the .p8 file, or a path to it');
-      }
-      return value;
-    }
-    case 'AGENTIZ_APNS_KEY_ID':
-    case 'AGENTIZ_APNS_TEAM_ID': {
-      // Apple issues 10-character identifiers; anything else is a copy-paste accident that would
-      // otherwise surface as an unexplained 403 from APNs.
-      if (!/^[A-Z0-9]{10}$/i.test(value)) throw new Error(`${key}: expected a 10-character Apple identifier`);
-      return value.toUpperCase();
-    }
-    case 'AGENTIZ_APNS_ENV': {
-      const env = value.toLowerCase();
-      if (env !== 'production' && env !== 'sandbox') {
-        throw new Error('AGENTIZ_APNS_ENV must be "production" or "sandbox"');
-      }
-      return env;
-    }
     default:
       return value;
   }
@@ -273,18 +251,9 @@ function warningsFor(): string[] {
     if (!pushSetting('PUSH_GATEWAY_URL')) warnings.push('PUSH_PROVIDER=gateway but PUSH_GATEWAY_URL is not set');
     if (!pushSetting('PUSH_GATEWAY_API_KEY')) warnings.push('PUSH_PROVIDER=gateway but PUSH_GATEWAY_API_KEY is not set');
   } else if (!pushSetting('AGENTIZ_FCM_SERVICE_ACCOUNT')) {
-    warnings.push('PUSH_PROVIDER=firebase but AGENTIZ_FCM_SERVICE_ACCOUNT is not set; Android push is off');
+    warnings.push('PUSH_PROVIDER=firebase but AGENTIZ_FCM_SERVICE_ACCOUNT is not set; push is off');
   }
 
-  const apns = ['AGENTIZ_APNS_KEY', 'AGENTIZ_APNS_KEY_ID', 'AGENTIZ_APNS_TEAM_ID', 'AGENTIZ_APNS_BUNDLE_ID'] as const;
-  const present = apns.filter((key) => pushSetting(key));
-  if (present.length > 0 && present.length < apns.length) {
-    warnings.push(`APNs is half-configured; iOS push stays off until all four are set (missing: ${
-      apns.filter((key) => !pushSetting(key)).join(', ')})`);
-  }
-  if (present.length === apns.length && (pushSetting('AGENTIZ_APNS_ENV') ?? 'production') === 'production') {
-    warnings.push('AGENTIZ_APNS_ENV=production: tokens from a development (Xcode) build will be rejected as BadDeviceToken');
-  }
   return warnings;
 }
 

@@ -1,4 +1,5 @@
 import { down as downMobileDevices, up as upMobileDevices } from './umzug/1787100000000_mobile_devices';
+import { down as downDropTransport, up as upDropTransport } from './umzug/1787200000000_drop_device_transport';
 
 /**
  * This layer's own schema. It owns exactly one table — the push tokens of installed apps — which is
@@ -13,6 +14,12 @@ export const migrations = {
       timestamp: 1787100000000,
       up: upMobileDevices,
       down: downMobileDevices,
+    },
+    {
+      name: 'drop_device_transport',
+      timestamp: 1787200000000,
+      up: upDropTransport,
+      down: downDropTransport,
     },
   ],
 };

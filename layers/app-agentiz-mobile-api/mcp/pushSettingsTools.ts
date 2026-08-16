@@ -24,7 +24,7 @@ const pushSettingsTool: IMcpTool = {
   name: 'agentiz.pushSettings',
   group: 'agentiz',
   shortDescription: 'Shows which push settings are configured, and from where.',
-  description: `${settingsDescription} Reports for each setting whether it comes from the database or the environment, whether push is currently able to deliver, and warnings about configurations that cannot work (a half-configured APNs set, gateway selected without a URL). Credential values are masked and never returned.`,
+  description: `${settingsDescription} Reports for each setting whether it comes from the database or the environment, whether push is currently able to deliver, and warnings about configurations that cannot work (gateway selected without a URL, a missing service account). Credential values are masked and never returned.`,
   mode: 'protected',
   inputSchema: { type: 'object', properties: {} },
   async handler() {
@@ -40,7 +40,7 @@ const managePushSettingsTool: IMcpTool = {
     'Installs push credentials and switches. Pass `settings` as an object of key/value pairs;',
     'a value of null removes the setting, which falls back to the environment variable of the same name.',
     `Known keys: ${PUSH_SETTING_KEYS.join(', ')}.`,
-    'AGENTIZ_FCM_SERVICE_ACCOUNT takes the service-account JSON itself or a path to it; AGENTIZ_APNS_KEY takes the .p8 contents or a path.',
+    'AGENTIZ_FCM_SERVICE_ACCOUNT takes the service-account JSON itself or a path to it.',
     'Values are validated before being stored and applied immediately — the next notification uses them, no restart.',
     'This writes credentials to the database; they cannot be read back afterwards.',
   ].join(' '),

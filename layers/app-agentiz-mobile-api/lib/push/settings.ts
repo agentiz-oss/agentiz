@@ -25,25 +25,17 @@ export const PUSH_SETTING_KEYS = [
   'PUSH_GATEWAY_URL',
   'PUSH_GATEWAY_API_KEY',
   'PUSH_GATEWAY_TIMEOUT_MS',
-  'AGENTIZ_APNS_KEY',
-  'AGENTIZ_APNS_KEY_ID',
-  'AGENTIZ_APNS_TEAM_ID',
-  'AGENTIZ_APNS_BUNDLE_ID',
-  'AGENTIZ_APNS_ENV',
 ] as const;
 
 export type PushSettingKey = typeof PUSH_SETTING_KEYS[number];
 
 /**
  * Values that can send notifications to every install of the app if they leak. Never returned in
- * full by anything — see {@link maskPushSetting}. The identifiers (key id, team id, bundle id) are
- * deliberately *not* here: they are needed to diagnose a `DeviceTokenNotForTopic` and are printed
- * on Apple's own web page.
+ * full by anything — see {@link maskPushSetting}.
  */
 const SECRET_KEYS: ReadonlySet<string> = new Set<string>([
   'AGENTIZ_FCM_SERVICE_ACCOUNT',
   'PUSH_GATEWAY_API_KEY',
-  'AGENTIZ_APNS_KEY',
 ]);
 
 /** The shape app-manager's SettingHandler instantiates. Not imported: the package exports no type. */
@@ -92,11 +84,6 @@ export const PUSH_SETTING_SLOTS: Record<PushSettingKey, new () => PushSettingSlo
   PUSH_GATEWAY_URL: slot('PUSH_GATEWAY_URL', 'Push gateway URL', 'Base URL of the push gateway, used when the provider is "gateway".'),
   PUSH_GATEWAY_API_KEY: slot('PUSH_GATEWAY_API_KEY', 'Push gateway API key', 'Bearer key the gateway accepts.'),
   PUSH_GATEWAY_TIMEOUT_MS: slot('PUSH_GATEWAY_TIMEOUT_MS', 'Push gateway timeout', 'Hard timeout on a gateway request, in milliseconds.', 'number'),
-  AGENTIZ_APNS_KEY: slot('AGENTIZ_APNS_KEY', 'APNs key', 'Contents of the .p8 signing key, or a path to it.'),
-  AGENTIZ_APNS_KEY_ID: slot('AGENTIZ_APNS_KEY_ID', 'APNs key id', 'The 10-character Key ID of that .p8.'),
-  AGENTIZ_APNS_TEAM_ID: slot('AGENTIZ_APNS_TEAM_ID', 'Apple team id', 'The 10-character Apple developer team id.'),
-  AGENTIZ_APNS_BUNDLE_ID: slot('AGENTIZ_APNS_BUNDLE_ID', 'App bundle id', "The app's bundle id, sent to Apple as the APNs topic."),
-  AGENTIZ_APNS_ENV: slot('AGENTIZ_APNS_ENV', 'APNs environment', '"production", or "sandbox" for development builds of the app.'),
 };
 
 export const pushSettingSlots: (new () => PushSettingSlot)[] = Object.values(PUSH_SETTING_SLOTS);
