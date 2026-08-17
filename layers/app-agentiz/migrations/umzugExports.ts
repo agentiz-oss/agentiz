@@ -64,6 +64,7 @@ import {
   down as downWorkspaceProposalOptionalRepository,
 } from './umzug/1787000700000_workspace_proposal_optional_repository';
 import { up as upManualWorkerExecutors, down as downManualWorkerExecutors } from './umzug/1787000800000_manual_worker_executors';
+import { up as upRunLogStreamIndex, down as downRunLogStreamIndex } from './umzug/1787000900000_run_log_stream_index';
 
 export const umzugExports: Migration[] = [
   {
@@ -186,5 +187,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1787000800000,
     up: upManualWorkerExecutors,
     down: downManualWorkerExecutors,
+  },
+  {
+    name: 'run_log_stream_index',
+    timestamp: 1787000900000,
+    up: upRunLogStreamIndex,
+    down: downRunLogStreamIndex,
   },
 ];

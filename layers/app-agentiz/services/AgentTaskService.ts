@@ -1,7 +1,7 @@
 import { Op } from 'sequelize';
 import { AgentProject } from '../models/AgentProject';
 import { AgentRun } from '../models/AgentRun';
-import { AgentRunLog } from '../models/AgentRunLog';
+import { listRunLogs } from '../lib/runLogs';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
 import { AgentTaskComment } from '../models/AgentTaskComment';
@@ -181,12 +181,14 @@ export class AgentTaskService {
     ]);
 
     const latestRun = runs[0] ?? null;
+    // The tail of the log, not its beginning: this preview sits under a possibly still-running run,
+    // and the run screen is where the whole thing is paged.
     const [stages, logs] = latestRun
       ? await Promise.all([
           AgentStageExecution.findAll({ where: { runId: latestRun.id }, order: [['stageIndex', 'ASC']] }),
-          AgentRunLog.findAll({ where: { runId: latestRun.id }, order: [['createdAt', 'ASC']], limit: 300 }),
+          listRunLogs(latestRun.id, { limit: 300 }),
         ])
-      : [[], []];
+      : [[], null];
 
     return {
       task: {
@@ -213,7 +215,9 @@ export class AgentTaskService {
         ? {
             run: latestRun.toJSON(),
             stages: stages.map((stage) => stage.toJSON()),
-            logs: logs.map((log) => log.toJSON()),
+            logs: (logs?.logs ?? []).map((log) => log.toJSON()),
+            logsCursor: logs?.nextCursor ?? null,
+            logsHasEarlier: logs?.hasEarlier ?? false,
           }
         : null,
       // Sorted here rather than in SQL: the key is "upstream time, falling back to local time",

@@ -5,7 +5,7 @@ import { PipelineSpec } from '../models/PipelineSpec';
 import { AgentTask } from '../models/AgentTask';
 import { AgentRun } from '../models/AgentRun';
 import { AgentStageExecution } from '../models/AgentStageExecution';
-import { AgentRunLog } from '../models/AgentRunLog';
+import { listRunLogs } from '../lib/runLogs';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
 import { AgentPipelineService } from '../services/AgentPipelineService';
@@ -253,10 +253,10 @@ const runsTool: IMcpTool = {
 
 const runDetailsTool: IMcpTool = {
   name: 'agentiz.runDetails', group: 'agentiz',
-  shortDescription: 'Returns stages and bounded logs for one run; full stage payloads are opt-in.',
-  description: 'Returns complete execution state for one run: stage statuses and recent logs. Stage input/output is omitted by default to conserve context; set includePayloads=true only for the selected run.',
+  shortDescription: 'Returns stages and the tail of the log for one run; full stage payloads are opt-in.',
+  description: 'Returns complete execution state for one run: stage statuses and the newest log lines. Logs are the tail, not the beginning — a running agent streams its tool calls, so a long run has far more lines than logLimit. Pass after=<logsCursor from a previous call> to get only what arrived since, or before=<logsEarlierCursor> to walk back towards the start. Stage input/output is omitted by default to conserve context; set includePayloads=true only for the selected run.',
   mode: 'protected',
-  inputSchema: { type: 'object', required: ['runId'], properties: { runId: { type: 'string' }, logLimit: { type: 'integer', default: 100, maximum: 200 }, includePayloads: { type: 'boolean', default: false } } },
+  inputSchema: { type: 'object', required: ['runId'], properties: { runId: { type: 'string' }, logLimit: { type: 'integer', default: 100, maximum: 200 }, after: { type: 'string', description: 'logsCursor from an earlier call: returns only lines newer than it.' }, before: { type: 'string', description: 'logsEarlierCursor from an earlier call: returns the page just before it.' }, includePayloads: { type: 'boolean', default: false } } },
   async handler(params) {
     const payload = objectParams(params);
     const runId = stringParam(payload, 'runId');
@@ -264,10 +264,15 @@ const runDetailsTool: IMcpTool = {
     const run = await AgentRun.findByPk(runId);
     if (!run) throw new Error(`AgentRun ${runId} not found`);
     const includePayloads = payload.includePayloads === true;
-    const [stages, logs] = await Promise.all([
+    const [stages, logPage] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId }, order: [['stageIndex', 'ASC']] }),
-      AgentRunLog.findAll({ where: { runId }, order: [['createdAt', 'ASC']], limit: limitParam({ ...payload, limit: payload.logLimit }, 100) }),
+      listRunLogs(runId, {
+        after: stringParam(payload, 'after') || null,
+        before: stringParam(payload, 'before') || null,
+        limit: limitParam({ ...payload, limit: payload.logLimit }, 100),
+      }),
     ]);
+    const logs = logPage.logs;
     return {
       run: runTeaser(run),
       stages: stages.map((stage) => ({
@@ -276,6 +281,10 @@ const runDetailsTool: IMcpTool = {
         ...(includePayloads ? { input: stage.input, output: stage.output } : {}),
       })),
       logs: logs.map((log) => ({ id: log.id, stageExecutionId: log.stageExecutionId, level: log.level, message: log.message, meta: log.meta, createdAt: log.createdAt })),
+      logsCursor: logPage.nextCursor,
+      logsEarlierCursor: logPage.earlierCursor,
+      logsHasEarlier: logPage.hasEarlier,
+      logsHasMore: logPage.hasMore,
       payloadsIncluded: includePayloads,
     };
   },

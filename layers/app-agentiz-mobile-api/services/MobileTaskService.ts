@@ -2,7 +2,7 @@ import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentRun } from '../../app-agentiz/models/AgentRun';
 import { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
 import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
-import { AgentRunLog } from '../../app-agentiz/models/AgentRunLog';
+import { listRunLogs, type RunLogQuery } from '../../app-agentiz/lib/runLogs';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
@@ -105,10 +105,13 @@ export class MobileTaskService {
    * with the task instead would put up to AGENTIZ_MAX_PATCH_BYTES (5 MB by default) on the wire —
    * and into the task's cache entry — every time somebody opens a task, to render nothing.
    */
-  private static async runDetail(run: AgentRun, withDiff = true) {
+  private static async runDetail(run: AgentRun, withDiff = true, logQuery: RunLogQuery = {}) {
     const [stages, logs, job, interactions, diff] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
-      AgentRunLog.findAll({ where: { runId: run.id }, order: [['createdAt', 'ASC']], limit: 500 }),
+      // The tail, not the first page: a run streaming its tool calls outgrows any fixed limit, and
+      // the phone screen is opened to see what the agent is doing *now*. `logsCursor` lets a client
+      // poll for the delta; one that ignores it still gets a correct, if whole, tail every time.
+      listRunLogs(run.id, { limit: 500, ...logQuery }),
       // A run has one durable queue job. Its `result` is the exact terminal payload accepted
       // from the worker; AgentRun intentionally keeps only the small human summary.
       AgentRunJob.findOne({ where: { runId: run.id }, order: [['createdAt', 'DESC']] }),
@@ -129,12 +132,16 @@ export class MobileTaskService {
         output: stage.output ?? null,
         errorMessage: stage.errorMessage,
       })),
-      logs: logs.map((log) => ({
+      logs: logs.logs.map((log) => ({
         level: log.level,
         message: log.message,
         stageRole: log.stageExecutionId ? stageRoleByExecutionId.get(log.stageExecutionId) ?? null : null,
         createdAt: log.createdAt,
       })),
+      logsCursor: logs.nextCursor,
+      logsEarlierCursor: logs.earlierCursor,
+      logsHasEarlier: logs.hasEarlier,
+      logsHasMore: logs.hasMore,
       workerResult: job?.result ?? null,
       interactions,
       diff,
@@ -235,11 +242,11 @@ export class MobileTaskService {
   }
 
   /** One attempt including stage results and its process trace. */
-  static async runDetailForTask(taskId: string, runId: string, ownerId: number | string) {
+  static async runDetailForTask(taskId: string, runId: string, ownerId: number | string, logQuery: RunLogQuery = {}) {
     await this.ownedTask(taskId, ownerId);
     const run = await AgentRun.findOne({ where: { id: runId, taskId } });
     if (!run) throw new MobileAuthError(404, 'Run not found');
-    return this.runDetail(run);
+    return this.runDetail(run, true, logQuery);
   }
 
   /** Cancellation is scoped through the task, so a known run id cannot cross project boundaries. */

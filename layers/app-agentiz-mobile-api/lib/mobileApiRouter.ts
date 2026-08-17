@@ -221,9 +221,16 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
     }
   });
 
+  // `logsAfter` / `logsBefore` page the run log without refetching the rest (the patch alone can be
+  // megabytes). Absent, the response is the log's tail, which is what a live run needs.
   router.get('/tasks/:taskId/runs/:runId', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.json({ data: await MobileTaskService.runDetailForTask(String(req.params.taskId), String(req.params.runId), ownerOf(req)) });
+      const logQuery = {
+        after: typeof req.query.logsAfter === 'string' ? req.query.logsAfter : null,
+        before: typeof req.query.logsBefore === 'string' ? req.query.logsBefore : null,
+        ...(Number(req.query.logLimit) > 0 ? { limit: Number(req.query.logLimit) } : {}),
+      };
+      res.json({ data: await MobileTaskService.runDetailForTask(String(req.params.taskId), String(req.params.runId), ownerOf(req), logQuery) });
     } catch (error) {
       errorResponse(res, error);
     }

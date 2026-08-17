@@ -13,9 +13,26 @@ import { AgentPipelineService } from '../services/AgentPipelineService';
 import { AgentRunInteractionService, InteractionError, type InteractionActor } from '../services/AgentRunInteractionService';
 import { AgentWorkspaceProposalService, WorkspaceProposalError } from '../services/AgentWorkspaceProposalService';
 import { adminizerModuleUrl } from './adminizerModuleUrl';
+import { listRunLogs, type RunLogPage } from './runLogs';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function positive(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+/** The wire shape of one log page: the rows plus everything needed to ask for the next one. */
+function logPayload(page: RunLogPage) {
+  return {
+    logs: page.logs.map((log) => log.toJSON()),
+    logsCursor: page.nextCursor,
+    logsEarlierCursor: page.earlierCursor,
+    logsHasEarlier: page.hasEarlier,
+    logsHasMore: page.hasMore,
+  };
 }
 
 function actorOf(req: any): InteractionActor {
@@ -133,54 +150,75 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
     route: '/agentiz-runs',
     method: 'get',
     handler: async (req, res) => {
-      const method = str(req.query._method);
+      try {
+        const method = str(req.query._method);
 
-      if (method === 'listRuns') {
-        return res.json({ data: await listRuns(str(req.query.projectId)) });
-      }
+        if (method === 'listRuns') {
+          return res.json({ data: await listRuns(str(req.query.projectId)) });
+        }
 
-      if (method === 'getRunDetails') {
-        const runId = str(req.query.runId);
-        if (!runId) return res.status(400).json({ message: 'runId is required' });
-        const run = await AgentRun.findByPk(runId);
-        if (!run) return res.status(404).json({ message: 'Run not found' });
-        const stages = await AgentStageExecution.findAll({
-          where: { runId },
-          order: [['stageIndex', 'ASC']],
-        });
-        const logs = await AgentRunLog.findAll({
-          where: { runId },
-          order: [['createdAt', 'ASC']],
-          limit: 500,
-        });
-        const diff = await AgentRunDiff.findOne({ where: { runId } });
-        const interactions = await AgentRunInteraction.findAll({ where: { runId }, order: [['createdAt', 'ASC']] });
-        const workspaceReview = await AgentWorkspaceProposalService.detailsForRun(run);
-        const latestWorkspaceDiff = workspaceReview
-          ? workspaceReview.revisions.find((revision) => revision.id === workspaceReview.proposal.latestDiffId) ?? null
-          : null;
-        return res.json({
-          data: {
-            run: run.toJSON(),
-            stages: stages.map((stage) => stage.toJSON()),
-            logs: logs.map((log) => log.toJSON()),
-            diff: diff?.toJSON() ?? null,
-            interactions: interactions.map((interaction) => interaction.toJSON()),
-            proposal: workspaceReview?.proposal.toJSON() ?? null,
-            revisions: workspaceReview?.revisions.map((revision) => revision.toJSON()) ?? [],
-            latestDiff: latestWorkspaceDiff?.toJSON() ?? null,
+        // Just the log, for the run screen's polling tick and its "load earlier" button. The full
+        // details payload carries the patch, which can be megabytes — refetching it every 2.5 s to
+        // learn that three lines were added is what this exists to avoid.
+        if (method === 'getRunLogs') {
+          const runId = str(req.query.runId);
+          if (!runId) return res.status(400).json({ message: 'runId is required' });
+          return res.json({
+            data: logPayload(await listRunLogs(runId, {
+              after: str(req.query.after) || null,
+              before: str(req.query.before) || null,
+              limit: positive(req.query.limit, 500),
+            })),
+          });
+        }
+
+        if (method === 'getRunDetails') {
+          const runId = str(req.query.runId);
+          if (!runId) return res.status(400).json({ message: 'runId is required' });
+          const run = await AgentRun.findByPk(runId);
+          if (!run) return res.status(404).json({ message: 'Run not found' });
+          const stages = await AgentStageExecution.findAll({
+            where: { runId },
+            order: [['stageIndex', 'ASC']],
+          });
+          // With `logsAfter` the payload carries only the lines added since — that is what the run
+          // screen's 2.5 s tick sends, so a live run costs a few rows per poll instead of the
+          // whole log every time.
+          const logs = await listRunLogs(runId, {
+            after: str(req.query.logsAfter) || null,
+            limit: positive(req.query.logLimit, 500),
+          });
+          const diff = await AgentRunDiff.findOne({ where: { runId } });
+          const interactions = await AgentRunInteraction.findAll({ where: { runId }, order: [['createdAt', 'ASC']] });
+          const workspaceReview = await AgentWorkspaceProposalService.detailsForRun(run);
+          const latestWorkspaceDiff = workspaceReview
+            ? workspaceReview.revisions.find((revision) => revision.id === workspaceReview.proposal.latestDiffId) ?? null
+            : null;
+          return res.json({
+            data: {
+              run: run.toJSON(),
+              stages: stages.map((stage) => stage.toJSON()),
+              ...logPayload(logs),
+              diff: diff?.toJSON() ?? null,
+              interactions: interactions.map((interaction) => interaction.toJSON()),
+              proposal: workspaceReview?.proposal.toJSON() ?? null,
+              revisions: workspaceReview?.revisions.map((revision) => revision.toJSON()) ?? [],
+              latestDiff: latestWorkspaceDiff?.toJSON() ?? null,
+            },
+          });
+        }
+
+        // Same URL serves both screens: one run when `runId` names it (every existing link does),
+        // the board of everything running when it does not.
+        return req.Inertia.render({
+          component: 'module',
+          props: {
+            moduleComponent: adminizerModuleUrl(str(req.query.runId) ? 'AgentizRunDetail' : 'AgentizRuns'),
           },
         });
+      } catch (error) {
+        return routeError(res, error);
       }
-
-      // Same URL serves both screens: one run when `runId` names it (every existing link does),
-      // the board of everything running when it does not.
-      return req.Inertia.render({
-        component: 'module',
-        props: {
-          moduleComponent: adminizerModuleUrl(str(req.query.runId) ? 'AgentizRunDetail' : 'AgentizRuns'),
-        },
-      });
     },
   },
   {
