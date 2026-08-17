@@ -32,6 +32,7 @@ from urllib.request import Request, urlopen
 from .changes import collect_changes
 from .hooks import run_hook
 from .interactions import HumanInteractionBroker, install_acp_human_input
+from .live_events import LiveEventStream, SequenceCounter
 from .redaction import Redactor
 from .repository import prepare_checkout
 from .workspace_git import finalize_action, guard_workspace, preflight as workspace_git_preflight, record_tree, run_action
@@ -283,6 +284,9 @@ def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
 
 
 MAX_AGENT_MESSAGE_CHARS = 4_000
+#: A tool call's title is a one-line "what is happening now", not output — a shell command or a
+#: prompt fragment can otherwise run to kilobytes on every progress notification.
+MAX_TOOL_TITLE_CHARS = 300
 ACP_ADAPTER_PINS = {
     "@agentclientprotocol/codex-acp": "@agentclientprotocol/codex-acp@1.1.14",
     "@agentclientprotocol/claude-agent-acp": "@agentclientprotocol/claude-agent-acp@0.66.0",
@@ -335,6 +339,31 @@ def agent_message_text(event: Any) -> str | None:
     return text[:MAX_AGENT_MESSAGE_CHARS] + ("…" if len(text) > MAX_AGENT_MESSAGE_CHARS else "")
 
 
+def tool_call_progress(event: Any) -> tuple[str, str] | None:
+    """One live tool call as `(dedup key, log line)`, or None for any other event.
+
+    openhands-sdk emits an ``ACPToolCallEvent`` for every ``ToolCallStart`` / ``ToolCallProgress``
+    notification, so a single call arrives two or three times as its status advances
+    (``pending`` → ``in_progress`` → ``completed``). The key collapses those repeats into one line
+    per status change — the SDK asks consumers to dedup by ``tool_call_id`` itself.
+
+    Matched by class name rather than imported, for the same reason ``MessageEvent`` and
+    ``ActionEvent`` are (see `agent_message_text`): an SDK that moves the import path would
+    otherwise silence the run log instead of failing loudly, and the worker supports whatever
+    version is installed beside it.
+    """
+    if type(event).__name__ != "ACPToolCallEvent":
+        return None
+    call_id = str(getattr(event, "tool_call_id", "") or "")
+    status = str(getattr(event, "status", "") or "") or "started"
+    title = str(getattr(event, "title", "") or getattr(event, "tool_kind", "") or "tool call").strip()
+    if len(title) > MAX_TOOL_TITLE_CHARS:
+        title = title[:MAX_TOOL_TITLE_CHARS] + "…"
+    # raw_input/raw_output are deliberately left out: they are the bulk and the secret-bearing part
+    # of a tool call, and the title already answers "what is it doing right now".
+    return f"{call_id}:{status}", f"{title} — {status}"
+
+
 def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
     """Directory every stage of this job runs in.
 
@@ -368,7 +397,7 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
 
 def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path,
                   on_agent_message: Any, interaction_broker: HumanInteractionBroker,
-                  collaboration_mode: str | None = None) -> tuple[str, str | None]:
+                  collaboration_mode: str | None = None, on_tool_progress: Any = None) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -387,9 +416,21 @@ def run_openhands(mode: str, acp_command: list[str], model: str | None, message:
     # None keeps the executor's own default, exactly as before this field existed.
     agent = ACPAgent(acp_command=acp_command, acp_model=model)
     final_message: str | None = None
+    # Per stage: the SDK's tool call ids are only unique within one conversation, and a stage that
+    # ended has nothing left to dedup against.
+    seen_tool_calls: set[str] = set()
 
     def forward_event(event: Any) -> None:
         nonlocal final_message
+        progress = tool_call_progress(event)
+        if progress:
+            key, line = progress
+            # `_cancel_inflight_tool_calls` sends a terminal status for calls the turn never
+            # closed, so an abandoned call still gets its last line through this same path.
+            if on_tool_progress and key not in seen_tool_calls:
+                seen_tool_calls.add(key)
+                on_tool_progress(line)
+            return
         text = agent_message_text(event)
         if text:
             final_message = text
@@ -446,7 +487,7 @@ def maintain_lease(client: Client, job: dict[str, Any], stop: threading.Event, f
             stop.set()
             return
 def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None:
-    sequence = 0
+    sequence = SequenceCounter()
     outputs: list[dict[str, Any]] = []
     heartbeat_stop = threading.Event()
     heartbeat_failure: list[Exception] = []
@@ -454,11 +495,19 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
     # because the checkout needs it, and it must not reach a stored log or summary.
     redact = Redactor()
 
+    def send_events(events: list[dict[str, Any]]) -> None:
+        client.post(f"/jobs/{job['jobId']}/events:batch", job, {"events": events})
+
     def emit(kind: str, stage_id: str | None, message: str, level: str = "info") -> None:
-        nonlocal sequence
-        sequence += 1
-        client.post(f"/jobs/{job['jobId']}/events:batch", job, {"events": [{"eventId": str(uuid.uuid4()), "sequence": sequence,
-            "type": kind, "stageExecutionId": stage_id, "level": level, "message": redact(message)}]})
+        """Milestones (workspace/stage/hook), posted inline: their order against the job's result
+        is part of the record, and there are only a handful of them per run."""
+        send_events([{"eventId": str(uuid.uuid4()), "sequence": sequence.next(), "type": kind,
+            "stageExecutionId": stage_id, "level": level, "message": redact(message)}])
+
+    # Progress the agent produces mid-stage instead goes out on this thread — see live_events.py
+    # for why posting it from the callback would stall the ACP turn.
+    live = LiveEventStream(send_events, sequence, redact,
+                           on_error=lambda error: print(f"live events dropped: {error}", flush=True)).start()
 
     # Started before the checkout on purpose: cloning a large repository takes longer than a lease.
     heartbeat = threading.Thread(target=maintain_lease, args=(client, job, heartbeat_stop, heartbeat_failure), daemon=True)
@@ -480,6 +529,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 raise WorkerError(f"{job_kind} job is missing workspace or proposal")
             workdir = resolve_workdir(job, settings)
             action_result = run_action(workdir, job_kind, proposal, repository)
+            live.flush()
             client.post(f"/jobs/{job['jobId']}/result", job, {
                 "resultId": str(uuid.uuid4()), "status": "succeeded", **action_result,
             })
@@ -576,12 +626,15 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                         mode, command, model, prompt(stage, job), settings, workdir,
                         lambda text: emit("stage.event", stage_id, text),
                         interaction_broker, collaboration_mode,
+                        on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),
                     )
                 if heartbeat_failure:
                     raise heartbeat_failure[0]
                 summary = redact(agent_response or status)
                 outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
                     "output": {"workspaceMode": mode, "workdir": str(workdir), "executionStatus": status, "agentResponse": redact(agent_response) if agent_response else None}})
+                # So the stage's last tool line is not written after the line closing the stage.
+                live.drain()
                 emit("stage.completed", stage_id, summary)
         except Exception as error:
             stage_error = error
@@ -626,8 +679,10 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                                  ("baseBranch", "remote", "remoteUrl", "remoteBaseSha")}
             emit("changes.collected", None,
                  f"{len(changes['ops'])} операц(ий), +{changes['stats']['insertions']} −{changes['stats']['deletions']}")
+        live.flush()
         client.post(f"/jobs/{job['jobId']}/result", job, result)
     except Exception as error:
+        live.flush()
         failed = True
         terminal_status = "cancelled" if "cancellation requested" in str(error).lower() else "failed"
         failure_result: dict[str, Any] = {"resultId": str(uuid.uuid4()), "status": terminal_status,
@@ -650,6 +705,9 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 failure_result["errorMessage"] += f"; diff collection also failed: {redact(str(diff_error))}"
         client.post(f"/jobs/{job['jobId']}/result", job, failure_result)
     finally:
+        # Idempotent: the terminal paths above already flushed, this covers the ones that raised
+        # before reaching one.
+        live.flush()
         heartbeat_stop.set()
         heartbeat.join(timeout=1)
         if workspace_lock_context:
