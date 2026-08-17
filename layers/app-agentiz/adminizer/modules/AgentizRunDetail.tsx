@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 import { DiffViewer } from "./components/diff-viewer";
@@ -40,6 +40,18 @@ interface RunLog {
   message: string;
   stageExecutionId?: string | null;
   createdAt?: string;
+}
+
+/**
+ * A page of the log. The server hands back the *tail* by default and a cursor to continue from, so
+ * a run that streams its tool calls keeps scrolling instead of stopping at a fixed limit.
+ */
+interface LogPage {
+  logs: RunLog[];
+  logsCursor: string | null;
+  logsEarlierCursor: string | null;
+  logsHasEarlier: boolean;
+  logsHasMore: boolean;
 }
 
 interface RunDiff {
@@ -96,7 +108,6 @@ interface RunInteraction {
 interface RunDetails {
   run: AgentRun;
   stages: StageExecution[];
-  logs: RunLog[];
   diff: RunDiff | null;
   interactions: RunInteraction[];
   proposal: WorkspaceProposal | null;
@@ -106,6 +117,17 @@ interface RunDetails {
 
 const PREFIX = (window as any).routePrefix ?? "/dashboard";
 const API_URL = `${PREFIX}/agentiz-runs`;
+
+/** How close to the bottom still counts as "following the log" — a reader who scrolled up keeps
+ *  their place instead of being yanked down by the next line. */
+const AUTOSCROLL_SLACK_PX = 40;
+
+const LOG_LEVEL_COLORS: Record<string, string> = {
+  debug: "#64748b",
+  info: "#94a3b8",
+  warn: "#fbbf24",
+  error: "#f87171",
+};
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   pending: { bg: "#f1f5f9", fg: "#334155" },
@@ -136,17 +158,51 @@ const AgentizRunDetail: React.FC = () => {
   const [reviewComment, setReviewComment] = useState("");
   const [targetBranch, setTargetBranch] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
+  // The log is its own state, appended to rather than replaced: it is the one part of this screen
+  // that grows while the run is alive, and the poll tick asks only for what came after `cursor`.
+  const [logs, setLogs] = useState<RunLog[]>([]);
+  const [logsEarlier, setLogsEarlier] = useState<{ cursor: string | null; hasMore: boolean }>({ cursor: null, hasMore: false });
+  const cursor = useRef<string | null>(null);
+  const logBox = useRef<HTMLDivElement | null>(null);
+  const following = useRef(true);
+  const distanceFromBottom = useRef<number | null>(null);
 
   useEffect(() => {
     setRunId(new URLSearchParams(window.location.search).get("runId") ?? "");
   }, []);
 
-  const load = useCallback(async (id: string) => {
+  const applyLogPage = useCallback((page: Partial<LogPage> | null, mode: "reset" | "append" | "prepend") => {
+    const rows = page?.logs ?? [];
+    if (mode === "reset") {
+      setLogs(rows);
+      setLogsEarlier({ cursor: page?.logsEarlierCursor ?? null, hasMore: Boolean(page?.logsHasEarlier) });
+    } else if (rows.length > 0) {
+      // The same line can arrive twice when a "load earlier" page overlaps the tail already shown.
+      setLogs((current) => {
+        const known = new Set(current.map((log) => log.id));
+        const fresh = rows.filter((log) => !known.has(log.id));
+        return mode === "append" ? [...current, ...fresh] : [...fresh, ...current];
+      });
+      if (mode === "prepend") {
+        setLogsEarlier({ cursor: page?.logsEarlierCursor ?? null, hasMore: Boolean(page?.logsHasEarlier) });
+      }
+    } else if (mode === "prepend") {
+      setLogsEarlier({ cursor: null, hasMore: false });
+    }
+    // A delta page with nothing in it carries no cursor — the previous one is still the position.
+    if (mode !== "prepend" && page?.logsCursor) cursor.current = page.logsCursor;
+  }, []);
+
+  const load = useCallback(async (id: string, options: { follow?: boolean } = {}) => {
     if (!id) return;
+    const follow = options.follow === true && cursor.current !== null;
     try {
-      const res = await axios.get(API_URL, { params: { _method: "getRunDetails", runId: id } });
+      const res = await axios.get(API_URL, {
+        params: { _method: "getRunDetails", runId: id, ...(follow ? { logsAfter: cursor.current } : {}) },
+      });
       const next = res.data?.data ?? null;
       setDetails(next);
+      applyLogPage(next, follow ? "append" : "reset");
       if (next?.proposal) {
         setTargetBranch(next.proposal.targetBranch ?? next.proposal.baseBranch ?? "");
         setCommitMessage(next.proposal.commitMessage ?? "");
@@ -170,17 +226,46 @@ const AgentizRunDetail: React.FC = () => {
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось загрузить запуск");
     }
-  }, []);
+  }, [applyLogPage]);
+
+  const loadEarlierLogs = useCallback(async () => {
+    if (!runId || !logsEarlier.cursor) return;
+    // Remember where the reader is relative to the bottom, so inserting older lines above does not
+    // move the line they were looking at.
+    distanceFromBottom.current = logBox.current ? logBox.current.scrollHeight - logBox.current.scrollTop : null;
+    try {
+      const res = await axios.get(API_URL, {
+        params: { _method: "getRunLogs", runId, before: logsEarlier.cursor },
+      });
+      applyLogPage(res.data?.data ?? null, "prepend");
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? "Не удалось загрузить ранние строки");
+    }
+  }, [applyLogPage, logsEarlier.cursor, runId]);
 
   useEffect(() => {
+    cursor.current = null;
+    following.current = true;
     load(runId);
   }, [runId, load]);
 
   useEffect(() => {
     if (!runId) return undefined;
-    const timer = window.setInterval((): void => { void load(runId); }, 2500);
+    const timer = window.setInterval((): void => { void load(runId, { follow: true }); }, 2500);
     return (): void => { window.clearInterval(timer); };
   }, [runId, load]);
+
+  // Follow the tail unless the reader has scrolled away from it.
+  useEffect(() => {
+    const box = logBox.current;
+    if (!box) return;
+    if (distanceFromBottom.current !== null) {
+      box.scrollTop = box.scrollHeight - distanceFromBottom.current;
+      distanceFromBottom.current = null;
+      return;
+    }
+    if (following.current) box.scrollTop = box.scrollHeight;
+  }, [logs]);
 
   const answerInteraction = useCallback(async (interaction: RunInteraction, action: "accept" | "decline" | "cancel") => {
     const content = answers[interaction.id] ?? {};
@@ -457,13 +542,29 @@ const AgentizRunDetail: React.FC = () => {
             </ul>
           </div>
 
-          {details!.logs.length > 0 && (
+          {logs.length > 0 && (
             <div className="rounded-lg border p-4">
-              <h2 className="mb-3 text-lg font-semibold">Логи</h2>
-              <div className="overflow-auto rounded p-2 font-mono text-[11px]" style={{ maxHeight: 420, backgroundColor: "#0f172a", color: "#e2e8f0" }}>
-                {details!.logs.map((log) => (
+              <div className="mb-3 flex flex-wrap items-center gap-3">
+                <h2 className="text-lg font-semibold">Логи</h2>
+                {logsEarlier.hasMore && (
+                  <button onClick={loadEarlierLogs} className="rounded border px-2 py-0.5 text-xs">
+                    Показать более ранние
+                  </button>
+                )}
+                <span className="text-xs text-muted-foreground">{logs.length} строк(и)</span>
+              </div>
+              <div
+                ref={logBox}
+                onScroll={(event) => {
+                  const box = event.currentTarget;
+                  following.current = box.scrollHeight - box.scrollTop - box.clientHeight < AUTOSCROLL_SLACK_PX;
+                }}
+                className="overflow-auto rounded p-2 font-mono text-[11px]"
+                style={{ maxHeight: 420, backgroundColor: "#0f172a", color: "#e2e8f0" }}
+              >
+                {logs.map((log) => (
                   <div key={log.id}>
-                    <span style={{ color: "#94a3b8" }}>[{log.level}]</span> {log.message}
+                    <span style={{ color: LOG_LEVEL_COLORS[log.level] ?? "#94a3b8" }}>[{log.level}]</span> {log.message}
                   </div>
                 ))}
               </div>

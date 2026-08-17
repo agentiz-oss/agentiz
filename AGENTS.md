@@ -103,6 +103,19 @@
   unaddressed notification goes to every user holding the permission. The whole thing is off unless
   `notifications.enabled` is set in `config/adminizer.ts` (env `ADMINIZER_NOTIFICATIONS`), and the
   seam is a silent no-op when it is — callers never check.
+- A run's log is written from two places and read from one. The worker posts milestones
+  (`workspace.*`, `stage.started/completed`, `hook.*`) inline, but everything the agent produces
+  *while* a stage runs (`stage.tool`, `level: debug`) goes through `LiveEventStream`
+  (`worker/src/agentiz_worker/live_events.py`): `ACPAgent` invokes its event callback synchronously
+  on the ACP portal thread, so a blocking POST from there stalls the agent's turn. Both threads take
+  their `sequence` from one lock-guarded `SequenceCounter`, and every terminal POST is preceded by
+  `flush()` — a log line arriving after the run's result reads as garbage. On the read side
+  **everything** goes through `listRunLogs` (`layers/app-agentiz/lib/runLogs.ts`): the dashboard,
+  the mobile API, the task screen and `agentiz.runDetails`. Its first page is the **tail**, keyed by
+  `(createdAt, id)` — a run streaming its tool calls outgrows any fixed limit, and a reader taking
+  "the first N" stops showing new lines exactly on the run somebody is watching.
+- A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
+  in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 
