@@ -54,6 +54,16 @@ export function createWorkerApiRouter(): Router {
     }
   });
 
+  // Usage telemetry, deliberately outside the job lease: a worker reports hardest exactly when it
+  // holds no job. See AgentWorkerApiService.reportHarnessUsage.
+  router.post('/harness-usage', async (req, res) => {
+    try {
+      res.json(await AgentWorkerApiService.reportHarnessUsage(req.body, req.header('authorization') ?? '', req.ip ?? null));
+    } catch (error) {
+      workerErrorResponse(res, error);
+    }
+  });
+
   router.post('/claims', async (req, res) => {
     try {
       const claim = await AgentWorkerApiService.claim(req.body, req.header('authorization') ?? '', req.ip ?? null);

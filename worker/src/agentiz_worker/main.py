@@ -30,6 +30,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .changes import collect_changes
+from .harness_usage import USAGE_REPORT_INTERVAL_SEC, UsageReporter
 from .hooks import run_hook
 from .interactions import HumanInteractionBroker, install_acp_human_input
 from .live_events import LiveEventStream, SequenceCounter
@@ -48,6 +49,18 @@ class WorkerError(RuntimeError):
     pass
 
 
+def usage_interval(profile_value: Any) -> int:
+    """Usage report cadence: env wins over the profile, both fall back to the default, 0 = off."""
+    for candidate in (os.environ.get("AGENTIZ_USAGE_REPORT_INTERVAL_SEC"), profile_value):
+        if candidate is None or candidate == "":
+            continue
+        try:
+            return max(int(candidate), 0)
+        except (TypeError, ValueError):
+            continue
+    return USAGE_REPORT_INTERVAL_SEC
+
+
 @dataclass(frozen=True)
 class Settings:
     api_url: str
@@ -59,6 +72,8 @@ class Settings:
     #: Leaves the job directory behind when something failed, for post-mortem. Off by default and
     #: not meant for production: checkouts contain the customer's source tree.
     keep_workspace_on_failure: bool = False
+    #: Seconds between harness usage reports; 0 turns the reporter off entirely.
+    usage_report_interval_sec: int = USAGE_REPORT_INTERVAL_SEC
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any], once: bool) -> "Settings":
@@ -73,7 +88,8 @@ class Settings:
         if not str(data.get("workspace", "")):
             raise WorkerError("Worker profile must contain workspace; run `agentiz-worker configure`")
         return cls(api_url, token, str(data.get("instanceId") or f"agentiz-{socket.gethostname()}"), workspace, image, once,
-                   os.environ.get("AGENTIZ_KEEP_WORKSPACE_ON_FAILURE", "").lower() == "true")
+                   os.environ.get("AGENTIZ_KEEP_WORKSPACE_ON_FAILURE", "").lower() == "true",
+                   usage_interval(data.get("usageReportIntervalSec")))
 
     @classmethod
     def from_env(cls, once: bool) -> "Settings":
@@ -88,7 +104,8 @@ class Settings:
             raise WorkerError("AGENTIZ_OPENHANDS_SERVER_IMAGE must be pinned by @sha256 digest")
         return cls(api_url, token, os.environ.get("AGENTIZ_WORKER_ID", f"dev-{socket.gethostname()}"),
                    Path(os.environ.get("AGENTIZ_WORKER_WORKSPACE", os.getcwd())).resolve(), image, once,
-                   os.environ.get("AGENTIZ_KEEP_WORKSPACE_ON_FAILURE", "").lower() == "true")
+                   os.environ.get("AGENTIZ_KEEP_WORKSPACE_ON_FAILURE", "").lower() == "true",
+                   usage_interval(None))
 
 
 def default_config_path() -> Path:
@@ -253,6 +270,11 @@ class Client:
 
     def heartbeat(self, job: dict[str, Any]) -> Any:
         return self.post(f"/jobs/{job['jobId']}/heartbeat", job, {})
+
+    def report_harness_usage(self, harness_key: str, raw: dict[str, Any]) -> Any:
+        """Pushes one harness's usage payload. Outside any job lease — see the server endpoint."""
+        return self.request("POST", "/harness-usage", {"schemaVersion": SCHEMA_VERSION,
+            "harnessKey": harness_key, "raw": raw})[1]
 
     def secrets(self, job: dict[str, Any]) -> Any:
         """Repository credentials for this job. Never part of the job payload — see the server's
@@ -745,6 +767,14 @@ def main() -> None:
     client = Client(settings)
     registration = client.register()
     print(f"registered worker {registration['workerId']} as {settings.instance_id}", flush=True)
+    reporter = UsageReporter(client.report_harness_usage, settings.usage_report_interval_sec) \
+        if settings.usage_report_interval_sec else None
+    if reporter:
+        # One report before the first claim, so a spent subscription is visible immediately, then
+        # the thread keeps it current for as long as this worker runs.
+        reporter.report_once()
+        if not settings.once:
+            reporter.start()
     while True:
         job = client.claim()
         if job: execute_job(client, job, settings)

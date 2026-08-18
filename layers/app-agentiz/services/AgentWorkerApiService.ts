@@ -15,6 +15,7 @@ import { normalizeFileChanges, requireGitConnectionAuthority } from '../lib/git'
 import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentJobClaimService } from './AgentJobClaimService';
+import { AgentCapacityService } from './AgentCapacityService';
 import { AgentRunDeferService } from './AgentRunDeferService';
 import type { ClassifiedLimit } from './AgentRunDeferService';
 import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
@@ -599,6 +600,42 @@ export class AgentWorkerApiService {
     });
     await AgentPipelineService.log(job.runId, job.projectId, null, 'warn', `Worker released job${message ? `: ${message}` : ''}`);
     return { schemaVersion: SCHEMA_VERSION, released: true, retryAt: job.availableAt };
+  }
+
+  /**
+   * Usage telemetry from the machine the harness actually runs on, outside any job's lease.
+   *
+   * It has to be lease-free: the interesting moment is precisely the one where the worker holds
+   * no job because its subscription is spent. The worker sends whatever its harness told it as
+   * `raw` and never interprets it — field names belong to the provider layer — so an unknown
+   * report shape is a 400 here, not a wrong number in the database.
+   */
+  static async reportHarnessUsage(body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {
+    const worker = await this.authorize(authHeader, ip);
+    const payload = objectBody(body);
+    if (payload.schemaVersion !== SCHEMA_VERSION) throw new WorkerApiError(400, 'Unsupported schemaVersion');
+    const harnessKey = typeof payload.harnessKey === 'string' ? payload.harnessKey.trim() : '';
+    if (!harnessKey) throw new WorkerApiError(400, 'harnessKey is required');
+    const observedAtText = typeof payload.observedAt === 'string' ? payload.observedAt : null;
+    const observedAt = observedAtText ? new Date(observedAtText) : undefined;
+    if (observedAt && Number.isNaN(observedAt.getTime())) throw new WorkerApiError(400, 'observedAt is not a valid date');
+    try {
+      const result = await AgentCapacityService.applyReport({
+        workerId: worker.id,
+        harnessKey,
+        raw: payload.raw,
+        snapshot: payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined,
+        observedAt,
+      });
+      return {
+        schemaVersion: SCHEMA_VERSION,
+        sampleId: result.sample.id,
+        subscriptionId: result.subscription?.id ?? null,
+        warnings: result.warnings,
+      };
+    } catch (error) {
+      throw new WorkerApiError(400, error instanceof Error ? error.message : String(error));
+    }
   }
 
   static async createInteraction(jobId: string, body: unknown, authHeader: string, ip?: string | null): Promise<Record<string, unknown>> {

@@ -138,6 +138,17 @@
   worker release and is rejected by validation) and in `AgentWorker.activeHours` — the first is a
   job property and lands in `availableAt`, the second is a claim-side gate and must never touch
   `availableAt`.
+- Usage telemetry is **pushed, never pulled**: the numbers live behind a credential on the worker
+  machine (Claude's OAuth token), so `claudeLimitProvider` declares no `refresh()` and the server's
+  refresh cycle is a no-op with only that provider registered. The worker reports every 120s from
+  `worker/src/agentiz_worker/harness_usage.py` (`POST /harness-usage`, deliberately outside any job
+  lease — a spent subscription is exactly the state in which the worker holds no job), sending its
+  collector's payload **verbatim**: window names and field spellings are provider vocabulary and are
+  decoded only by `interpretReport` in the provider layer. Both external transports — that endpoint
+  and `agentiz.reportHarnessUsage` — enter through `AgentCapacityService.applyReport()`, so a report
+  shape is understood in one place; `applySnapshot` stays the single write point behind it. A
+  collector returning nothing sends nothing on purpose: an empty report would auto-create a binding
+  and a subscription for a harness that machine does not run.
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).

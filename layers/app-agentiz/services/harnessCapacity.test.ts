@@ -198,4 +198,42 @@ describe('harness capacity: gates, deferral and recovery', () => {
     await subscription.reload();
     expect(subscription.isExhausted()).toBe(false);
   });
+
+  it('interprets a raw report through the harness provider and rejects one nobody understands', async () => {
+    const worker = await makeWorker('w');
+    registerHarnessLimitProvider({
+      id: 'test:claude',
+      handles: (key) => key === 'claude',
+      declareWindows: () => [{ key: '5h', label: '5h' }],
+      classifyFailure: () => null,
+      interpretReport: (raw) => {
+        const source = raw as Record<string, { utilization?: number; resets_at?: string }>;
+        const window = source.five_hour;
+        if (!window) return null;
+        return { windows: [{ key: '5h', label: '5h', usedPercent: window.utilization, resetsAt: window.resets_at ? new Date(window.resets_at) : null }] };
+      },
+    });
+    try {
+      const resetsAt = new Date(Date.now() + 60 * 60_000);
+      const { subscription, sample } = await AgentCapacityService.applyReport({
+        workerId: worker.id,
+        harnessKey: 'claude',
+        raw: { five_hour: { utilization: 37, resets_at: resetsAt.toISOString() } },
+      });
+      // The worker sends provider vocabulary; only the core's abstract window reaches the database.
+      expect(sample.source).toBe('report');
+      expect(subscription?.windows?.[0]).toMatchObject({ key: '5h', usedPercent: 37 });
+      // A binding is created by the report itself, exactly as a limit signal would.
+      expect(await AgentWorkerHarness.count({ where: { workerId: worker.id, harnessKey: 'claude' } })).toBe(1);
+
+      await expect(AgentCapacityService.applyReport({
+        workerId: worker.id, harnessKey: 'claude', raw: { something_else: {} },
+      })).rejects.toThrow(/could not interpret/);
+      await expect(AgentCapacityService.applyReport({
+        workerId: worker.id, harnessKey: 'codex', raw: { five_hour: {} },
+      })).rejects.toThrow(/No registered provider/);
+    } finally {
+      unregisterHarnessLimitProvider('test:claude');
+    }
+  });
 });
