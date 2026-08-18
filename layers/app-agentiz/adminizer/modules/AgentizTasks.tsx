@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { formatTokens } from "./lib/tokenUsage";
 
 const API_URL = `${(window as any).routePrefix ?? "/dashboard"}/agentiz-tasks`;
@@ -137,6 +138,7 @@ const Badge: React.FC<{ text: string; palette?: Record<string, Swatch> }> = ({ t
 };
 
 const AgentizTasks: React.FC = () => {
+  useViewerTimezone();
   const [filters, setFilters] = useState<FilterOptions | null>(null);
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -843,7 +845,7 @@ const AgentizTasks: React.FC = () => {
                           {comment.origin === "remote" && (
                             <span className="rounded px-1.5 py-0.5" style={{ backgroundColor: "#fef3c7", color: "#92400e" }}>из трекера</span>
                           )}
-                          <span>{comment.externalCreatedAt ?? comment.createdAt}</span>
+                          <span>{formatDateTime(comment.externalCreatedAt ?? comment.createdAt)}</span>
                           {comment.externalUrl && (
                             <a href={comment.externalUrl} target="_blank" rel="noreferrer" className="underline">
                               {comment.origin === "remote" ? "открыть в трекере" : "опубликован в трекере"}
@@ -900,7 +902,7 @@ const AgentizTasks: React.FC = () => {
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge text={run.status} palette={STATUS_COLORS} />
                           <span className="text-muted-foreground">
-                            {run.trigger} · {run.createdAt}
+                            {run.trigger} · {formatDateTime(run.createdAt)}
                           </span>
                           {Number(run.usageTotalTokens) > 0 && (
                             <span className="text-muted-foreground">· {formatTokens(Number(run.usageTotalTokens))} ткн</span>

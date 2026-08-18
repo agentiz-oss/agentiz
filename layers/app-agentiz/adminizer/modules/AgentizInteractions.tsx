@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 
 type Field = HumanInputField;
@@ -19,6 +20,7 @@ const PREFIX = (window as any).routePrefix ?? "/dashboard";
 const API_URL = `${PREFIX}/agentiz-interactions`;
 
 const AgentizInteractions: React.FC = () => {
+  useViewerTimezone();
   const [items, setItems] = useState<PendingInteraction[]>([]);
   const [answers, setAnswers] = useState<Record<string, Record<string, unknown>>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -103,7 +105,7 @@ const AgentizInteractions: React.FC = () => {
               <span>{interaction.project?.name ?? "Проект"}</span>
               <span>· {interaction.task?.title ?? "Задача"}</span>
               <span>· #{interaction.stage?.stageIndex ?? "?"} {interaction.stage?.role ?? "стадия"}</span>
-              <span>· {interaction.source} · {interaction.createdAt}</span>
+              <span>· {interaction.source} · {formatDateTime(interaction.createdAt)}</span>
               <a href={`${PREFIX}/agentiz-runs?runId=${interaction.runId}`} className="underline">открыть запуск</a>
             </div>
             <p className="mt-3 whitespace-pre-wrap text-sm font-medium">{interaction.message}</p>

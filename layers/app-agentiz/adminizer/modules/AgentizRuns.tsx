@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { formatTokens, tokensTooltip, totalTokens, type TokenUsage } from "./lib/tokenUsage";
 
 type StageCard = { stageIndex: number; role: string; status: string };
@@ -93,7 +94,7 @@ const RunRow: React.FC<{ run: RunCard; live: boolean; onCancel: (run: RunCard) =
       {run.job?.worker && <span className="text-xs text-muted-foreground">· воркер {run.job.worker.name}</span>}
       {run.job && !run.job.worker && <span className="text-xs text-muted-foreground">· job {run.job.status}</span>}
       <span className="text-xs text-muted-foreground">
-        · {live ? `идёт ${elapsed(run.startedAt ?? run.createdAt)}` : `${elapsed(run.startedAt ?? run.createdAt, run.finishedAt)} · ${run.finishedAt ?? run.createdAt ?? ""}`}
+        · {live ? `идёт ${elapsed(run.startedAt ?? run.createdAt)}` : `${elapsed(run.startedAt ?? run.createdAt, run.finishedAt)} · ${formatDateTime(run.finishedAt ?? run.createdAt)}`}
       </span>
       {run.usage && totalTokens(run.usage) > 0 && (
         <span className="text-xs text-muted-foreground" title={tokensTooltip(run.usage)}>
@@ -126,6 +127,7 @@ const RunRow: React.FC<{ run: RunCard; live: boolean; onCancel: (run: RunCard) =
 );
 
 const AgentizRuns: React.FC = () => {
+  useViewerTimezone();
   const [active, setActive] = useState<RunCard[]>([]);
   const [recent, setRecent] = useState<RunCard[]>([]);
   const [error, setError] = useState<string | null>(null);

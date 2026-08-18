@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
+import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 import { DiffViewer } from "./components/diff-viewer";
 import { formatTokens, tokensTooltip, totalTokens, type TokenUsage } from "./lib/tokenUsage";
@@ -153,6 +154,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 };
 
 const AgentizRunDetail: React.FC = () => {
+  useViewerTimezone();
   const [runId, setRunId] = useState("");
   const [details, setDetails] = useState<RunDetails | null>(null);
   const [busy, setBusy] = useState(false);
@@ -366,7 +368,7 @@ const AgentizRunDetail: React.FC = () => {
           <h1 className="text-3xl font-bold tracking-tight">Запуск</h1>
           {run && (
             <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <StatusBadge status={run.status} /> {run.trigger} · {run.createdAt}
+              <StatusBadge status={run.status} /> {run.trigger} · {formatDateTime(run.createdAt)}
             </p>
           )}
         </div>
@@ -480,7 +482,7 @@ const AgentizRunDetail: React.FC = () => {
                       <div className="flex flex-wrap items-center gap-2">
                         <StatusBadge status={interaction.status} />
                         <span className="font-medium">{stage ? `#${stage.stageIndex} ${stage.role}` : "Стадия"}</span>
-                        <span className="text-xs text-muted-foreground">{interaction.source} · {interaction.createdAt}</span>
+                        <span className="text-xs text-muted-foreground">{interaction.source} · {formatDateTime(interaction.createdAt)}</span>
                       </div>
                       <p className="mt-2 whitespace-pre-wrap">{interaction.message}</p>
                       {interaction.status === "pending" && (
@@ -525,7 +527,7 @@ const AgentizRunDetail: React.FC = () => {
                         <div className="mt-2 rounded p-2 text-xs" style={{ backgroundColor: "#f8fafc" }}>
                           Ответ: <strong>{interaction.responseAction}</strong>
                           {interaction.responseContent && <pre className="mt-1 whitespace-pre-wrap">{JSON.stringify(interaction.responseContent, null, 2)}</pre>}
-                          {interaction.answeredByName && <div className="text-muted-foreground">{interaction.answeredByName} · {interaction.answeredAt}{interaction.deliveredAt ? ` · доставлен ${interaction.deliveredAt}` : ""}</div>}
+                          {interaction.answeredByName && <div className="text-muted-foreground">{interaction.answeredByName} · {formatDateTime(interaction.answeredAt)}{interaction.deliveredAt ? ` · доставлен ${formatDateTime(interaction.deliveredAt)}` : ""}</div>}
                         </div>
                       )}
                     </li>
@@ -546,7 +548,7 @@ const AgentizRunDetail: React.FC = () => {
                     <span className="font-medium">#{stage.stageIndex} {stage.role}</span>
                     {stage.startedAt && (
                       <span className="text-xs text-muted-foreground">
-                        {stage.startedAt}{stage.finishedAt ? ` → ${stage.finishedAt}` : ""}
+                        {formatDateTime(stage.startedAt)}{stage.finishedAt ? ` → ${formatDateTime(stage.finishedAt)}` : ""}
                       </span>
                     )}
                     {stage.output?.usage && totalTokens(stage.output.usage) > 0 && (
@@ -603,7 +605,7 @@ const AgentizRunDetail: React.FC = () => {
                   {displayedDiff.stats?.files ?? displayedDiff.ops?.length ?? 0} файл(ов),{" "}
                   +{displayedDiff.stats?.insertions ?? 0} −{displayedDiff.stats?.deletions ?? 0}
                   {displayedDiff.appliedAt
-                    ? ` · применено ${new Date(displayedDiff.appliedAt).toLocaleString()}, коммит ${(displayedDiff.appliedCommitSha ?? "").slice(0, 12)}`
+                    ? ` · применено ${formatDateTime(displayedDiff.appliedAt)}, коммит ${(displayedDiff.appliedCommitSha ?? "").slice(0, 12)}`
                     : " · в репозиторий не отправлено"}
                 </div>
                 <ul className="mt-2 space-y-0.5 text-xs">

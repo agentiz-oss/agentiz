@@ -1,5 +1,6 @@
 import type { Model, ModelStatic, Sequelize } from 'sequelize';
 import { signMobileToken, verifyUserPassword } from '../lib/mobileAuth';
+import { isValidTimezone, timezoneOffsetMinutes } from '../../app-agentiz/lib/userTime';
 import type { MobileAuthUser, MobileLoginResult } from '../types/mobileApi';
 
 /** Carries an HTTP status so the router can answer without leaking internals. */
@@ -35,11 +36,15 @@ export class MobileAuthService {
 
   /** Projects a UserAP row down to the fields the mobile client is allowed to see. */
   static toAuthUser(user: any): MobileAuthUser {
+    const rawTimezone = attr(user, 'timezone');
+    const timezone = isValidTimezone(rawTimezone) ? rawTimezone : null;
     return {
       id: attr(user, 'id') as number | string,
       login: (attr(user, 'login') ?? attr(user, 'email') ?? String(attr(user, 'id'))) as string,
       fullName: (attr(user, 'fullName') ?? attr(user, 'name') ?? null) as string | null,
       email: (attr(user, 'email') ?? null) as string | null,
+      timezone,
+      utcOffsetMinutes: timezone ? timezoneOffsetMinutes(timezone) : null,
     };
   }
 

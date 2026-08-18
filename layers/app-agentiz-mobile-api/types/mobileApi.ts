@@ -9,6 +9,14 @@ export interface MobileAuthUser {
   login: string;
   fullName: string | null;
   email: string | null;
+  /** IANA name from the profile (`UserAP.timezone`); null when unset or unusable. */
+  timezone: string | null;
+  /**
+   * That zone's offset from UTC in minutes, computed server-side at response time. The client has
+   * no tz database, so this is what it applies to ISO timestamps; refreshed on every login and
+   * session restore, which keeps DST drift bounded to one app restart.
+   */
+  utcOffsetMinutes: number | null;
 }
 
 /** Response of POST /auth/login. `expiresAt` lets the client refresh before the token dies. */

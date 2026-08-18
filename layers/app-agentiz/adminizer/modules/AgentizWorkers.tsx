@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { formatDateTime, remainingSuffix, useViewerTimezone } from "./lib/viewerTime";
 
 /**
  * The worker fleet: registering machines, watching whether they're still checking in, and scoping
@@ -116,7 +117,7 @@ function contactLabel(worker: AgentWorker): string {
   if (!worker.lastSeenAt) return "ещё не подключался";
   const gap = Date.now() - new Date(worker.lastSeenAt).getTime();
   if (gap <= OFFLINE_AFTER_MS) return "на связи";
-  return `не в сети (последний раз ${new Date(worker.lastSeenAt).toLocaleString()})`;
+  return `не в сети (последний раз ${formatDateTime(worker.lastSeenAt)})`;
 }
 
 function workerBuildLabel(version?: string | null): React.ReactNode {
@@ -361,7 +362,7 @@ function windowsSummary(windows: HarnessWindowState[]): string {
   return windows
     .map((window) => {
       const used = typeof window.usedPercent === "number" ? `${Math.round(window.usedPercent)}%` : "—";
-      const resets = window.resetsAt ? `, сброс ${new Date(window.resetsAt).toLocaleString()}` : "";
+      const resets = window.resetsAt ? `, сброс ${formatDateTime(window.resetsAt)}${remainingSuffix(window.resetsAt)}` : "";
       return `${window.label ?? window.key}: ${used}${resets}`;
     })
     .join(" · ");
@@ -419,7 +420,7 @@ const WorkerHarnessEditor: React.FC<{
                 <span style={{ color: state.color }}>
                   {state.text}
                   {binding.state === "exhausted" && subscription?.exhaustedUntil
-                    ? ` до ${new Date(subscription.exhaustedUntil).toLocaleString()} (${subscription.lastSignalSource ?? "?"})`
+                    ? ` до ${formatDateTime(subscription.exhaustedUntil)}${remainingSuffix(subscription.exhaustedUntil)} (${subscription.lastSignalSource ?? "?"})`
                     : ""}
                 </span>
                 <span className="text-muted-foreground">running: {binding.runningJobs} · в очереди: {binding.queuedJobs}</span>
@@ -594,7 +595,7 @@ const SubscriptionsSection: React.FC<{
               <span className="text-muted-foreground">{subscription.provider}{subscription.authKind ? ` · ${subscription.authKind}` : ""}</span>
               {subscription.exhausted ? (
                 <span style={{ color: "#b91c1c" }}>
-                  🔴 исчерпана до {subscription.exhaustedUntil ? new Date(subscription.exhaustedUntil).toLocaleString() : "?"}
+                  🔴 исчерпана до {subscription.exhaustedUntil ? `${formatDateTime(subscription.exhaustedUntil)}${remainingSuffix(subscription.exhaustedUntil)}` : "?"}
                 </span>
               ) : (
                 <span style={{ color: "#047857" }}>🟢 открыта</span>
@@ -690,6 +691,7 @@ const SubscriptionsSection: React.FC<{
 };
 
 const AgentizWorkers: React.FC = () => {
+  useViewerTimezone();
   const [workers, setWorkers] = useState<AgentWorker[]>([]);
   const [workerApi, setWorkerApi] = useState<{ enabled: boolean; url: string }>({ enabled: false, url: "" });
   const [harnesses, setHarnesses] = useState<Record<string, WorkerHarnessBinding[]>>({});

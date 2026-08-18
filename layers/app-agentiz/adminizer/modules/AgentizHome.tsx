@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 
 /**
  * The project overview: pick a project, see how it's doing at a glance, then go to the screen
@@ -85,6 +86,7 @@ const NavCard: React.FC<{ title: string; description: string; href: string }> = 
 );
 
 const AgentizHome: React.FC = () => {
+  useViewerTimezone();
   const [projects, setProjects] = useState<AgentProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [stats, setStats] = useState<ProjectStats | null>(null);
@@ -235,7 +237,7 @@ const AgentizHome: React.FC = () => {
                   <li key={run.id}>
                     <a href={`${PREFIX}/agentiz-runs?runId=${run.id}`} className="flex flex-wrap items-center gap-2 rounded border p-2 text-sm hover:bg-primary/5">
                       <StatusBadge status={run.status} />
-                      <span className="text-xs text-muted-foreground">{run.trigger} · {run.createdAt}</span>
+                      <span className="text-xs text-muted-foreground">{run.trigger} · {formatDateTime(run.createdAt)}</span>
                     </a>
                   </li>
                 ))}

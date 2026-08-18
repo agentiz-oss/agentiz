@@ -9,6 +9,7 @@ import type { HarnessLimitProviderContext, HarnessLimitSignal, HarnessLimitSnaps
 import { isScheduleOpen, nextScheduleOpen, nextWeeklyMoment, prevWeeklyMoment } from '../lib/activeHours';
 import { MIXED_HARNESS_KEY } from '../lib/harness';
 import { sendDashboardNotification } from '../lib/notifications/dashboardNotifications';
+import { formatUserDeadline } from '../lib/userTime';
 import type { HarnessSignalSource, HarnessWindowState } from '../types/agentiz';
 
 /** How often the capacity sweep runs (schedule windows, declared resets). */
@@ -222,7 +223,7 @@ export class AgentCapacityService {
     void sendDashboardNotification({
       channel: 'harness-limit',
       title: `Лимит ${params.harnessKey} исчерпан на воркере ${params.worker.name}`,
-      message: `Подписка «${subscription.name}» закрыта до ${exhaustedUntil.toLocaleString('ru-RU')}`,
+      message: `Подписка «${subscription.name}» закрыта до ${formatUserDeadline(exhaustedUntil)}`,
       metadata: { subscriptionId: subscription.id, workerId: params.worker.id, harnessKey: params.harnessKey },
     });
     return { subscription, binding, exhaustedUntil };
@@ -525,7 +526,7 @@ export class AgentCapacityService {
         void sendDashboardNotification({
           channel: 'harness-limit',
           title: `Подписка «${subscription.name}» остановлена превентивно`,
-          message: `${worstReason}, до ${worstUntil.toLocaleString('ru-RU')}`,
+          message: `${worstReason}, до ${formatUserDeadline(worstUntil)}`,
           metadata: { subscriptionId: subscription.id },
         });
       }

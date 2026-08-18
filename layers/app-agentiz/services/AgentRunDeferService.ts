@@ -9,6 +9,7 @@ import type { HarnessLimitSignal } from '../lib/harnessLimits';
 import { harnessKeyForStage } from '../lib/harness';
 import type { StageAgentRef } from '../lib/harness';
 import { sendDashboardNotification } from '../lib/notifications/dashboardNotifications';
+import { formatUserDeadline, userTimezoneById } from '../lib/userTime';
 import { AgentCapacityService } from './AgentCapacityService';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentRunInteractionService } from './AgentRunInteractionService';
@@ -126,15 +127,17 @@ export class AgentRunDeferService {
     const waitingUntil = pinned ? retryAt : exhaustedUntil;
     await run.update({ waitingReason: 'harness_limit', waitingUntil });
     await AgentPipelineService.log(run.id, run.projectId, null, 'warn',
-      `Run отложен: лимит ${classified.harnessKey} на воркере ${worker.name}, продолжение ~${waitingUntil.toLocaleString('ru-RU')}`,
+      `Run отложен: лимит ${classified.harnessKey} на воркере ${worker.name}, продолжение ~${formatUserDeadline(waitingUntil)}`,
       { jobId: job.id, deferredCount: job.deferredCount + 1, matched: classified.signal.matched, retryAt: retryAt.toISOString() });
 
     if (waitingUntil.getTime() - now.getTime() >= DEFER_NOTIFY_MIN_MS) {
       const project = await AgentProject.findByPk(run.projectId);
+      // The notification is addressed to the project owner, so the deadline reads in *their* zone.
+      const ownerTimezone = await userTimezoneById(project?.ownerId);
       void sendDashboardNotification({
         channel: 'run-deferred',
         title: `Run отложен: лимит ${classified.harnessKey}`,
-        message: `Воркер ${worker.name}, продолжение ~${waitingUntil.toLocaleString('ru-RU')}`,
+        message: `Воркер ${worker.name}, продолжение ~${formatUserDeadline(waitingUntil, ownerTimezone)}`,
         userId: project?.ownerId ?? undefined,
         metadata: { runId: run.id, jobId: job.id, harnessKey: classified.harnessKey },
       });

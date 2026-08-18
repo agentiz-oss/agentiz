@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 
 /**
  * Repositories of every platform in one place: which accounts are connected, what they can reach,
@@ -86,6 +87,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 };
 
 const AgentizRepositories: React.FC = () => {
+  useViewerTimezone();
   const [connections, setConnections] = useState<Connection[]>([]);
   const [providers, setProviders] = useState<Array<{ provider: string; route: string }>>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -257,8 +259,8 @@ const AgentizRepositories: React.FC = () => {
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 репозиториев: {connection.repositoryCount} · последняя синхронизация:{" "}
-                {connection.lastSyncedAt ? new Date(connection.lastSyncedAt).toLocaleString() : "никогда"}
-                {connection.expiresAt && ` · токен до ${new Date(connection.expiresAt).toLocaleString()}`}
+                {connection.lastSyncedAt ? formatDateTime(connection.lastSyncedAt) : "никогда"}
+                {connection.expiresAt && ` · токен до ${formatDateTime(connection.expiresAt)}`}
               </div>
               {!connection.authorityMounted && (
                 <div className="mt-1 text-xs" style={{ color: "#b45309" }}>

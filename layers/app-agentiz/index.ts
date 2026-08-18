@@ -59,6 +59,7 @@ import { repositoryRoutes } from './lib/repositoryRoutes';
 import { pipelineRoutes } from './lib/pipelineRoutes';
 import { workerRoutes } from './lib/workerRoutes';
 import { runRoutes } from './lib/runRoutes';
+import { viewerRoutes } from './lib/viewerRoutes';
 import { createWorkerApiRouter, WORKER_API_BASE } from './lib/workerApiRouter';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
@@ -161,6 +162,8 @@ export class AppAgentiz extends AbstractApp {
         ...workerRoutes,
         // One run's stages, logs and diff.
         ...runRoutes,
+        // The viewer's timezone, for client-side timestamp formatting in the modules.
+        ...viewerRoutes,
         {
             route: '/agentiz',
             method: 'get',
