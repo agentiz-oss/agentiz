@@ -148,7 +148,12 @@
   and `agentiz.reportHarnessUsage` — enter through `AgentCapacityService.applyReport()`, so a report
   shape is understood in one place; `applySnapshot` stays the single write point behind it. A
   collector returning nothing sends nothing on purpose: an empty report would auto-create a binding
-  and a subscription for a harness that machine does not run.
+  and a subscription for a harness that machine does not run. The Claude collector **renews the
+  OAuth token itself** when it has expired, writing back to the store the CLI owns — the CLI only
+  refreshes when it is about to call the API, so without this the numbers would freeze exactly
+  while the machine is idle. That write is a compare-and-swap plus an atomic replace, and it must
+  persist a **rotated** refresh token or the CLI is logged out (`AGENTIZ_CLAUDE_TOKEN_REFRESH=0`
+  disables it).
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
