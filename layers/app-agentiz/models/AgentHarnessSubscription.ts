@@ -103,6 +103,37 @@ export class AgentHarnessSubscription extends Model<
   @Column({ type: DataType.JSONB, allowNull: true })
   declare stopPolicy: HarnessStopPolicy | null;
 
+  /**
+   * Daily reset alignment (lib/harnessAlign.ts): try to land the session window's reset on
+   * `alignResetHour` in `alignResetTimezone`, every day. Best-effort discipline over when a new
+   * window opens — never touches `exhaustedUntil`, and does nothing without fresh telemetry.
+   */
+  @AdminizerField({
+    title: 'Align daily reset',
+    type: 'boolean',
+    tooltip: 'Best-effort: pause opening a new session window when it would misalign, and open one on time when idle, so the reset lands within ±1h of the hour below (exactly on it when idle).',
+    views: { list: true, add: true, edit: true },
+  })
+  @Default(false)
+  @Column({ type: DataType.BOOLEAN, allowNull: false, defaultValue: false })
+  declare alignResetEnabled: CreationOptional<boolean>;
+
+  @AdminizerField({
+    title: 'Reset hour (0–23)',
+    tooltip: 'Local hour the session window should reset at, e.g. 9 for 09:00.',
+    views: { list: false, add: true, edit: true },
+  })
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare alignResetHour: number | null;
+
+  @AdminizerField({
+    title: 'Reset timezone',
+    tooltip: 'IANA zone the hour is expressed in, e.g. Europe/Belgrade.',
+    views: { list: false, add: true, edit: true },
+  })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare alignResetTimezone: string | null;
+
   /** The enforcement field: the subscription is closed to the claim gate until this moment. */
   @AdminizerField({ title: 'Exhausted until', type: 'datetime', views: { list: true, add: false, edit: false } })
   @Column({ type: DataType.DATE, allowNull: true })
@@ -127,5 +158,11 @@ export class AgentHarnessSubscription extends Model<
   /** Whether the claim gate is closed right now. */
   isExhausted(now: Date = new Date()): boolean {
     return Boolean(this.exhaustedUntil && this.exhaustedUntil.getTime() > now.getTime());
+  }
+
+  /** The alignment config when the checkbox is on and both settings are filled, else null. */
+  alignConfig(): { hour: number; timezone: string } | null {
+    if (!this.alignResetEnabled || typeof this.alignResetHour !== 'number' || !this.alignResetTimezone) return null;
+    return { hour: this.alignResetHour, timezone: this.alignResetTimezone };
   }
 }

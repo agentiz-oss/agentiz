@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -196,6 +197,44 @@ COLLECTORS: dict[str, Callable[[], dict[str, Any] | None]] = {
     "claude": collect_claude,
 }
 
+#: How long one poke may take, and how often one may run. The server keeps asking while its
+#: telemetry shows no open window, so the throttle only caps the cost of a poke that silently
+#: fails to open one.
+POKE_TIMEOUT_SEC = 180
+POKE_MIN_INTERVAL_SEC = 600
+
+
+def poke_claude() -> bool:
+    """Opens a session window with the cheapest possible request: one word to the smallest model,
+    through the CLI that owns the credential. Sent when the server answers a usage report with
+    `openWindow` — its reset-alignment logic wants the window's 5 hours to start now (see the
+    server's `lib/harnessAlign.ts`). Best-effort like everything in this module: a failure is one
+    warning line and the server simply asks again on a later report.
+    """
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "ok", "--model", "haiku"],
+            cwd=str(Path.home()),
+            capture_output=True,
+            text=True,
+            timeout=POKE_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"usage: window poke could not run claude: {error}", flush=True)
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        print(f"usage: window poke exited {result.returncode}: {detail[-1] if detail else ''}", flush=True)
+        return False
+    return True
+
+
+#: Harness key → the request that opens its session window. Only harnesses with a poker can be
+#: reset-aligned when idle; the rest ignore `openWindow` and lose nothing else.
+POKERS: dict[str, Callable[[], bool]] = {
+    "claude": poke_claude,
+}
+
 
 class UsageReporter:
     """Background loop that pushes every collector's payload to Agentiz.
@@ -209,6 +248,7 @@ class UsageReporter:
         self._interval = max(int(interval_sec), 10)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._last_poke_at: dict[str, float] = {}
 
     def report_once(self) -> int:
         """Collects and sends every harness this machine can report on. Returns how many went out."""
@@ -222,11 +262,38 @@ class UsageReporter:
             if not raw:
                 continue
             try:
-                self._send(harness_key, raw)
+                response = self._send(harness_key, raw)
                 sent += 1
             except Exception as error:  # noqa: BLE001 - telemetry must never break the worker
                 print(f"usage: could not report {harness_key} usage: {error}", flush=True)
+                continue
+            if isinstance(response, dict) and response.get("openWindow"):
+                self._maybe_poke(harness_key)
         return sent
+
+    def _maybe_poke(self, harness_key: str) -> None:
+        """Answers the server's `openWindow` by opening a session window, then re-reports right
+        away so the server sees the window it asked for and stops asking. Throttled locally: a
+        poke that fails to move the telemetry must not turn into one request per report tick.
+        """
+        poker = POKERS.get(harness_key)
+        if poker is None:
+            return
+        now = time.monotonic()
+        last = self._last_poke_at.get(harness_key)
+        if last is not None and now - last < POKE_MIN_INTERVAL_SEC:
+            return
+        self._last_poke_at[harness_key] = now
+        if not poker():
+            return
+        print(f"usage: opened a {harness_key} session window on server request", flush=True)
+        collect = COLLECTORS.get(harness_key)
+        try:
+            raw = collect() if collect else None
+            if raw:
+                self._send(harness_key, raw)
+        except Exception as error:  # noqa: BLE001 - telemetry must never break the worker
+            print(f"usage: could not re-report {harness_key} usage after poke: {error}", flush=True)
 
     def start(self) -> None:
         if self._thread is not None:

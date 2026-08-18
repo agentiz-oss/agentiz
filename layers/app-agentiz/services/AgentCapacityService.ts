@@ -7,6 +7,7 @@ import { AgentWorkerHarness } from '../models/AgentWorkerHarness';
 import { harnessLimitProviderFor, listHarnessLimitProviders } from '../lib/harnessLimits';
 import type { HarnessLimitProviderContext, HarnessLimitSignal, HarnessLimitSnapshot } from '../lib/harnessLimits';
 import { isScheduleOpen, nextScheduleOpen, nextWeeklyMoment, prevWeeklyMoment } from '../lib/activeHours';
+import { alignState } from '../lib/harnessAlign';
 import { MIXED_HARNESS_KEY } from '../lib/harness';
 import { sendDashboardNotification } from '../lib/notifications/dashboardNotifications';
 import { formatUserDeadline } from '../lib/userTime';
@@ -124,7 +125,16 @@ export class AgentCapacityService {
       }
       if (!binding.subscriptionId) continue;
       const subscription = await AgentHarnessSubscription.findByPk(binding.subscriptionId);
-      if (subscription?.isExhausted(now)) keys.push(binding.harnessKey);
+      if (subscription?.isExhausted(now)) {
+        keys.push(binding.harnessKey);
+        continue;
+      }
+      // Reset alignment: while the next window must not open yet (see lib/harnessAlign.ts),
+      // the subscription is paused exactly like an operator-disabled binding — a claim-side
+      // gate that touches no job's availableAt and lifts by itself at A−W.
+      if (subscription && alignState(subscription.alignConfig(), subscription.windows, now) === 'hold') {
+        keys.push(binding.harnessKey);
+      }
     }
     cache.set(worker.id, { keys, expiresAt: now.getTime() + GATE_CACHE_TTL_MS });
     return keys;

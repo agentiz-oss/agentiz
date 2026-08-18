@@ -138,6 +138,20 @@
   worker release and is rejected by validation) and in `AgentWorker.activeHours` — the first is a
   job property and lands in `availableAt`, the second is a claim-side gate and must never touch
   `availableAt`.
+- Daily reset alignment (`AgentHarnessSubscription.alignReset*`, logic in `lib/harnessAlign.ts`) is
+  **best-effort discipline over when a session window opens**, never enforcement: it reads the same
+  advisory `windows` telemetry the UI shows, does nothing when telemetry is stale or absent, and
+  never touches `exhaustedUntil`. Two arms, both derived from the next anchor `A`, window length
+  `W` and tolerance `T` (±1h, `ALIGN_TOLERANCE_MS`): a claim-side `hold` in `(A−2W+T, A−W−T)`
+  (added to `gatedHarnessKeys()`, like `activeHours` it must never touch `availableAt` — the first
+  claim after the hold opens a window whose reset lands within `A±T` by itself), and a `poke` in
+  `[A−W, A)` that rides the **response** of `POST /harness-usage` as `openWindow` — decided on
+  telemetry that very report refreshed, executed by the worker as a one-word `claude -p`
+  (throttled, re-reports immediately so the server stops asking). The tolerance is the accepted
+  trade: under continuous load the reset lands within ±1h of the anchor and the daily pause costs
+  up to ~`W−2T` (≈3h — 24h does not divide evenly by 5h, so some gap is mathematically
+  unavoidable); an idle night still ends in a poke at exactly `A−W` and a reset at the anchor to
+  the minute.
 - Usage telemetry is **pushed, never pulled**: the numbers live behind a credential on the worker
   machine (Claude's OAuth token), so `claudeLimitProvider` declares no `refresh()` and the server's
   refresh cycle is a no-op with only that provider registered. The worker reports every 120s from

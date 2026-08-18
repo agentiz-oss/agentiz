@@ -12,6 +12,7 @@ import { AgentRepository } from '../models/AgentRepository';
 import type { AgentRunLogLevel, AgentTaskStatus } from '../types/agentiz';
 import type { FileChange, FileOp } from '../lib/git';
 import { normalizeFileChanges, requireGitConnectionAuthority } from '../lib/git';
+import { alignState } from '../lib/harnessAlign';
 import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentJobClaimService } from './AgentJobClaimService';
@@ -663,11 +664,19 @@ export class AgentWorkerApiService {
         snapshot: payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined,
         observedAt,
       });
+      // Reset alignment (lib/harnessAlign.ts): the poke decision rides the report's response on
+      // purpose — it is made on telemetry this very report just refreshed, and the worker that
+      // reported is by definition reachable and holds the credential. Best-effort: the worker may
+      // ignore it, and once its poke opens a window the next report stops asking.
+      const subscription = result.subscription;
+      const openWindow = Boolean(subscription
+        && alignState(subscription.alignConfig(), subscription.windows) === 'poke');
       return {
         schemaVersion: SCHEMA_VERSION,
         sampleId: result.sample.id,
-        subscriptionId: result.subscription?.id ?? null,
+        subscriptionId: subscription?.id ?? null,
         warnings: result.warnings,
+        openWindow,
       };
     } catch (error) {
       throw new WorkerApiError(400, error instanceof Error ? error.message : String(error));
