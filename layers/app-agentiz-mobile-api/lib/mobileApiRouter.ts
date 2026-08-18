@@ -3,6 +3,7 @@ import cors from 'cors';
 import type { Model, Sequelize } from 'sequelize';
 import { bearerToken, verifyMobileToken } from './mobileAuth';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
+import { MobileCapacityService } from '../services/MobileCapacityService';
 import { MobileDeviceService } from '../services/MobileDeviceService';
 import { MobileInteractionService } from '../services/MobileInteractionService';
 import { MobilePushService } from '../services/MobilePushService';
@@ -239,6 +240,46 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   router.post('/tasks/:taskId/runs/:runId/cancel', requireAuth, async (req: AuthedRequest, res) => {
     try {
       res.json({ data: await MobileTaskService.cancelRun(String(req.params.taskId), String(req.params.runId), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Workers and the harness limits they run under. Not scoped to the caller's projects like
+   * everything above it: a worker belongs to the installation, and the question this answers —
+   * "почему ничего не идёт" — is unanswerable from a project's side. Nothing secret travels here;
+   * a subscription holds a name, a policy and percentages, never a credential.
+   */
+  router.get('/workers', requireAuth, async (_req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileCapacityService.workers() });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.get('/workers/:id', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const worker = await MobileCapacityService.worker(idOf(req));
+      if (!worker) {
+        res.status(404).json({ message: 'Worker not found' });
+        return;
+      }
+      res.json({ data: worker });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * The same limits seen from the account they belong to. A subscription, not a worker, is what
+   * runs out: two workers signed into one account exhaust together, and this is the only view that
+   * shows that at all.
+   */
+  router.get('/subscriptions', requireAuth, async (_req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileCapacityService.subscriptions() });
     } catch (error) {
       errorResponse(res, error);
     }
