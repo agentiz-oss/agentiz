@@ -33,6 +33,9 @@ export interface SubscriptionInput {
   notes?: string | null;
   resetSchedule?: HarnessResetSchedule | null;
   stopPolicy?: HarnessStopPolicy | null;
+  alignResetEnabled?: boolean;
+  alignResetHour?: number | null;
+  alignResetTimezone?: string | null;
 }
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -188,6 +191,15 @@ export class AgentHarnessAdminService {
     if (values.authKind && !['subscription', 'api-key'].includes(values.authKind)) {
       throw new HarnessAdminError(400, 'authKind must be subscription or api-key');
     }
+    // The alignment trio only configures a best-effort discipline (lib/harnessAlign.ts): a filled
+    // value must be valid, but "enabled with a blank hour" is allowed and simply does nothing.
+    if (values.alignResetHour !== undefined && values.alignResetHour !== null
+      && (!Number.isInteger(values.alignResetHour) || values.alignResetHour < 0 || values.alignResetHour > 23)) {
+      throw new HarnessAdminError(400, 'alignResetHour must be an integer between 0 and 23');
+    }
+    if (values.alignResetTimezone && !isValidTimezone(values.alignResetTimezone)) {
+      throw new HarnessAdminError(400, `alignResetTimezone "${values.alignResetTimezone}" is not a valid IANA timezone`);
+    }
     if (id) {
       const subscription = await AgentHarnessSubscription.findByPk(id);
       if (!subscription) throw new HarnessAdminError(404, `AgentHarnessSubscription ${id} not found`);
@@ -204,6 +216,9 @@ export class AgentHarnessAdminService {
       notes: values.notes ?? null,
       resetSchedule: values.resetSchedule ?? null,
       stopPolicy: values.stopPolicy ?? null,
+      alignResetEnabled: values.alignResetEnabled ?? false,
+      alignResetHour: values.alignResetHour ?? null,
+      alignResetTimezone: values.alignResetTimezone ?? null,
     });
   }
 

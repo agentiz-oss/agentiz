@@ -72,6 +72,9 @@ interface HarnessSubscription {
   accountId?: string | null;
   resetSchedule?: unknown;
   stopPolicy?: unknown;
+  alignResetEnabled?: boolean;
+  alignResetHour?: number | null;
+  alignResetTimezone?: string | null;
   windows: HarnessWindowState[];
   exhaustedUntil?: string | null;
   exhaustedReason?: string | null;
@@ -145,6 +148,93 @@ const ISSUED_TOKEN_COLORS = {
   buttonBorder: "#d97706",
   buttonBg: "#fef3c7",
   buttonFg: "#78350f",
+};
+
+/**
+ * In-place replacement for window.confirm: the first click swaps the button for the question with
+ * an explicit destructive button and a cancel, right in the same action row.
+ */
+const ConfirmButton: React.FC<{
+  label: string;
+  question: string;
+  busy: boolean;
+  onConfirm: () => void;
+  className?: string;
+}> = ({ label, question, busy, onConfirm, className }) => {
+  const [open, setOpen] = useState(false);
+  const buttonClass = className ?? "rounded border px-1.5 py-0.5 disabled:opacity-50";
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} disabled={busy} className={buttonClass} style={{ borderColor: "#fca5a5", color: "#b91c1c" }}>
+        {label}
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 rounded border px-2 py-1 text-xs" style={{ borderColor: "#fca5a5" }}>
+      <span>{question}</span>
+      <button
+        onClick={() => {
+          setOpen(false);
+          onConfirm();
+        }}
+        disabled={busy}
+        className="rounded border px-1.5 py-0.5 font-medium disabled:opacity-50"
+        style={{ borderColor: "#fca5a5", color: "#b91c1c" }}
+      >
+        {label}
+      </button>
+      <button onClick={() => setOpen(false)} disabled={busy} className="rounded border px-1.5 py-0.5 disabled:opacity-50">
+        Отмена
+      </button>
+    </span>
+  );
+};
+
+/**
+ * In-place replacement for the "close until…" prompt: a datetime-local picker (interpreted in the
+ * viewer's timezone, sent as ISO) plus an optional reason. Valid future moment enables the button.
+ */
+const MarkExhaustedForm: React.FC<{
+  label: string;
+  defaultReason: string;
+  busy: boolean;
+  onSubmit: (untilIso: string, reason: string) => void;
+}> = ({ label, defaultReason, busy, onSubmit }) => {
+  const [open, setOpen] = useState(false);
+  const [until, setUntil] = useState("");
+  const [reason, setReason] = useState(defaultReason);
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} disabled={busy} className="rounded border px-2 py-1 disabled:opacity-50">
+        {label}
+      </button>
+    );
+  }
+  const parsed = until ? new Date(until) : null;
+  const valid = parsed !== null && !Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now();
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 rounded border px-2 py-1 text-xs">
+      <span>до</span>
+      <input type="datetime-local" value={until} onChange={(event) => setUntil(event.target.value)} className="rounded border px-1 py-0.5" />
+      <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="причина" className="w-44 rounded border px-1 py-0.5" />
+      <button
+        onClick={() => {
+          if (!valid || !parsed) return;
+          onSubmit(parsed.toISOString(), reason.trim());
+          setOpen(false);
+          setUntil("");
+        }}
+        disabled={busy || !valid}
+        className="rounded border px-1.5 py-0.5 font-medium disabled:opacity-50"
+      >
+        Закрыть
+      </button>
+      <button onClick={() => setOpen(false)} disabled={busy} className="rounded border px-1.5 py-0.5 disabled:opacity-50">
+        Отмена
+      </button>
+    </span>
+  );
 };
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
@@ -457,17 +547,13 @@ const WorkerHarnessEditor: React.FC<{
                 >
                   {binding.enabled ? "Выключить" : "Включить"}
                 </button>
-                <button
-                  onClick={() => {
-                    const until = window.prompt("Исчерпан до (ISO или ГГГГ-ММ-ДД ЧЧ:ММ):", "");
-                    if (!until) return;
-                    onAction("markHarnessExhausted", { workerId: worker.id, harnessKey: binding.harnessKey, until, reason: "отмечено вручную из панели" });
-                  }}
-                  disabled={busy}
-                  className="rounded border px-2 py-1 disabled:opacity-50"
-                >
-                  Отметить исчерпанным…
-                </button>
+                <MarkExhaustedForm
+                  label="Отметить исчерпанным…"
+                  defaultReason="отмечено вручную из панели"
+                  busy={busy}
+                  onSubmit={(until, reason) =>
+                    onAction("markHarnessExhausted", { workerId: worker.id, harnessKey: binding.harnessKey, until, reason })}
+                />
                 {binding.state === "exhausted" && (
                   <button
                     onClick={() => onAction("clearHarnessLimit", { workerId: worker.id, harnessKey: binding.harnessKey })}
@@ -572,6 +658,164 @@ const WorkerLimitsEditor: React.FC<{
   );
 };
 
+const DAY_OPTIONS: Array<[string, string]> = [
+  ["mon", "пн"], ["tue", "вт"], ["wed", "ср"], ["thu", "чт"], ["fri", "пт"], ["sat", "сб"], ["sun", "вс"],
+];
+
+type WeeklySchedule = { kind: "weekly"; day: string; time: string; timezone: string };
+
+/**
+ * The subscription's schedule, thresholds and reset alignment as a real form (formerly a JSON
+ * prompt). Mounted only while open so every opening starts from the subscription's current state.
+ * Sends only the fields it owns; a cron resetSchedule (configured over MCP) is left untouched
+ * unless the weekly editor is switched on over it.
+ */
+const SubscriptionSettingsForm: React.FC<{
+  subscription: HarnessSubscription;
+  busy: boolean;
+  onSave: (values: Record<string, unknown>) => void;
+  onClose: () => void;
+}> = ({ subscription, busy, onSave, onClose }) => {
+  const viewerTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const schedule = subscription.resetSchedule as { kind?: string } | null | undefined;
+  const weekly = schedule?.kind === "weekly" ? (schedule as WeeklySchedule) : null;
+  const isCron = schedule?.kind === "cron";
+  const policy = (subscription.stopPolicy ?? {}) as Record<string, { pauseAtUsedPercent?: number } | undefined>;
+  const windowKeys = Array.from(new Set([
+    ...(subscription.windows ?? []).map((window) => window.key),
+    ...Object.keys(policy),
+  ]));
+
+  const [authKind, setAuthKind] = useState(subscription.authKind ?? "");
+  const [weeklyOn, setWeeklyOn] = useState(Boolean(weekly));
+  const [day, setDay] = useState(weekly?.day ?? "mon");
+  const [time, setTime] = useState(weekly?.time ?? "03:00");
+  const [weeklyTz, setWeeklyTz] = useState(weekly?.timezone ?? viewerTz);
+  const [thresholds, setThresholds] = useState<Record<string, string>>(() => Object.fromEntries(
+    windowKeys.map((key) => [key, policy[key]?.pauseAtUsedPercent != null ? String(policy[key]!.pauseAtUsedPercent) : ""]),
+  ));
+  const [alignOn, setAlignOn] = useState(Boolean(subscription.alignResetEnabled));
+  const [alignHour, setAlignHour] = useState(subscription.alignResetHour != null ? String(subscription.alignResetHour) : "9");
+  const [alignTz, setAlignTz] = useState(subscription.alignResetTimezone ?? viewerTz);
+
+  const alignHourValue = Number(alignHour);
+  const alignValid = !alignOn || (Number.isInteger(alignHourValue) && alignHourValue >= 0 && alignHourValue <= 23 && Boolean(alignTz.trim()));
+  const thresholdsValid = Object.values(thresholds).every((value) => {
+    if (!value.trim()) return true;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 1 && parsed <= 100;
+  });
+  const weeklyValid = !weeklyOn || (Boolean(weeklyTz.trim()) && /^\d{2}:\d{2}$/.test(time));
+
+  const save = () => {
+    const stopPolicy: Record<string, { pauseAtUsedPercent: number }> = {};
+    for (const [key, value] of Object.entries(thresholds)) {
+      if (value.trim()) stopPolicy[key] = { pauseAtUsedPercent: Number(value) };
+    }
+    const values: Record<string, unknown> = {
+      authKind: authKind || null,
+      stopPolicy: Object.keys(stopPolicy).length ? stopPolicy : null,
+      alignResetEnabled: alignOn,
+      alignResetHour: alignHour.trim() ? alignHourValue : null,
+      alignResetTimezone: alignTz.trim() || null,
+    };
+    if (weeklyOn) values.resetSchedule = { kind: "weekly", day, time, timezone: weeklyTz.trim() };
+    else if (!isCron) values.resetSchedule = null;
+    onSave(values);
+    onClose();
+  };
+
+  return (
+    <div className="mt-2 space-y-2 rounded border p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">Режим авторизации:</span>
+        <select value={authKind} onChange={(event) => setAuthKind(event.target.value)} className="rounded border px-2 py-1">
+          <option value="">не указан</option>
+          <option value="subscription">subscription (окна 5ч/неделя)</option>
+          <option value="api-key">api-key (RPM/TPM)</option>
+        </select>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 font-medium">
+          <input type="checkbox" checked={weeklyOn} onChange={(event) => setWeeklyOn(event.target.checked)} />
+          Недельный сброс
+        </label>
+        {weeklyOn && (
+          <>
+            <select value={day} onChange={(event) => setDay(event.target.value)} className="rounded border px-2 py-1">
+              {DAY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <input type="time" value={time} onChange={(event) => setTime(event.target.value)} className="rounded border px-1 py-0.5" />
+            <input value={weeklyTz} onChange={(event) => setWeeklyTz(event.target.value)} placeholder="Europe/Belgrade" className="w-44 rounded border px-1 py-0.5" />
+          </>
+        )}
+        {isCron && !weeklyOn && <span className="text-muted-foreground">настроен cron (через MCP) — форма его не трогает</span>}
+        <span className="text-muted-foreground">декларированный момент сброса: в это время гейт откроется сам.</span>
+      </div>
+
+      <div>
+        <div className="font-medium">Пороги остановки (заполнено = закрыть гейт при N%):</div>
+        {windowKeys.length === 0 ? (
+          <p className="mt-1 text-muted-foreground">Окна появятся после первой телеметрии этой подписки.</p>
+        ) : (
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            {windowKeys.map((key) => {
+              const label = (subscription.windows ?? []).find((window) => window.key === key)?.label ?? key;
+              return (
+                <label key={key} className="flex items-center gap-1">
+                  {label}
+                  <input
+                    value={thresholds[key] ?? ""}
+                    onChange={(event) => setThresholds((prev) => ({ ...prev, [key]: event.target.value }))}
+                    placeholder="—"
+                    className="w-14 rounded border px-1 py-0.5"
+                  />
+                  %
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 font-medium">
+          <input type="checkbox" checked={alignOn} onChange={(event) => setAlignOn(event.target.checked)} />
+          Выравнивать сброс по часу
+        </label>
+        {alignOn && (
+          <>
+            <span>в</span>
+            <input value={alignHour} onChange={(event) => setAlignHour(event.target.value)} placeholder="9" className="w-12 rounded border px-1 py-0.5" />
+            <span>:00, зона</span>
+            <input value={alignTz} onChange={(event) => setAlignTz(event.target.value)} placeholder="Europe/Belgrade" className="w-44 rounded border px-1 py-0.5" />
+          </>
+        )}
+        <span className="text-muted-foreground">
+          Best-effort: сброс 5-часового окна попадёт в ±1 час от этого часа, при простое — ровно в него.
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={save}
+          disabled={busy || !alignValid || !thresholdsValid || !weeklyValid}
+          className="rounded border px-2 py-1 font-medium disabled:opacity-50"
+        >
+          Сохранить
+        </button>
+        <button onClick={onClose} disabled={busy} className="rounded border px-2 py-1 disabled:opacity-50">
+          Отмена
+        </button>
+        {!alignValid && <span style={{ color: "#b91c1c" }}>час — целое 0–23, зона обязательна</span>}
+        {!thresholdsValid && <span style={{ color: "#b91c1c" }}>порог — число 1–100</span>}
+        {!weeklyValid && <span style={{ color: "#b91c1c" }}>время — ЧЧ:ММ, зона обязательна</span>}
+      </div>
+    </div>
+  );
+};
+
 /** Cross-worker subscriptions: one account can serve several machines, so this list is page-level. */
 const SubscriptionsSection: React.FC<{
   subscriptions: HarnessSubscription[];
@@ -580,6 +824,7 @@ const SubscriptionsSection: React.FC<{
 }> = ({ subscriptions, busy, onAction }) => {
   const [name, setName] = useState("");
   const [provider, setProvider] = useState("anthropic");
+  const [settingsOpen, setSettingsOpen] = useState<string | null>(null);
   return (
     <div className="rounded-lg border p-4">
       <h2 className="text-lg font-semibold">Подписки</h2>
@@ -614,51 +859,36 @@ const SubscriptionsSection: React.FC<{
                   Снять лимит
                 </button>
               ) : (
-                <button
-                  onClick={() => {
-                    const until = window.prompt("Закрыть до (ISO или ГГГГ-ММ-ДД ЧЧ:ММ):", "");
-                    if (!until) return;
-                    onAction("markHarnessExhausted", { subscriptionId: subscription.id, until, reason: "закрыто вручную из панели" });
-                  }}
-                  disabled={busy}
-                  className="rounded border px-2 py-1 disabled:opacity-50"
-                >
-                  Закрыть до…
-                </button>
+                <MarkExhaustedForm
+                  label="Закрыть до…"
+                  defaultReason="закрыто вручную из панели"
+                  busy={busy}
+                  onSubmit={(until, reason) =>
+                    onAction("markHarnessExhausted", { subscriptionId: subscription.id, until, reason })}
+                />
               )}
               <button
-                onClick={() => {
-                  const current = JSON.stringify({
-                    resetSchedule: subscription.resetSchedule ?? null,
-                    stopPolicy: subscription.stopPolicy ?? null,
-                    authKind: subscription.authKind ?? null,
-                  }, null, 2);
-                  const edited = window.prompt("resetSchedule / stopPolicy / authKind (JSON):", current);
-                  if (!edited) return;
-                  try {
-                    onAction("saveSubscription", { id: subscription.id, values: JSON.parse(edited) });
-                  } catch {
-                    window.alert("Невалидный JSON");
-                  }
-                }}
+                onClick={() => setSettingsOpen(settingsOpen === subscription.id ? null : subscription.id)}
                 disabled={busy}
                 className="rounded border px-2 py-1 disabled:opacity-50"
               >
-                Расписание и пороги…
+                {settingsOpen === subscription.id ? "Скрыть настройки" : "Расписание и пороги…"}
               </button>
-              <button
-                onClick={() => {
-                  if (window.confirm(`Удалить подписку «${subscription.name}»? Привязки воркеров останутся без подписки.`)) {
-                    onAction("deleteSubscription", { subscriptionId: subscription.id });
-                  }
-                }}
-                disabled={busy}
-                className="rounded border px-1.5 py-0.5 disabled:opacity-50"
-                style={{ borderColor: "#fca5a5", color: "#b91c1c" }}
-              >
-                Удалить
-              </button>
+              <ConfirmButton
+                label="Удалить"
+                question={`Удалить подписку «${subscription.name}»? Привязки воркеров останутся без подписки.`}
+                busy={busy}
+                onConfirm={() => onAction("deleteSubscription", { subscriptionId: subscription.id })}
+              />
             </div>
+            {settingsOpen === subscription.id && (
+              <SubscriptionSettingsForm
+                subscription={subscription}
+                busy={busy}
+                onSave={(values) => onAction("saveSubscription", { id: subscription.id, values })}
+                onClose={() => setSettingsOpen(null)}
+              />
+            )}
           </li>
         ))}
       </ul>
@@ -978,31 +1208,23 @@ const AgentizWorkers: React.FC = () => {
                     >
                       Перевыпустить токен
                     </button>
-                    <button
-                      onClick={() => {
-                        if (window.confirm(`Отозвать доступ воркера «${worker.name}»? Токен перестанет работать.`)) {
-                          workerAction("revokeWorker", worker, { reason: "revoked from admin panel" });
-                        }
-                      }}
-                      disabled={busy}
-                      className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50" style={{ borderColor: "#fca5a5", color: "#b91c1c" }}
-                    >
-                      Отозвать
-                    </button>
+                    <ConfirmButton
+                      label="Отозвать"
+                      question={`Отозвать доступ воркера «${worker.name}»? Токен перестанет работать.`}
+                      busy={busy}
+                      onConfirm={() => workerAction("revokeWorker", worker, { reason: "revoked from admin panel" })}
+                      className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                    />
                   </>
                 )}
                 {worker.kind !== "local" && (
-                  <button
-                    onClick={() => {
-                      if (window.confirm(`Удалить воркера «${worker.name}»? Его job'ы вернутся в очередь.`)) {
-                        workerAction("deleteWorker", worker);
-                      }
-                    }}
-                    disabled={busy}
-                    className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50" style={{ borderColor: "#fca5a5", color: "#b91c1c" }}
-                  >
-                    Удалить
-                  </button>
+                  <ConfirmButton
+                    label="Удалить"
+                    question={`Удалить воркера «${worker.name}»? Его job'ы вернутся в очередь.`}
+                    busy={busy}
+                    onConfirm={() => workerAction("deleteWorker", worker)}
+                    className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                  />
                 )}
                 {/* A revoked worker cannot be granted anything — its token is already dead. */}
                 <select
