@@ -372,7 +372,9 @@ export class AppAgentiz extends AbstractApp {
             // throw on the duplicate id, which is exactly the signal to delete this).
             for (const skill of buildAgentizAgentSkills(adminizerApp.adminizer)) {
                 try {
-                    adminizerApp.adminizer.aiAssistantAgentSkillHandler.add(skill, this.appId);
+                    // The handler exists at runtime but is missing from the shipped type
+                    // declarations of this adminizer build, hence the cast.
+                    (adminizerApp.adminizer as any).aiAssistantAgentSkillHandler.add(skill, this.appId);
                 } catch (error) {
                     console.warn(`[AppAgentiz] agent skill "${skill.id}" is already provided by adminizer, keeping the built-in one`);
                 }
