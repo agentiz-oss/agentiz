@@ -122,6 +122,19 @@ class UsageReporterTest(unittest.TestCase):
             self.assertEqual(UsageReporter(lambda key, payload: sent.append((key, payload))).report_once(), 0)
         self.assertEqual(sent, [])
 
+    def test_starting_the_loop_reports_once_immediately(self) -> None:
+        """main() starts the thread instead of also calling report_once — one report, not two."""
+        sent: list[tuple[str, dict]] = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True):
+            reporter = UsageReporter(lambda key, payload: sent.append((key, payload)), interval_sec=3600)
+            reporter.start()
+            for _ in range(50):
+                if sent:
+                    break
+                time.sleep(0.01)
+            reporter.stop()
+        self.assertEqual(len(sent), 1)
+
     def test_neither_a_broken_collector_nor_a_failing_send_escapes(self) -> None:
         def explode() -> dict:
             raise OSError("no network")
