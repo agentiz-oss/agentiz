@@ -770,10 +770,12 @@ def main() -> None:
     reporter = UsageReporter(client.report_harness_usage, settings.usage_report_interval_sec) \
         if settings.usage_report_interval_sec else None
     if reporter:
-        # One report before the first claim, so a spent subscription is visible immediately, then
-        # the thread keeps it current for as long as this worker runs.
-        reporter.report_once()
-        if not settings.once:
+        # Both paths report immediately — the loop's first pass runs before its first wait — so a
+        # spent subscription is visible without waiting out an interval. Calling report_once()
+        # here *and* starting the thread would send the same snapshot twice on every restart.
+        if settings.once:
+            reporter.report_once()
+        else:
             reporter.start()
     while True:
         job = client.claim()
