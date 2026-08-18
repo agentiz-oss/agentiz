@@ -229,6 +229,58 @@ export class AgentCapacityService {
   }
 
   /**
+   * The one place a *report* becomes a snapshot: either an already normalized `snapshot`, or a
+   * provider-specific `raw` payload run through that harness's `interpretReport`.
+   *
+   * Both transports of external telemetry go through here — the worker's usage reporter
+   * (`POST /harness-usage`) and `agentiz.reportHarnessUsage` — so a provider whose report shape
+   * changes is fixed in the provider layer alone, and neither caller learns a field name.
+   */
+  static async applyReport(params: {
+    workerId?: string | null;
+    subscriptionId?: string | null;
+    harnessKey: string;
+    raw?: unknown;
+    snapshot?: { windows?: unknown[]; meta?: unknown; accountId?: string };
+    observedAt?: Date;
+  }): Promise<AppliedSnapshotOutcome> {
+    let snapshot = params.snapshot;
+    if (!snapshot && params.raw !== undefined) {
+      const provider = harnessLimitProviderFor(params.harnessKey);
+      if (!provider?.interpretReport) {
+        throw new Error(`No registered provider can interpret raw reports for "${params.harnessKey}" — send a normalized snapshot instead`);
+      }
+      const worker = params.workerId ? await AgentWorker.findByPk(params.workerId) : null;
+      const interpreted = provider.interpretReport(params.raw, this.providerContext(
+        worker ?? { id: '', name: '', hostname: null, timezone: null, capabilities: null },
+        null,
+      ));
+      if (!interpreted) throw new Error(`Provider "${provider.id}" could not interpret the raw report`);
+      snapshot = interpreted as typeof snapshot;
+    }
+    if (!snapshot || !Array.isArray(snapshot.windows)) {
+      throw new Error('Either raw (with a provider registered) or snapshot.windows is required');
+    }
+    return this.applySnapshot({
+      workerId: params.workerId,
+      subscriptionId: params.subscriptionId,
+      harnessKey: params.harnessKey,
+      snapshot: {
+        windows: (snapshot.windows as HarnessWindowState[]).map((window) => ({
+          key: String(window.key),
+          label: typeof window.label === 'string' ? window.label : String(window.key),
+          usedPercent: typeof window.usedPercent === 'number' ? window.usedPercent : undefined,
+          resetsAt: window.resetsAt ? new Date(window.resetsAt) : null,
+        })),
+        meta: snapshot.meta,
+        accountId: typeof snapshot.accountId === 'string' ? snapshot.accountId : undefined,
+      },
+      source: 'report',
+      observedAt: params.observedAt,
+    });
+  }
+
+  /**
    * Applies one telemetry snapshot from any source. Always leaves a sample row; updates the
    * subscription's cached `windows`; applies `stopPolicy` (threshold reached ⇒ preventive
    * `exhaustedUntil` until that window's reset); and clears a *preventive* stop whose windows

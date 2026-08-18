@@ -1,11 +1,8 @@
 import type { IMcpTool } from '@nodeknit/app-mcp';
-import { AgentWorker } from '../models/AgentWorker';
 import { AgentCapacityService } from '../services/AgentCapacityService';
 import { AgentHarnessAdminService, HarnessAdminError } from '../services/AgentHarnessAdminService';
 import type { SubscriptionInput } from '../services/AgentHarnessAdminService';
-import { harnessLimitProviderFor } from '../lib/harnessLimits';
 import { subscriptionView } from '../lib/capacityViews';
-import type { HarnessWindowState } from '../types/agentiz';
 
 type Params = Record<string, unknown>;
 
@@ -70,39 +67,13 @@ const reportHarnessUsageTool: IMcpTool = {
     const subscriptionId = stringParam(payload, 'subscriptionId');
     if (!workerId && !subscriptionId) throw new Error('workerId or subscriptionId is required');
 
-    let snapshot = payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined;
-    if (!snapshot && payload.raw !== undefined) {
-      const provider = harnessLimitProviderFor(harnessKey);
-      if (!provider?.interpretReport) {
-        throw new Error(`No registered provider can interpret raw reports for "${harnessKey}" — send a normalized snapshot instead`);
-      }
-      const worker = workerId ? await AgentWorker.findByPk(workerId) : null;
-      const interpreted = provider.interpretReport(payload.raw, AgentCapacityService.providerContext(
-        worker ?? { id: '', name: '', hostname: null, timezone: null, capabilities: null },
-        null,
-      ));
-      if (!interpreted) throw new Error(`Provider "${provider.id}" could not interpret the raw report`);
-      snapshot = interpreted as typeof snapshot;
-    }
-    if (!snapshot || !Array.isArray(snapshot.windows)) {
-      throw new Error('Either raw (with a provider registered) or snapshot.windows is required');
-    }
     const observedAtText = stringParam(payload, 'observedAt');
-    const result = await AgentCapacityService.applySnapshot({
+    const result = await AgentCapacityService.applyReport({
       workerId,
       subscriptionId,
       harnessKey,
-      snapshot: {
-        windows: (snapshot.windows as HarnessWindowState[]).map((window) => ({
-          key: String(window.key),
-          label: typeof window.label === 'string' ? window.label : String(window.key),
-          usedPercent: typeof window.usedPercent === 'number' ? window.usedPercent : undefined,
-          resetsAt: window.resetsAt ? new Date(window.resetsAt) : null,
-        })),
-        meta: snapshot.meta,
-        accountId: typeof snapshot.accountId === 'string' ? snapshot.accountId : undefined,
-      },
-      source: 'report',
+      raw: payload.raw,
+      snapshot: payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined,
       observedAt: observedAtText ? new Date(observedAtText) : undefined,
     });
     return {
