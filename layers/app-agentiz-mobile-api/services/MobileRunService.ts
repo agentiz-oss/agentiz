@@ -5,6 +5,7 @@ import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteractio
 import { AgentRunLog } from '../../app-agentiz/models/AgentRunLog';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
+import { runUsage } from '../../app-agentiz/lib/runUsage';
 
 /** A run is "in flight" while it is in one of these states — including the paused `waiting_input`. */
 const ACTIVE_RUN_STATUSES = ['pending', 'running', 'waiting_input'];
@@ -100,6 +101,8 @@ export class MobileRunService {
         stages: (stagesByRun.get(run.id) ?? []).map((stage) => ({ role: stage.role, status: stage.status })),
         pendingInteractions: pendingByRun.get(run.id) ?? 0,
         lastLog: lastLog ? { level: lastLog.level, message: lastLog.message, createdAt: lastLog.createdAt } : null,
+        // Token spend accumulated across attempts; null until a worker result reports usage.
+        usage: runUsage(run),
       };
     };
 

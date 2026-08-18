@@ -14,6 +14,7 @@ import { AgentRunInteractionService, InteractionError, type InteractionActor } f
 import { AgentWorkspaceProposalService, WorkspaceProposalError } from '../services/AgentWorkspaceProposalService';
 import { adminizerModuleUrl } from './adminizerModuleUrl';
 import { listRunLogs, type RunLogPage } from './runLogs';
+import { runUsage } from './runUsage';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -109,6 +110,7 @@ async function listRuns(projectId: string) {
     const job = jobByRun.get(run.id);
     const lastLog = lastLogByRun.get(run.id);
     return {
+      usage: runUsage(run),
       id: run.id,
       status: run.status,
       trigger: run.trigger,
@@ -197,6 +199,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
           return res.json({
             data: {
               run: run.toJSON(),
+              usage: runUsage(run),
               stages: stages.map((stage) => stage.toJSON()),
               ...logPayload(logs),
               diff: diff?.toJSON() ?? null,

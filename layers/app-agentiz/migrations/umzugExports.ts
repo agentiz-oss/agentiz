@@ -66,6 +66,7 @@ import {
 import { up as upManualWorkerExecutors, down as downManualWorkerExecutors } from './umzug/1787000800000_manual_worker_executors';
 import { up as upRunLogStreamIndex, down as downRunLogStreamIndex } from './umzug/1787000900000_run_log_stream_index';
 import { up as upHarnessLimits, down as downHarnessLimits } from './umzug/1788000000000_harness_limits';
+import { up as upRunTokenUsage, down as downRunTokenUsage } from './umzug/1788000100000_run_token_usage';
 
 export const umzugExports: Migration[] = [
   {
@@ -200,5 +201,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000000000,
     up: upHarnessLimits,
     down: downHarnessLimits,
+  },
+  {
+    name: 'run_token_usage',
+    timestamp: 1788000100000,
+    up: upRunTokenUsage,
+    down: downRunTokenUsage,
   },
 ];

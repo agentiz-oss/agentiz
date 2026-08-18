@@ -7,6 +7,7 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentRun } from '../models/AgentRun';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { listRunLogs } from '../lib/runLogs';
+import { runUsage } from '../lib/runUsage';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
 import { AgentPipelineService } from '../services/AgentPipelineService';
@@ -77,6 +78,8 @@ function runTeaser(run: AgentRun, opts: { includeSummary?: boolean } = {}) {
     // Set while the run is parked (harness limit / schedule window); the status itself stays
     // running/pending, so this pair is what distinguishes "waiting" from "hung".
     waitingReason: run.waitingReason, waitingUntil: run.waitingUntil,
+    // Token spend accumulated across attempts; null until the first worker result reports usage.
+    usage: runUsage(run),
   };
 }
 

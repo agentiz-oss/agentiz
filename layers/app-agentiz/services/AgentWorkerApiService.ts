@@ -110,6 +110,40 @@ function objectBody(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+/** Non-negative integer out of a stage output's usage block; anything else counts as 0. */
+function usageNumber(usage: Record<string, unknown> | undefined, key: string): number {
+  const value = Number(usage?.[key]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Adds this result's per-stage token spend onto the run's accumulated columns. Called for every
+ * applied (deduplicated) result including ones that then get deferred or failed — tokens a lost
+ * attempt burned are still burned, and the run's totals are the place that records that. The
+ * per-stage detail stays in `AgentStageExecution.output.usage` (last attempt only).
+ */
+async function accumulateRunUsage(run: AgentRun, stageOutputs: WorkerResult['stageOutputs']): Promise<void> {
+  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+  for (const stage of stageOutputs ?? []) {
+    const usage = (stage.output?.usage ?? null) as Record<string, unknown> | null;
+    if (!usage) continue;
+    input += usageNumber(usage, 'inputTokens');
+    output += usageNumber(usage, 'outputTokens');
+    cacheRead += usageNumber(usage, 'cacheReadTokens');
+    cacheWrite += usageNumber(usage, 'cacheWriteTokens');
+    cost += Number(usage.estimatedCostUsd) > 0 ? Number(usage.estimatedCostUsd) : 0;
+  }
+  if (input + output + cacheRead + cacheWrite === 0 && cost === 0) return;
+  await run.update({
+    usageInputTokens: (Number(run.usageInputTokens) || 0) + input,
+    usageOutputTokens: (Number(run.usageOutputTokens) || 0) + output,
+    usageCacheReadTokens: (Number(run.usageCacheReadTokens) || 0) + cacheRead,
+    usageCacheWriteTokens: (Number(run.usageCacheWriteTokens) || 0) + cacheWrite,
+    usageTotalTokens: (Number(run.usageTotalTokens) || 0) + input + output + cacheRead + cacheWrite,
+    usageEstimatedCostUsd: cost > 0 ? (Number(run.usageEstimatedCostUsd) || 0) + cost : run.usageEstimatedCostUsd,
+  });
+}
+
 function renderCommitMessage(template: string, run: AgentRun, task: AgentTask, summary: string): string {
   const values: Record<string, string> = {
     taskId: task.id, externalId: task.externalId, title: task.title, summary,
@@ -244,6 +278,8 @@ export class AgentWorkerApiService {
         finishedAt: new Date(),
       }, { where: { id: stage.executionId, runId: run.id } });
     }
+    // Before defer classification on purpose: a limit-deferred attempt spent its tokens too.
+    await accumulateRunUsage(run, payload.stageOutputs);
 
     // A failure that is really a harness limit is deferred, not terminalized: the run keeps its
     // status and waits, the subscription's gate closes, and one of the two automatic resume

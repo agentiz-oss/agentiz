@@ -417,9 +417,46 @@ def resolve_workdir(job: dict[str, Any], settings: Settings) -> Path:
     return directory
 
 
+def stage_token_usage(agent: Any) -> dict[str, Any] | None:
+    """Token/cost numbers the SDK accumulated for one stage, in the wire's camelCase.
+
+    openhands-sdk records every ACP ``PromptResponse.usage`` into ``agent.llm.metrics``
+    (claude-agent-acp and codex-acp send the standard field; an executor that reports nothing
+    leaves the counters at zero, and this returns None so the stage output carries no usage block
+    instead of a block of zeros that reads as "the agent spent nothing").
+    """
+    try:
+        metrics = agent.llm.metrics
+        usage = metrics.accumulated_token_usage
+        cost = float(metrics.accumulated_cost or 0.0)
+    except Exception:
+        return None
+    if usage is None:
+        return None
+    tokens = {
+        "inputTokens": int(usage.prompt_tokens or 0),
+        "outputTokens": int(usage.completion_tokens or 0),
+        "cacheReadTokens": int(usage.cache_read_tokens or 0),
+        "cacheWriteTokens": int(usage.cache_write_tokens or 0),
+        "reasoningTokens": int(usage.reasoning_tokens or 0),
+    }
+    if not any(tokens.values()) and cost <= 0:
+        return None
+    tokens["totalTokens"] = tokens["inputTokens"] + tokens["outputTokens"] + tokens["cacheReadTokens"] + tokens["cacheWriteTokens"]
+    if usage.context_window:
+        tokens["contextWindow"] = int(usage.context_window)
+    if cost > 0:
+        # litellm's pricing estimate; on a subscription the real marginal cost is zero.
+        tokens["estimatedCostUsd"] = round(cost, 6)
+    if usage.model:
+        tokens["model"] = str(usage.model)
+    return tokens
+
+
 def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path,
                   on_agent_message: Any, interaction_broker: HumanInteractionBroker,
-                  collaboration_mode: str | None = None, on_tool_progress: Any = None) -> tuple[str, str | None]:
+                  collaboration_mode: str | None = None, on_tool_progress: Any = None,
+                  on_usage: Any = None) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -472,6 +509,12 @@ def run_openhands(mode: str, acp_command: list[str], model: str | None, message:
             finally:
                 conversation.close()
     finally:
+        # Read before close, and on the failure path too: tokens spent by a stage that then
+        # failed are still spent, and the run's totals must include them.
+        if on_usage:
+            usage = stage_token_usage(agent)
+            if usage:
+                on_usage(usage)
         agent.close()
         if context:
             context.__exit__(None, None, None)
@@ -639,22 +682,37 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if repository and mode == "docker":
                     raise WorkerError("stage runtime.mode 'docker' cannot see the repository checkout yet; configure the stage as 'host'")
                 emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
-                if kind == "bash-fixture":
-                    status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
-                else:
-                    source = "codex" if any("codex-acp" in part or "codex_acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
-                    interaction_broker = HumanInteractionBroker(client, job, str(stage_id), source, redact)
-                    status, agent_response = run_openhands(
-                        mode, command, model, prompt(stage, job), settings, workdir,
-                        lambda text: emit("stage.event", stage_id, text),
-                        interaction_broker, collaboration_mode,
-                        on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),
-                    )
+                # Filled by run_openhands from its finally block, so a stage that raised still
+                # reports what it spent — the failed entry below is how those tokens reach the run.
+                stage_usage: list[dict[str, Any]] = []
+                try:
+                    if kind == "bash-fixture":
+                        status, agent_response = run_bash_fixture(mode, command, settings, workdir), None
+                    else:
+                        source = "codex" if any("codex-acp" in part or "codex_acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
+                        interaction_broker = HumanInteractionBroker(client, job, str(stage_id), source, redact)
+                        status, agent_response = run_openhands(
+                            mode, command, model, prompt(stage, job), settings, workdir,
+                            lambda text: emit("stage.event", stage_id, text),
+                            interaction_broker, collaboration_mode,
+                            on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),
+                            on_usage=stage_usage.append,
+                        )
+                except Exception:
+                    if stage_usage:
+                        outputs.append({"executionId": stage_id, "status": "failed",
+                            "output": {"workspaceMode": mode, "workdir": str(workdir), "usage": stage_usage[0]}})
+                    raise
                 if heartbeat_failure:
                     raise heartbeat_failure[0]
                 summary = redact(agent_response or status)
-                outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary,
-                    "output": {"workspaceMode": mode, "workdir": str(workdir), "executionStatus": status, "agentResponse": redact(agent_response) if agent_response else None}})
+                stage_output: dict[str, Any] = {"workspaceMode": mode, "workdir": str(workdir), "executionStatus": status,
+                    "agentResponse": redact(agent_response) if agent_response else None}
+                if stage_usage:
+                    stage_output["usage"] = stage_usage[0]
+                    tokens_line = f"Токены стейджа: {stage_usage[0].get('totalTokens', 0):,}".replace(",", " ")
+                    emit("stage.usage", stage_id, tokens_line, level="debug")
+                outputs.append({"executionId": stage_id, "status": "succeeded", "summary": summary, "output": stage_output})
                 # So the stage's last tool line is not written after the line closing the stage.
                 live.drain()
                 emit("stage.completed", stage_id, summary)

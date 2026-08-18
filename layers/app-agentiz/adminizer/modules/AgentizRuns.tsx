@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { formatTokens, tokensTooltip, totalTokens, type TokenUsage } from "./lib/tokenUsage";
 
 type StageCard = { stageIndex: number; role: string; status: string };
 type RunCard = {
@@ -18,6 +19,7 @@ type RunCard = {
   job?: { status: string; lastError?: string | null; worker?: { id: string; name: string } | null } | null;
   pendingInteractions: number;
   lastLog?: { level: string; message: string; createdAt?: string } | null;
+  usage?: TokenUsage | null;
 };
 
 const PREFIX = (window as any).routePrefix ?? "/dashboard";
@@ -93,6 +95,11 @@ const RunRow: React.FC<{ run: RunCard; live: boolean; onCancel: (run: RunCard) =
       <span className="text-xs text-muted-foreground">
         · {live ? `идёт ${elapsed(run.startedAt ?? run.createdAt)}` : `${elapsed(run.startedAt ?? run.createdAt, run.finishedAt)} · ${run.finishedAt ?? run.createdAt ?? ""}`}
       </span>
+      {run.usage && totalTokens(run.usage) > 0 && (
+        <span className="text-xs text-muted-foreground" title={tokensTooltip(run.usage)}>
+          · {formatTokens(totalTokens(run.usage))} ткн
+        </span>
+      )}
       {run.pendingInteractions > 0 && (
         <a href={`${PREFIX}/agentiz-interactions`} className="rounded px-2 py-0.5 text-xs font-medium underline" style={{ backgroundColor: "#ffedd5", color: "#c2410c" }}>
           ждёт ответа ({run.pendingInteractions})

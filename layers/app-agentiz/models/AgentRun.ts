@@ -104,6 +104,38 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   declare resultSummary: string | null;
 
   /**
+   * Token spend, accumulated across every applied worker result (so a deferred/retried attempt's
+   * tokens still count — the per-stage `AgentStageExecution.output.usage` keeps only the last
+   * attempt). Columns rather than JSON on purpose: charts aggregate these in SQL, and JSON
+   * operators differ between the postgres and sqlite deployments. NULL means "never reported"
+   * (an old run, or an executor that sends no usage) and renders as no badge, not as 0.
+   */
+  @AdminizerField({ title: 'Input tokens', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.BIGINT, allowNull: true })
+  declare usageInputTokens: number | null;
+
+  @AdminizerField({ title: 'Output tokens', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.BIGINT, allowNull: true })
+  declare usageOutputTokens: number | null;
+
+  @AdminizerField({ title: 'Cache read tokens', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.BIGINT, allowNull: true })
+  declare usageCacheReadTokens: number | null;
+
+  @AdminizerField({ title: 'Cache write tokens', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.BIGINT, allowNull: true })
+  declare usageCacheWriteTokens: number | null;
+
+  @AdminizerField({ title: 'Total tokens', views: { list: true, add: false, edit: false } })
+  @Column({ type: DataType.BIGINT, allowNull: true })
+  declare usageTotalTokens: number | null;
+
+  /** litellm's pricing estimate; on a subscription the real marginal cost is zero. */
+  @AdminizerField({ title: 'Estimated cost (USD)', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.FLOAT, allowNull: true })
+  declare usageEstimatedCostUsd: number | null;
+
+  /**
    * What the run started from: the branch that was asked for and the commit it resolved to when the
    * job was queued. Kept on the run so the final action does not have to resolve it a second time,
    * and so the run card can say which commit the work was based on.

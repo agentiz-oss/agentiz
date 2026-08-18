@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { formatTokens } from "./lib/tokenUsage";
 
 const API_URL = `${(window as any).routePrefix ?? "/dashboard"}/agentiz-tasks`;
 
@@ -42,7 +43,7 @@ interface TaskDetails {
   task: TaskListItem & { description?: string | null; remoteExternalId?: string; canPullComments?: boolean };
   project: { id: string; name: string; slug: string } | null;
   source: { id: string; name: string; type: string; isActive: boolean } | null;
-  runs: Array<{ id: string; status: string; trigger: string; triggerCommentId?: string | null; previousRunId?: string | null; createdAt?: string; resultSummary?: string | null; errorMessage?: string | null; commitUrl?: string | null; responseUrl?: string | null }>;
+  runs: Array<{ id: string; status: string; trigger: string; triggerCommentId?: string | null; previousRunId?: string | null; createdAt?: string; resultSummary?: string | null; errorMessage?: string | null; commitUrl?: string | null; responseUrl?: string | null; usageTotalTokens?: number | string | null }>;
   latestRun: {
     run: { id: string; status: string };
     stages: Array<{ id: string; stageIndex: number; role: string; status: string; errorMessage?: string | null }>;
@@ -901,6 +902,9 @@ const AgentizTasks: React.FC = () => {
                           <span className="text-muted-foreground">
                             {run.trigger} · {run.createdAt}
                           </span>
+                          {Number(run.usageTotalTokens) > 0 && (
+                            <span className="text-muted-foreground">· {formatTokens(Number(run.usageTotalTokens))} ткн</span>
+                          )}
                           {run.triggerCommentId && <span className="text-muted-foreground">после сообщения {run.triggerCommentId.slice(0, 8)}</span>}
                           {run.previousRunId && <span className="text-muted-foreground">после запуска {run.previousRunId.slice(0, 8)}</span>}
                           <a href={`${(window as any).routePrefix ?? "/dashboard"}/agentiz-runs?runId=${run.id}`} className="underline">

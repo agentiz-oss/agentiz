@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 import { DiffViewer } from "./components/diff-viewer";
+import { formatTokens, tokensTooltip, totalTokens, type TokenUsage } from "./lib/tokenUsage";
 
 /**
  * One pipeline run in full: its stages, its log and — when it changed code — the diff, with a
@@ -32,6 +33,7 @@ interface StageExecution {
   startedAt?: string | null;
   finishedAt?: string | null;
   errorMessage?: string | null;
+  output?: { usage?: TokenUsage } | null;
 }
 
 interface RunLog {
@@ -107,6 +109,7 @@ interface RunInteraction {
 
 interface RunDetails {
   run: AgentRun;
+  usage: TokenUsage | null;
   stages: StageExecution[];
   diff: RunDiff | null;
   interactions: RunInteraction[];
@@ -385,6 +388,17 @@ const AgentizRunDetail: React.FC = () => {
               <pre className="whitespace-pre-wrap text-sm text-muted-foreground">{run.resultSummary}</pre>
             )}
             {run.errorMessage && <div className="mt-2 text-sm" style={{ color: "#dc2626" }}>{run.errorMessage}</div>}
+            {details!.usage && totalTokens(details!.usage) > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title="Сумма по всем попыткам запуска">
+                <span className="rounded px-2 py-0.5 font-medium" style={{ backgroundColor: "#e0f2fe", color: "#0369a1" }}>
+                  {formatTokens(totalTokens(details!.usage))} токенов
+                </span>
+                <span>вход {formatTokens(details!.usage.inputTokens)}</span>
+                <span>· выход {formatTokens(details!.usage.outputTokens)}</span>
+                <span>· кэш {formatTokens((details!.usage.cacheReadTokens ?? 0) + (details!.usage.cacheWriteTokens ?? 0))}</span>
+                {details!.usage.estimatedCostUsd ? <span>· ≈ ${details!.usage.estimatedCostUsd.toFixed(details!.usage.estimatedCostUsd < 0.1 ? 4 : 2)}</span> : null}
+              </div>
+            )}
             <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
               {run.commitUrl && (
                 <a href={run.commitUrl} target="_blank" rel="noreferrer" className="underline">
@@ -533,6 +547,12 @@ const AgentizRunDetail: React.FC = () => {
                     {stage.startedAt && (
                       <span className="text-xs text-muted-foreground">
                         {stage.startedAt}{stage.finishedAt ? ` → ${stage.finishedAt}` : ""}
+                      </span>
+                    )}
+                    {stage.output?.usage && totalTokens(stage.output.usage) > 0 && (
+                      <span className="text-xs text-muted-foreground" title={tokensTooltip(stage.output.usage)}>
+                        · {formatTokens(totalTokens(stage.output.usage))} ткн
+                        {stage.output.usage.model ? ` · ${stage.output.usage.model}` : ""}
                       </span>
                     )}
                   </div>

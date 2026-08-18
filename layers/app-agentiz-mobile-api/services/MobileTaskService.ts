@@ -3,6 +3,7 @@ import { AgentRun } from '../../app-agentiz/models/AgentRun';
 import { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
 import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { listRunLogs, type RunLogQuery } from '../../app-agentiz/lib/runLogs';
+import { runUsage } from '../../app-agentiz/lib/runUsage';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
@@ -68,6 +69,8 @@ export class MobileTaskService {
       errorMessage: run.errorMessage,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
+      // Token spend accumulated across attempts; null until a worker result reports usage.
+      usage: runUsage(run),
     };
   }
 
