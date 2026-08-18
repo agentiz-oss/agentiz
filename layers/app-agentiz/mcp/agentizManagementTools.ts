@@ -15,10 +15,14 @@ import {
   restoreMaskedSecrets,
   restoreMaskedTaskSourceSecrets,
 } from '../lib/secrets';
+import { harnessSubscriptionEntity, harnessWorkerOperations } from './agentizCapacityTools';
 
 type Params = Record<string, unknown>;
 type ManagedEntity = 'project' | 'role' | 'pipelineSpec' | 'taskSource' | 'task' | 'taskComment';
 type ManagedOperation = 'list' | 'get' | 'create' | 'update' | 'delete';
+
+/** Subscriptions go through AgentHarnessAdminService, not generic CRUD: resetSchedule/stopPolicy need validation. */
+const HARNESS_SUBSCRIPTION_ENTITY = 'harnessSubscription';
 
 const LIMIT_DEFAULT = 50;
 const LIMIT_MAX = 200;
@@ -120,7 +124,7 @@ export const manageBusinessDataTool: IMcpTool = {
     type: 'object',
     required: ['entity', 'operation'],
     properties: {
-      entity: { type: 'string', enum: Object.keys(definitions), description: `Writable fields per entity: ${Object.entries(definitions).map(([key, value]) => `${key}(${value.fields.join(', ')})`).join('; ')}.` },
+      entity: { type: 'string', enum: [...Object.keys(definitions), HARNESS_SUBSCRIPTION_ENTITY], description: `Writable fields per entity: ${Object.entries(definitions).map(([key, value]) => `${key}(${value.fields.join(', ')})`).join('; ')}; ${HARNESS_SUBSCRIPTION_ENTITY}(name, provider anthropic|openai|other, authKind subscription|api-key, notes, resetSchedule {kind:"weekly",day,time,timezone}, stopPolicy {"<window>":{pauseAtUsedPercent}}).` },
       operation: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'] },
       id: { type: 'string' }, projectId: { type: 'string' },
       values: { type: 'object', description: `Field values keyed by field name. For entity pipelineSpec, "spec" is a JSON object whose shape comes from ${PIPELINE_SPEC_SCHEMA_TOOL}.` },
@@ -130,6 +134,19 @@ export const manageBusinessDataTool: IMcpTool = {
   },
   async handler(params) {
     const payload = objectParams(params);
+    if (payload.entity === HARNESS_SUBSCRIPTION_ENTITY) {
+      const operation = requiredString(payload, 'operation') as ManagedOperation;
+      if (operation === 'list') return harnessSubscriptionEntity.list();
+      if (operation === 'create') return harnessSubscriptionEntity.create(valuesParam(payload) as never);
+      const id = requiredString(payload, 'id');
+      if (operation === 'get') return harnessSubscriptionEntity.get(id);
+      if (operation === 'update') return harnessSubscriptionEntity.update(id, valuesParam(payload) as never);
+      if (operation === 'delete') {
+        if (payload.confirm !== true) throw new Error('confirm:true is required to delete a subscription');
+        return harnessSubscriptionEntity.remove(id);
+      }
+      throw new Error(`Unsupported operation: ${operation}`);
+    }
     const entity = entityParam(payload);
     const operation = requiredString(payload, 'operation') as ManagedOperation;
     if (!['list', 'get', 'create', 'update', 'delete'].includes(operation)) throw new Error(`Unsupported operation: ${operation}`);
@@ -179,13 +196,36 @@ export const manageWorkerTool: IMcpTool = {
   name: 'agentiz.manageWorker',
   group: 'agentiz-actions',
   shortDescription: 'Creates and administers external worker identities safely.',
-  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects, declared workspaces, Git push roots and manual executor profiles for an external worker. A pipeline can name any absolute directory on a worker itself, but pushing from one requires setGitPushRoots here — that grant is never part of a pipeline spec. Newly issued tokens are returned once only.',
+  description: 'Creates, pauses, resumes, revokes, deletes, rotates the token of, or changes allowed projects, declared workspaces, Git push roots and manual executor profiles for an external worker. A pipeline can name any absolute directory on a worker itself, but pushing from one requires setGitPushRoots here — that grant is never part of a pipeline spec. Newly issued tokens are returned once only. Harness capacity: setHarnessBindings (worker×harness→subscription), setLimits (maxConcurrentJobs/activeHours/timezone), markHarnessExhausted (close the subscription gate until a date — deferred jobs reschedule automatically) and clearHarnessLimit (reopen early; wakes waiting jobs). Subscriptions themselves are managed via agentiz.manage entity "harnessSubscription".',
   mode: 'protected',
   inputSchema: {
     type: 'object', required: ['operation'],
     properties: {
-      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces', 'setGitPushRoots', 'setManualExecutors'] },
+      operation: { type: 'string', enum: ['create', 'pause', 'resume', 'revoke', 'delete', 'rotateToken', 'setAllowedProjects', 'setWorkspaces', 'setGitPushRoots', 'setManualExecutors', 'setHarnessBindings', 'setLimits', 'markHarnessExhausted', 'clearHarnessLimit'] },
       workerId: { type: 'string' }, name: { type: 'string' }, allowedProjectIds: { type: ['array', 'null'], items: { type: 'string' } },
+      harnessBindings: {
+        type: 'array',
+        description: 'setHarnessBindings only. REPLACES the worker\'s whole binding list: [{harnessKey: "claude", subscriptionId?, enabled?, maxConcurrent?}]. A binding with no subscriptionId gets an implicit one on the first limit signal.',
+        items: {
+          type: 'object', required: ['harnessKey'],
+          properties: {
+            harnessKey: { type: 'string' }, subscriptionId: { type: ['string', 'null'] },
+            enabled: { type: 'boolean', default: true }, maxConcurrent: { type: ['integer', 'null'] },
+          },
+        },
+      },
+      limits: {
+        type: 'object',
+        description: 'setLimits only: { maxConcurrentJobs?: 1..100|null, activeHours?: {timezone, windows:[{days,start,end}]}|null, timezone?: IANA|null }.',
+        properties: {
+          maxConcurrentJobs: { type: ['integer', 'null'] },
+          activeHours: { type: ['object', 'null'] },
+          timezone: { type: ['string', 'null'] },
+        },
+      },
+      subscriptionId: { type: 'string', description: 'markHarnessExhausted/clearHarnessLimit: address the subscription directly instead of workerId+harnessKey.' },
+      harnessKey: { type: 'string', description: 'markHarnessExhausted/clearHarnessLimit together with workerId: resolves (auto-creating) that binding\'s subscription.' },
+      until: { type: 'string', description: 'markHarnessExhausted: ISO date until which the subscription is closed ("токены придут в 18:00" одной командой — очередь перепланируется).' },
       gitPushRoots: {
         type: ['array', 'null'],
         description: 'setGitPushRoots only. Absolute path prefixes this machine\'s operator allows Git push from, e.g. ["/srv/projects"]; every directory below one of them may commit and push. This REPLACES the whole list; null or [] withdraws the grant. "/" is refused. Needed for finalAction "commit" on a worker_workspace pipeline, whether the spec names the directory by path or by a declared key.',
@@ -235,6 +275,10 @@ export const manageWorkerTool: IMcpTool = {
         const created = await AgentWorkerRegistryService.create({ name: requiredString(payload, 'name'), allowedProjectIds, createdBy: 'mcp' });
         return { worker: maskWorkerForUI(created.worker), token: created.token };
       }
+      if (operation === 'setHarnessBindings') return harnessWorkerOperations.setHarnessBindings(payload);
+      if (operation === 'setLimits') return harnessWorkerOperations.setLimits(payload);
+      if (operation === 'markHarnessExhausted') return harnessWorkerOperations.markHarnessExhausted(payload);
+      if (operation === 'clearHarnessLimit') return harnessWorkerOperations.clearHarnessLimit(payload);
       const workerId = requiredString(payload, 'workerId');
       if (operation === 'pause') return maskWorkerForUI(await AgentWorkerRegistryService.pause(workerId, typeof payload.reason === 'string' ? payload.reason : null));
       if (operation === 'resume') return maskWorkerForUI(await AgentWorkerRegistryService.resume(workerId));

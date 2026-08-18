@@ -4,7 +4,8 @@ import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentRun } from './AgentRun';
 import { AgentProject } from './AgentProject';
-import type { AgentRunJobKind, AgentRunJobStatus } from '../types/agentiz';
+import type { AgentJobDeferReason, AgentRunJobKind, AgentRunJobStatus } from '../types/agentiz';
+import type { ActiveHoursSchedule } from '../lib/activeHours';
 
 @AdminizerModel({
   model: 'AgentRunJob',
@@ -98,6 +99,37 @@ export class AgentRunJob extends Model<InferAttributes<AgentRunJob>, InferCreati
   })
   @Column({ type: DataType.STRING, allowNull: true })
   declare requiredWorkerId: string | null;
+
+  /**
+   * Normalized harness key of the job's stages (lib/harness.ts): one key, `mixed` when stages
+   * are heterogeneous (the full list lives in `snapshot.harnessKeys`), NULL when no LLM is
+   * involved (`bash-fixture`, `workspace_commit_push`, `workspace_reset` — those are never
+   * limit-gated). A real column because the claim query filters on it in SQL.
+   */
+  @AdminizerField({ title: 'Harness', views: { list: true, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare harnessKey: string | null;
+
+  /** Why the job is parked, when it is: waiting out a limit vs. a closed working-hours window. */
+  @AdminizerField({ title: 'Defer reason', views: { list: true, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare deferReason: AgentJobDeferReason | null;
+
+  /**
+   * Deferrals are counted separately from `attempt`: a defer refunds the claim's attempt
+   * increment, or a weekly limit would bury the job on its fifth week. This is the separate
+   * safety valve (AGENTIZ_JOB_MAX_DEFERRALS).
+   */
+  @Default(0)
+  @Column({ type: DataType.INTEGER, allowNull: false, defaultValue: 0 })
+  declare deferredCount: CreationOptional<number>;
+
+  /**
+   * Copy of `spec.constraints.activeHours` at queue time. Read from JS by the capacity sweep and
+   * the claim's candidate check — never filtered on in SQL; only `availableAt` is.
+   */
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare scheduleWindow: ActiveHoursSchedule | null;
 
   @Column({ type: DataType.STRING, allowNull: true })
   declare leaseTokenHash: string | null;

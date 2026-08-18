@@ -1,0 +1,11 @@
+{
+  "name": "@agentiz/app-agentiz-claude-limits",
+  "appId": "app-agentiz-claude-limits",
+  "appName": "App Agentiz Claude Limits",
+  "version": "1.0.0",
+  "description": "Claude (Anthropic) harness limit provider for Agentiz: classifies Claude Code / API limit refusals into abstract resume signals and interprets usage reports into abstract windows (5h, weekly, weekly-opus). The core knows no Claude specifics; this layer contributes them through the harnessLimitProviders collection.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-agentiz": "*"
+  }
+}

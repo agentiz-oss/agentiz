@@ -1,4 +1,5 @@
 import type { IMcpTool } from '@nodeknit/app-mcp';
+import { Op } from 'sequelize';
 import { AgentProject } from '../models/AgentProject';
 import { AgentRole } from '../models/AgentRole';
 import { PipelineSpec } from '../models/PipelineSpec';
@@ -13,8 +14,11 @@ import { GitSyncService } from '../services/GitSyncService';
 import { AgentWorkerApiService } from '../services/AgentWorkerApiService';
 import { AgentWorkerQueueService } from '../services/AgentWorkerQueueService';
 import { pipelineSpecSchema, PIPELINE_SPEC_RULES } from '../services/PipelineSpecValidation';
+import { AgentCapacityService } from '../services/AgentCapacityService';
+import { capacityOverview, usageHistory, workerHarnessView } from '../lib/capacityViews';
 import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
 import { agentizProposalMcpTools } from './agentizProposalTools';
+import { agentizCapacityActionTools } from './agentizCapacityTools';
 
 type Params = Record<string, unknown>;
 
@@ -70,6 +74,9 @@ function runTeaser(run: AgentRun, opts: { includeSummary?: boolean } = {}) {
     }),
     errorMessage: run.errorMessage, commitUrl: run.commitUrl,
     responseUrl: run.responseUrl, createdAt: run.createdAt,
+    // Set while the run is parked (harness limit / schedule window); the status itself stays
+    // running/pending, so this pair is what distinguishes "waiting" from "hung".
+    waitingReason: run.waitingReason, waitingUntil: run.waitingUntil,
   };
 }
 
@@ -86,6 +93,9 @@ function workerTeaser(worker: AgentWorker) {
     allowedProjectIds: worker.allowedProjectIds ?? null,
     allowedRepositoryIds: worker.allowedRepositoryIds ?? null,
     capabilities: worker.capabilities ?? null,
+    maxConcurrentJobs: worker.effectiveMaxConcurrentJobs(),
+    activeHours: worker.activeHours ?? null,
+    timezone: worker.timezone ?? null,
     version: worker.version, hostname: worker.hostname, registeredAt: worker.registeredAt,
     lastSeenAt: worker.lastSeenAt, lastClaimAt: worker.lastClaimAt,
     claimedJobsCount: worker.claimedJobsCount, revokedAt: worker.revokedAt,
@@ -98,6 +108,7 @@ function jobTeaser(job: AgentRunJob) {
   return {
     id: job.id, runId: job.runId, projectId: job.projectId, status: job.status,
     priority: job.priority, attempt: job.attempt, workerId: job.workerId,
+    harnessKey: job.harnessKey, deferReason: job.deferReason, deferredCount: job.deferredCount,
     lockedUntil: job.lockedUntil, availableAt: job.availableAt,
     cancelRequestedAt: job.cancelRequestedAt, lastError: job.lastError,
     createdAt: job.createdAt, updatedAt: job.updatedAt,
@@ -184,7 +195,24 @@ const workerDetailsTool: IMcpTool = {
       counts[job.status] = (counts[job.status] ?? 0) + 1;
       return counts;
     }, {});
-    return { worker: workerTeaser(worker), recentJobCounts: jobCounts, recentJobs: jobs.map(jobTeaser) };
+    // Queue of this worker with an ETA: a job "hanging for a week" must read as scheduled, not stuck.
+    const pinnedQueue = await AgentRunJob.findAll({
+      where: { requiredWorkerId: workerId, status: { [Op.in]: ['queued', 'released'] } },
+      order: [['priority', 'ASC'], ['createdAt', 'ASC']],
+      limit: 20,
+    });
+    const queue = [] as Array<Record<string, unknown>>;
+    for (const job of pinnedQueue) {
+      const eta = await AgentCapacityService.nextEligibleAt(job);
+      queue.push({ ...jobTeaser(job), nextEligibleAt: eta.at, etaIsEstimate: eta.estimate, etaReasons: eta.reasons });
+    }
+    return {
+      worker: workerTeaser(worker),
+      harnesses: await workerHarnessView(worker),
+      pinnedQueue: queue,
+      recentJobCounts: jobCounts,
+      recentJobs: jobs.map(jobTeaser),
+    };
   },
 };
 
@@ -264,17 +292,23 @@ const runDetailsTool: IMcpTool = {
     const run = await AgentRun.findByPk(runId);
     if (!run) throw new Error(`AgentRun ${runId} not found`);
     const includePayloads = payload.includePayloads === true;
-    const [stages, logPage] = await Promise.all([
+    const [stages, logPage, job] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId }, order: [['stageIndex', 'ASC']] }),
       listRunLogs(runId, {
         after: stringParam(payload, 'after') || null,
         before: stringParam(payload, 'before') || null,
         limit: limitParam({ ...payload, limit: payload.logLimit }, 100),
       }),
+    AgentRunJob.findOne({ where: { runId, jobKind: 'pipeline' } }),
     ]);
     const logs = logPage.logs;
+    // A parked job gets its ETA: "run started but nothing happens" then reads as "deferred until…".
+    const eta = job && ['queued', 'released'].includes(job.status)
+      ? await AgentCapacityService.nextEligibleAt(job)
+      : null;
     return {
       run: runTeaser(run),
+      ...(eta ? { nextEligibleAt: eta.at, etaIsEstimate: eta.estimate, etaReasons: eta.reasons } : {}),
       stages: stages.map((stage) => ({
         id: stage.id, stageIndex: stage.stageIndex, role: stage.role, agentRoleId: stage.agentRoleId,
         status: stage.status, startedAt: stage.startedAt, finishedAt: stage.finishedAt, errorMessage: stage.errorMessage,
@@ -400,6 +434,47 @@ const pipelineSpecSchemaTool: IMcpTool = {
   },
 };
 
+const capacityTool: IMcpTool = {
+  name: 'agentiz.capacity', group: 'agentiz',
+  shortDescription: 'Subscriptions, harness gates per worker and the top waiting jobs with ETA.',
+  description: 'One call for "why is nothing running and when will it run": every harness subscription with its limit windows and exhaustedUntil, every worker\'s gated harness keys, concurrency and active hours, and the longest-waiting queued/released jobs with their next-eligible ETA.',
+  mode: 'protected',
+  inputSchema: { type: 'object', properties: {} },
+  async handler() {
+    return capacityOverview();
+  },
+};
+
+const capacityHistoryTool: IMcpTool = {
+  name: 'agentiz.capacityHistory', group: 'agentiz',
+  shortDescription: 'Usage-sample series per worker × harness: normalized windows plus provider meta.',
+  description: 'Returns AgentHarnessUsageSample rows (usage telemetry history) filtered by workerId, subscriptionId, harnessKey and a time range. windows is the abstract normalized part; meta is the provider layer\'s own opaque detail, returned as stored — analysis of it belongs to that layer, not the core.',
+  mode: 'protected',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      workerId: { type: 'string' }, subscriptionId: { type: 'string' }, harnessKey: { type: 'string' },
+      from: { type: 'string', description: 'ISO date; only samples observed at/after it.' },
+      to: { type: 'string', description: 'ISO date; only samples observed at/before it.' },
+      limit: { type: 'integer', default: 500, maximum: 2000 },
+    },
+  },
+  async handler(params) {
+    const payload = objectParams(params);
+    const from = stringParam(payload, 'from');
+    const to = stringParam(payload, 'to');
+    const items = await usageHistory({
+      workerId: stringParam(payload, 'workerId'),
+      subscriptionId: stringParam(payload, 'subscriptionId'),
+      harnessKey: stringParam(payload, 'harnessKey'),
+      from: from ? new Date(from) : undefined,
+      to: to ? new Date(to) : undefined,
+      limit: typeof payload.limit === 'number' ? payload.limit : undefined,
+    });
+    return { count: items.length, items };
+  },
+};
+
 const syncTool: IMcpTool = {
   name: 'agentiz.sync', group: 'agentiz-actions',
   groupDescription: 'State-changing Agentiz operations. Inspect the target first and call deliberately.',
@@ -448,6 +523,8 @@ const cancelRunTool: IMcpTool = {
 export const agentizMcpTools: IMcpTool[] = [
   overviewTool, projectsTool, tasksTool, runsTool, runDetailsTool, configurationTool,
   pipelineSpecSchemaTool, workersTool, workerDetailsTool, jobsTool,
+  capacityTool, capacityHistoryTool,
   syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
   ...agentizProposalMcpTools,
+  ...agentizCapacityActionTools,
 ];

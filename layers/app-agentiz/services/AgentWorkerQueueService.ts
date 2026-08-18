@@ -1,7 +1,11 @@
 import { Op } from 'sequelize';
 import { AgentRun } from '../models/AgentRun';
 import { AgentRunJob } from '../models/AgentRunJob';
+import { AgentStageExecution } from '../models/AgentStageExecution';
+import { AgentTask } from '../models/AgentTask';
 import type { AgentWorker } from '../models/AgentWorker';
+import { AgentJobClaimService } from './AgentJobClaimService';
+import { AgentRunDeferService } from './AgentRunDeferService';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentWorkerApiService } from './AgentWorkerApiService';
 import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
@@ -72,39 +76,14 @@ export class AgentWorkerQueueService {
   }
 
   private static async claimLocalJob(worker: AgentWorker): Promise<AgentRunJob | null> {
-    const sequelize = AgentRunJob.sequelize;
-    if (!sequelize) throw new Error('Sequelize is not initialized');
-    const allowedProjectIds = worker.allowedProjectIds?.length ? worker.allowedProjectIds : null;
-    const allowedRepositoryIds = worker.allowedRepositoryIds?.length ? worker.allowedRepositoryIds : null;
-    return sequelize.transaction(async (transaction) => {
-      const job = await AgentRunJob.findOne({
-        where: {
-          status: 'queued',
-          availableAt: { [Op.lte]: new Date() },
-          ...(allowedProjectIds ? { projectId: { [Op.in]: allowedProjectIds } } : {}),
-          ...(allowedRepositoryIds
-            ? { [Op.and]: [{ [Op.or]: [{ repositoryId: null }, { repositoryId: { [Op.in]: allowedRepositoryIds } }] }] }
-            : {}),
-          // Workspace Git actions are implemented by the external worker that owns the checkout.
-          jobKind: 'pipeline',
-          // Same rule as the remote claim: a job tied to one machine's directory stays there.
-          [Op.or]: [{ requiredWorkerId: null }, { requiredWorkerId: worker.id }],
-        },
-        order: [['priority', 'ASC'], ['createdAt', 'ASC']],
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-        skipLocked: true,
-      });
-      if (!job) return null;
-      await job.update({
-        status: 'running',
-        workerId: worker.id,
-        attempt: job.attempt + 1,
-        lockedUntil: new Date(Date.now() + 60 * 60 * 1000),
-        lastError: null,
-      }, { transaction });
-      return job;
+    // Same filters as the remote claim, from the shared service. Workspace Git actions are
+    // implemented by the external worker that owns the checkout, hence pipelineOnly.
+    const { job } = await AgentJobClaimService.claim(worker, {
+      mode: 'local',
+      lockMs: 60 * 60 * 1000,
+      pipelineOnly: true,
     });
+    return job;
   }
 
   private static async executeLocalJob(worker: AgentWorker, job: AgentRunJob): Promise<void> {
@@ -115,6 +94,22 @@ export class AgentWorkerQueueService {
     });
     try {
       const run = await AgentPipelineService.executeRun(job.runId);
+      // The in-process worker gets the same limit handling as remote ones: a failure that
+      // classifies as a harness limit defers the job instead of terminalizing the run.
+      if (run.status === 'failed' && run.errorMessage) {
+        const completedStages = await AgentStageExecution.findAll({
+          where: { runId: run.id, status: { [Op.in]: ['succeeded', 'skipped'] } },
+          attributes: ['id'],
+        });
+        const classified = await AgentRunDeferService.classify(job, worker, run.errorMessage, completedStages.map((stage) => stage.id));
+        if (classified) {
+          // executeRun already marked the run failed; take that back — the run is waiting, not dead.
+          await run.update({ status: 'pending', finishedAt: null });
+          await AgentTask.update({ status: 'queued' }, { where: { id: run.taskId } });
+          await AgentRunDeferService.defer({ job, run, worker, classified, errorText: run.errorMessage });
+          return;
+        }
+      }
       const terminalStatus = run.status === 'succeeded' ? 'succeeded' : run.status === 'cancelled' ? 'cancelled' : 'failed';
       await job.update({
         status: terminalStatus,

@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'crypto';
-import { Op } from 'sequelize';
 import { AgentProject } from '../models/AgentProject';
 import { AgentRun } from '../models/AgentRun';
 import { AgentRunEventDedup } from '../models/AgentRunEventDedup';
@@ -15,6 +14,9 @@ import type { FileChange, FileOp } from '../lib/git';
 import { normalizeFileChanges, requireGitConnectionAuthority } from '../lib/git';
 import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
+import { AgentJobClaimService } from './AgentJobClaimService';
+import { AgentRunDeferService } from './AgentRunDeferService';
+import type { ClassifiedLimit } from './AgentRunDeferService';
 import { AgentWorkerRegistryService } from './AgentWorkerRegistryService';
 import type { AgentWorker } from '../models/AgentWorker';
 import { AgentRunInteractionService, InteractionError } from './AgentRunInteractionService';
@@ -133,49 +135,16 @@ export class AgentWorkerApiService {
     const payload = objectBody(body);
     if (payload.schemaVersion !== SCHEMA_VERSION) throw new WorkerApiError(400, 'Unsupported schemaVersion');
 
-    const sequelize = AgentRunJob.sequelize;
-    if (!sequelize) throw new WorkerApiError(500, 'Sequelize is not initialized');
     const workerId = worker.id;
     const leaseToken = randomUUID();
     const lockedUntil = datePlus(DEFAULT_LEASE_MS);
-    // The allowlist is enforced in the claim query itself: a worker cannot even see a snapshot of
-    // a project it was not granted.
-    const allowedProjectIds = worker.allowedProjectIds?.length ? worker.allowedProjectIds : null;
-    // Second axis of the same rule: a worker must not even see the snapshot of a repository it was
-    // not granted — it carries task text, prompts and repository coordinates.
-    const allowedRepositoryIds = worker.allowedRepositoryIds?.length ? worker.allowedRepositoryIds : null;
-
-    const job = await sequelize.transaction(async (transaction) => {
-      const candidate = await AgentRunJob.findOne({
-        where: {
-          status: 'queued',
-          availableAt: { [Op.lte]: new Date() },
-          ...(allowedProjectIds ? { projectId: { [Op.in]: allowedProjectIds } } : {}),
-          // A job with no repository (finalAction: none) is never restricted, or a worker with a
-          // narrow allowlist could not run a pipeline that never touches git.
-          ...(allowedRepositoryIds
-            ? { [Op.and]: [{ [Op.or]: [{ repositoryId: null }, { repositoryId: { [Op.in]: allowedRepositoryIds } }] }] }
-            : {}),
-          ...(worker.capabilities?.workspaceGit === true ? {} : { jobKind: 'pipeline' }),
-          // A job pinned to a worker directory belongs to that machine alone; everyone else must
-          // not even see it, or it would be claimed and then fail for a missing path.
-          [Op.or]: [{ requiredWorkerId: null }, { requiredWorkerId: workerId }],
-        },
-        order: [['priority', 'ASC'], ['createdAt', 'ASC']],
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-        skipLocked: true,
-      });
-      if (!candidate) return null;
-      await candidate.update({
-        status: 'leased',
-        workerId,
-        attempt: candidate.attempt + 1,
-        leaseTokenHash: hashToken(leaseToken),
-        lockedUntil,
-        lastError: null,
-      }, { transaction });
-      return candidate;
+    // Filters (allowlists, pinning, harness gates, concurrency, schedule windows) live in the
+    // shared claim service, so this site and the local drainer can never drift apart again.
+    const { job } = await AgentJobClaimService.claim(worker, {
+      mode: 'lease',
+      lockMs: DEFAULT_LEASE_MS,
+      leaseTokenHash: hashToken(leaseToken),
+      pipelineOnly: worker.capabilities?.workspaceGit !== true,
     });
 
     if (!job) return null;
@@ -262,10 +231,6 @@ export class AgentWorkerApiService {
       return this.applyWorkspaceActionResult(job, payload);
     }
 
-    if (payload.status !== 'succeeded') {
-      await AgentRunInteractionService.closeForJob(job, 'cancelled', payload.errorMessage ?? payload.status);
-    }
-
     const run = await AgentRun.findByPk(job.runId);
     const [task, project] = run ? await Promise.all([AgentTask.findByPk(run.taskId), AgentProject.findByPk(run.projectId)]) : [null, null];
     if (!run || !task || !project) throw new WorkerApiError(404, 'Run, task or project not found');
@@ -277,6 +242,24 @@ export class AgentWorkerApiService {
         errorMessage: stage.errorMessage ?? null,
         finishedAt: new Date(),
       }, { where: { id: stage.executionId, runId: run.id } });
+    }
+
+    // A failure that is really a harness limit is deferred, not terminalized: the run keeps its
+    // status and waits, the subscription's gate closes, and one of the two automatic resume
+    // triggers (time via the reaper, or an early recovery event) continues it. Classification is
+    // server-side on purpose — patterns ship with a layer deploy, never a worker rollout.
+    if (payload.status === 'failed' && payload.errorMessage) {
+      const completedIds = (payload.stageOutputs ?? [])
+        .filter((stage) => stage.status !== 'failed')
+        .map((stage) => stage.executionId);
+      const classified = await AgentRunDeferService.classify(job, worker, payload.errorMessage, completedIds);
+      if (classified) {
+        return this.deferPipelineResult(job, run, worker, payload, classified);
+      }
+    }
+
+    if (payload.status !== 'succeeded') {
+      await AgentRunInteractionService.closeForJob(job, 'cancelled', payload.errorMessage ?? payload.status);
     }
 
     const summary = payload.summary ?? '';
@@ -325,6 +308,50 @@ export class AgentWorkerApiService {
     }
 
     return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: (await AgentRun.findByPk(job.runId))?.status ?? null };
+  }
+
+  /**
+   * The defer branch of applyResult: parks the job/run instead of failing them, and — for a
+   * workspace pipeline — keeps the server's view of the tree synchronized with the marker the
+   * worker already updated on disk. Without the `expectedTreeSha` update, resuming would be
+   * impossible: the continuation preflight compares the (partially changed) tree against it and
+   * would reject the workspace every time.
+   */
+  private static async deferPipelineResult(
+    job: AgentRunJob,
+    run: AgentRun,
+    worker: AgentWorker,
+    payload: WorkerResult,
+    classified: ClassifiedLimit,
+  ): Promise<Record<string, unknown>> {
+    if (job.proposalId && !payload.workspaceUntouched) {
+      const proposal = await AgentWorkspaceProposal.findByPk(job.proposalId);
+      if (proposal && proposal.latestRunId === run.id && proposal.revision === run.workspaceRevision) {
+        try {
+          // The partial diff the worker sent with the failure: a week of waiting should not mean
+          // a week of an invisible workspace.
+          const ops = normalizeFileChanges(payload.fileOps ?? payload.fileChanges);
+          await this.storeRunDiff(job, run, ops, payload);
+        } catch (error) {
+          await AgentPipelineService.log(run.id, run.projectId, null, 'warn',
+            `Partial diff was not stored on deferral: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (payload.treeSha) {
+          // Status stays working, not waiting_review: the run is going to continue in this tree.
+          await proposal.update({ expectedTreeSha: payload.treeSha, status: 'working' });
+        }
+      }
+    }
+    const { retryAt } = await AgentRunDeferService.defer({
+      job, run, worker, classified, errorText: payload.errorMessage ?? '',
+    });
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      deduplicated: false,
+      terminalRunStatus: null,
+      deferred: true,
+      retryAt: retryAt.toISOString(),
+    };
   }
 
   /**
@@ -673,8 +700,11 @@ export class AgentWorkerApiService {
     const run = await AgentRun.findByPk(job.runId);
     if (!run) throw new WorkerApiError(404, 'Run not found');
     if (run.status === 'pending') {
-      await run.update({ status: 'running', startedAt: new Date() });
+      await run.update({ status: 'running', startedAt: new Date(), waitingUntil: null, waitingReason: null });
       await AgentTask.update({ status: 'running' }, { where: { id: run.taskId } });
+    } else if (run.waitingReason || run.waitingUntil) {
+      // A deferred run stayed `running`; the claim that resumes it clears the waiting badge.
+      await run.update({ waitingUntil: null, waitingReason: null });
     }
   }
 

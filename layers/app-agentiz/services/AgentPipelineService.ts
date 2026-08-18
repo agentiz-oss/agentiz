@@ -17,6 +17,8 @@ import { RepositoryResolverService } from './RepositoryResolverService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
+import { harnessColumnValue, harnessKeysForStages } from '../lib/harness';
+import { nextScheduleOpen } from '../lib/activeHours';
 import { hasUpstreamThread } from '../lib/taskManager';
 import { generateWorkspaceBranch } from '../lib/workspaceBranch';
 import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
@@ -171,7 +173,7 @@ export class AgentPipelineService {
     const conversation = (job?.snapshot?.conversation as RunConversation | undefined)
       ?? await AgentWorkerJobBuilder.conversationForRun(run);
 
-    await run.update({ status: 'running', startedAt: new Date() });
+    await run.update({ status: 'running', startedAt: new Date(), waitingUntil: null, waitingReason: null });
     await task.update({ status: 'running' });
 
     const stages = orderedStages(run.pipelineSnapshot);
@@ -605,6 +607,15 @@ export class AgentWorkerJobBuilder {
     // Mirrored out of the snapshot for the same reason: the claim query has to filter on it in SQL.
     const repositoryId = (snapshot.repository as { repositoryId?: string } | null)?.repositoryId ?? null;
     const proposalId = (snapshot.proposal as { id?: string } | null)?.id ?? null;
+    // The claim gate filters on the single-key column; the full list stays in the snapshot for
+    // the exact `mixed` check and for the UI.
+    const harnessKey = harnessColumnValue((snapshot.harnessKeys as string[] | undefined) ?? []);
+    const constraints = run.pipelineSnapshot.constraints;
+    const priority = Math.min(Math.max(Math.floor(constraints?.priority ?? 100), 1), 1000);
+    // The job's own working-hours window is an internal property, so it does belong in
+    // availableAt — unlike any worker-side gate, which lives in the claim.
+    const scheduleWindow = constraints?.activeHours ?? null;
+    const availableAt = scheduleWindow ? nextScheduleOpen(scheduleWindow, new Date()) : new Date();
     const [job, created] = await AgentRunJob.findOrCreate({
       where: { runId: run.id, jobKind: 'pipeline' },
       defaults: {
@@ -613,14 +624,16 @@ export class AgentWorkerJobBuilder {
         jobKind: 'pipeline',
         proposalId,
         status: 'queued',
-        priority: 100,
+        priority,
         attempt: 0,
         workerId: null,
         repositoryId,
         requiredWorkerId,
+        harnessKey,
+        scheduleWindow,
         leaseTokenHash: null,
         lockedUntil: null,
-        availableAt: new Date(),
+        availableAt,
         cancelRequestedAt: null,
         cancelReason: null,
         snapshot,
@@ -629,7 +642,7 @@ export class AgentWorkerJobBuilder {
       },
     });
     if (!created && job.status === 'released') {
-      await job.update({ status: 'queued', availableAt: new Date(), snapshot, repositoryId, requiredWorkerId, proposalId });
+      await job.update({ status: 'queued', availableAt, snapshot, repositoryId, requiredWorkerId, proposalId, harnessKey, scheduleWindow });
     }
     if (created) {
       await writeLog(run.id, run.projectId, null, 'info', 'Worker job queued', {
@@ -755,6 +768,9 @@ export class AgentWorkerJobBuilder {
       schemaVersion: 1,
       runId: run.id,
       lineage: { triggerCommentId: run.triggerCommentId, previousRunId: run.previousRunId },
+      // Distinct harness keys across the stages — the exact list behind the job's coarse
+      // `harnessKey` column ('mixed' in the column ⇒ read this).
+      harnessKeys: harnessKeysForStages(stages.map((stage) => stage.agent)),
       repository,
       // Present only for a worker-directory pipeline; the worker runs every stage in `path`.
       workspace,

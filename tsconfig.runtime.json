@@ -12,6 +12,7 @@
     "layers/app-agentiz-github-integration/**/*.ts",
     "layers/app-agentiz-github-integration/**/*.tsx",
     "layers/app-agentiz-mobile-api/**/*.ts",
+    "layers/app-agentiz-claude-limits/**/*.ts",
     "local_modules/**/*.ts"
   ]
 }

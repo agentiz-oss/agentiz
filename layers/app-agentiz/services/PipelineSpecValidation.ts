@@ -5,6 +5,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 import type { PipelineSpecDef } from '../types/agentiz';
 import { MAX_HOOK_SCRIPT_BYTES } from '../lib/hookEnv';
+import { isValidTimezone } from '../lib/activeHours';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const schemaPath = path.resolve(__dirname, '..', 'schemas', 'pipeline-spec.schema.json');
@@ -38,6 +39,8 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'source.kind "worker_workspace" allows comment_only, none, or commit through the local workspace Git engine; commit_and_pr remains provider-only.',
   'source.kind "worker_workspace" requires runtime.mode "host" on every stage; a docker container cannot see the worker\'s directory.',
   `hooks.before/after scripts must be non-empty, must not start with a shebang, and must stay under ${MAX_HOOK_SCRIPT_BYTES} bytes.`,
+  'constraints.activeHours.timezone must be an IANA zone this server knows (checked with Intl.DateTimeFormat). Window end earlier than start is legal and means an overnight window; start equal to end is rejected as an empty window.',
+  'constraints.activeHours only gates when a run may START (enforcement start-only); a run that started inside the window finishes normally outside it. Pausing at the window edge is not accepted yet.',
 ];
 
 export class PipelineSpecError extends Error {
@@ -104,6 +107,25 @@ export function assertValidSpec(spec: unknown): asserts spec is PipelineSpecDef 
 
   assertSourceIsConsistent(spec as PipelineSpecDef);
   assertHooksAreRunnable(spec as PipelineSpecDef);
+  assertConstraintsAreSchedulable(spec as PipelineSpecDef);
+}
+
+/**
+ * Rules about `constraints.activeHours` the schema cannot state: the timezone has to be one this
+ * runtime can actually compute in (checked with the Intl constructor — no new dependency), and an
+ * empty window (start == end) would silently never open.
+ */
+function assertConstraintsAreSchedulable(spec: PipelineSpecDef): void {
+  const schedule = spec.constraints?.activeHours;
+  if (!schedule) return;
+  if (!isValidTimezone(schedule.timezone)) {
+    throw specError(`constraints.activeHours.timezone "${schedule.timezone}" is not a valid IANA timezone`);
+  }
+  for (const [index, window] of (schedule.windows ?? []).entries()) {
+    if (window.start === window.end) {
+      throw specError(`constraints.activeHours.windows[${index}] has start equal to end ("${window.start}") — an empty window never opens; use an overnight window (end earlier than start) or remove it`);
+    }
+  }
 }
 
 /**

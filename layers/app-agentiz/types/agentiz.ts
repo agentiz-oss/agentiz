@@ -120,8 +120,45 @@ export interface AgentWorkerCapabilities {
   executors?: string[];
   /** How many jobs the worker is willing to run in parallel. Informational for now. */
   maxConcurrency?: number;
+  /** IANA zone the worker machine reports; limit providers use it to parse local reset times. */
+  timezone?: string;
   [key: string]: unknown;
 }
+
+/** Provider brand of a harness subscription — picks the icon and the provider plugin. */
+export type HarnessSubscriptionProvider = 'anthropic' | 'openai' | 'other';
+
+/**
+ * How the account authenticates, because the limit regimes differ in kind: a `subscription`
+ * account lives under 5h/weekly windows, an `api-key` one under RPM/TPM rate limits. Providers
+ * read it when classifying a refusal.
+ */
+export type HarnessSubscriptionAuthKind = 'subscription' | 'api-key';
+
+/** Where the latest limit knowledge came from. */
+export type HarnessSignalSource = 'failure' | 'report' | 'refresh' | 'manual' | 'schedule';
+
+/** Declared reset moment of a subscription's window, applied by the capacity sweep. */
+export type HarnessResetSchedule =
+  | { kind: 'weekly'; day: 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'; time: string; timezone: string }
+  | { kind: 'cron'; expr: string; timezone: string };
+
+/** Last observed abstract state of one limit window, cached on the subscription for UI and gates. */
+export interface HarnessWindowState {
+  key: string;
+  label?: string;
+  usedPercent?: number;
+  /** ISO date string in storage. */
+  resetsAt?: string | null;
+  observedAt?: string;
+  source?: HarnessSignalSource;
+}
+
+/** Per-window preventive stop: close the gate when a window reaches the threshold. */
+export type HarnessStopPolicy = Record<string, { pauseAtUsedPercent: number }>;
+
+/** Why a queued job is parked: a harness limit, or a closed working-hours window. */
+export type AgentJobDeferReason = 'harness_limit' | 'schedule_window';
 
 /** A named, administrator-configured ACP runner available on one worker. */
 export interface AgentWorkerExecutor {
@@ -314,6 +351,16 @@ export interface PipelineHooksDef {
   after?: PipelineHookDef;
 }
 
+/**
+ * Scheduling constraints of a pipeline: queue priority and the hours its runs may start in.
+ * `activeHours` follows lib/activeHours.ts (IANA timezone, `end < start` = overnight window);
+ * only `start-only` enforcement exists today — `pause` needs a worker release and is rejected.
+ */
+export interface PipelineConstraintsDef {
+  priority?: number;
+  activeHours?: import('../lib/activeHours').ActiveHoursSchedule;
+}
+
 /** Events that may create a new run for a task matching this pipeline. */
 export interface PipelineTriggersDef {
   /** Start a run after a person adds a message to the task thread. Defaults to false. */
@@ -336,6 +383,8 @@ export interface PipelineSpecDef {
   source?: PipelineSourceDef;
   /** Scripts run around the stages, in the same directory. Absent = nothing runs, as before. */
   hooks?: PipelineHooksDef;
+  /** Queue priority and working-hours windows. Absent = default priority, always startable. */
+  constraints?: PipelineConstraintsDef;
 }
 
 export interface AgentProjectRepoConfig {

@@ -34,9 +34,65 @@
           "description": "Start a run when a human adds a task-thread message. The message becomes the run's primary prompt."
         }
       }
-    }
+    },
+    "constraints": { "$ref": "#/$defs/constraints" }
   },
   "$defs": {
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Queue scheduling of this pipeline's runs: priority and the hours a run may start in. Absent = default priority, startable at any time.",
+      "properties": {
+        "priority": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100,
+          "description": "Queue priority; lower runs first. Copied to AgentRunJob.priority."
+        },
+        "activeHours": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["timezone", "windows"],
+          "description": "When runs of this pipeline may start. Boundaries are computed in the given IANA zone on each concrete date (DST-safe); end earlier than start means a window across midnight.",
+          "properties": {
+            "timezone": {
+              "type": "string",
+              "minLength": 1,
+              "description": "IANA zone, e.g. Europe/Belgrade. Required — a window without a zone is a guess."
+            },
+            "windows": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["days", "start", "end"],
+                "properties": {
+                  "days": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
+                  },
+                  "start": { "type": "string", "pattern": "^([01]?\\d|2[0-3]):[0-5]\\d$" },
+                  "end": {
+                    "type": "string",
+                    "pattern": "^([01]?\\d|2[0-3]):[0-5]\\d$",
+                    "description": "End earlier than start is legal and means the window runs into the next day."
+                  }
+                }
+              }
+            },
+            "enforcement": {
+              "type": "string",
+              "enum": ["start-only"],
+              "default": "start-only",
+              "description": "start-only: an open window is required to start a run, not to finish it. A pause enforcement is planned but needs a worker release, so it is not accepted yet."
+            }
+          }
+        }
+      }
+    },
     "hook": {
       "type": "object",
       "additionalProperties": false,

@@ -25,6 +25,10 @@ import { AgentProjectRepository } from './models/AgentProjectRepository';
 import { AgentRunDiff } from './models/AgentRunDiff';
 import { AgentRunInteraction } from './models/AgentRunInteraction';
 import { AgentWorkspaceProposal } from './models/AgentWorkspaceProposal';
+import { AgentHarnessSubscription } from './models/AgentHarnessSubscription';
+import { AgentWorkerHarness } from './models/AgentWorkerHarness';
+import { AgentHarnessUsageSample } from './models/AgentHarnessUsageSample';
+import { AgentCapacityService } from './services/AgentCapacityService';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
 import { AgentWorkerRegistryService } from './services/AgentWorkerRegistryService';
@@ -42,6 +46,7 @@ import {
 import type { GitProviderAdapter } from './lib/git';
 import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
 import { InteractionNotifierCollectionHandler } from './lib/InteractionNotifierCollection';
+import { HarnessLimitProviderCollectionHandler } from './lib/HarnessLimitProviderCollection';
 import { registerInteractionNotifier, unregisterInteractionNotifier } from './lib/interactionNotifiers';
 import { DashboardInteractionNotifier } from './lib/notifications/DashboardInteractionNotifier';
 import { forgetAdminizerNotifications, useAdminizerNotifications } from './lib/notifications/dashboardNotifications';
@@ -91,6 +96,9 @@ export class AppAgentiz extends AbstractApp {
         AgentRunDiff,
         AgentRunInteraction,
         AgentWorkspaceProposal,
+        AgentHarnessSubscription,
+        AgentWorkerHarness,
+        AgentHarnessUsageSample,
     ];
 
     @Collection
@@ -131,6 +139,15 @@ export class AppAgentiz extends AbstractApp {
      */
     @CollectionHandler('interactionNotifiers')
     interactionNotifiersHandler = new InteractionNotifierCollectionHandler();
+
+    /**
+     * Provider-specific knowledge about harness usage limits (Claude, Codex, …). The core owns
+     * subscriptions, claim gates and scheduling; a provider layer contributes only "how this
+     * provider's refusal looks and where its percentages come from". With an empty collection
+     * everything runs in manual mode.
+     */
+    @CollectionHandler('harnessLimitProviders')
+    harnessLimitProvidersHandler = new HarnessLimitProviderCollectionHandler();
 
     @Collection
     adminizerMiddlewares: AdminizerRouteMiddleware[] = [
@@ -286,6 +303,7 @@ export class AppAgentiz extends AbstractApp {
             generateAdminizerModelConfig(AgentProjectRepository),
             generateAdminizerModelConfig(AgentRunDiff),
             generateAdminizerModelConfig(AgentRunInteraction),
+            generateAdminizerModelConfig(AgentHarnessSubscription),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 
@@ -308,6 +326,8 @@ export class AppAgentiz extends AbstractApp {
         // Runs whether or not the in-process drainer does: with the remote Worker API enabled the
         // drainer is off, and that is exactly when leases get abandoned.
         AgentJobReaperService.start();
+        // Schedule windows, declared subscription resets, provider refresh, sample retention.
+        AgentCapacityService.start();
 
         if (process.env.AGENTIZ_SYNC_ENABLED === 'true') {
             this.syncTask = cron.schedule(SYNC_CRON, () => {
@@ -378,6 +398,7 @@ export class AppAgentiz extends AbstractApp {
         forgetAdminizerNotifications();
         AgentWorkerQueueService.stop();
         AgentJobReaperService.stop();
+        AgentCapacityService.stop();
     }
 }
 

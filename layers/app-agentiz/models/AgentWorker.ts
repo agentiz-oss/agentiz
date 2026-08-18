@@ -11,6 +11,7 @@ import type {
   AgentWorkerWorkspace,
 } from '../types/agentiz';
 import { resolveWorkspaceGitGrant, type WorkspaceGitGrant } from '../lib/workspaceGit';
+import type { ActiveHoursSchedule } from '../lib/activeHours';
 
 /** A worker that has not touched the API for this long is shown as offline. */
 const OFFLINE_AFTER_MS = 5 * 60 * 1000;
@@ -149,6 +150,42 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
   @Column({ type: DataType.JSONB, allowNull: true })
   declare capabilities: AgentWorkerCapabilities | null;
 
+  /**
+   * How many jobs this worker may hold at once (`leased` + `running`), enforced by the claim
+   * gate. Null falls back to `capabilities.maxConcurrency ?? 1`. Non-LLM jobs count too — they
+   * occupy the machine's disk and CPU even though they are never limit-gated.
+   */
+  @AdminizerField({
+    title: 'Max concurrent jobs',
+    tooltip: 'Jobs this worker may hold at once. Empty = what the worker reported (default 1).',
+    views: { list: false, add: false, edit: true },
+  })
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare maxConcurrentJobs: number | null;
+
+  /**
+   * Service window of the machine itself (a night laptop, scheduled host maintenance). Checked at
+   * claim time only — it never touches job `availableAt`, so an unpinned job simply goes to
+   * another worker while this one sleeps.
+   */
+  @AdminizerField({
+    title: 'Active hours',
+    type: 'jsoneditor',
+    tooltip: '{ timezone: "Europe/Belgrade", windows: [{ days: ["mon"], start: "22:00", end: "06:00" }] } — when this machine takes jobs. Empty = always.',
+    views: { list: false, add: false, edit: true },
+  })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare activeHours: ActiveHoursSchedule | null;
+
+  /**
+   * IANA zone of the worker machine, reported in capabilities at registration or set by an
+   * operator. Limit providers need it to parse local reset times ("resets 3am") out of harness
+   * refusal text; without it they must degrade to "time unknown" rather than guess.
+   */
+  @AdminizerField({ title: 'Timezone', views: { list: false, add: false, edit: true } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare timezone: string | null;
+
   @AdminizerField({ title: 'Version', views: { list: true, add: false, edit: false } })
   @Column({ type: DataType.STRING, allowNull: true })
   declare version: string | null;
@@ -223,6 +260,12 @@ export class AgentWorker extends Model<InferAttributes<AgentWorker>, InferCreati
     if (!this.allowedRepositoryIds || this.allowedRepositoryIds.length === 0) return true;
     if (!repositoryId) return true;
     return this.allowedRepositoryIds.includes(repositoryId);
+  }
+
+  /** The concurrency cap the claim gate enforces: operator's setting, else the worker's report, else 1. */
+  effectiveMaxConcurrentJobs(): number {
+    const configured = this.maxConcurrentJobs ?? this.capabilities?.maxConcurrency ?? 1;
+    return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1;
   }
 
   /**

@@ -134,15 +134,18 @@ export class AgentWorkerRegistryService {
     }
 
     const firstContact = !worker.registeredAt;
+    const capabilities = payload.capabilities && typeof payload.capabilities === 'object' && !Array.isArray(payload.capabilities)
+      ? (payload.capabilities as AgentWorkerCapabilities)
+      : null;
     await worker.update({
       instanceId,
       version: optionalString(payload.version, 50),
       hostname: optionalString(payload.hostname),
       lastIp: optionalString(ip, 64),
-      capabilities:
-        payload.capabilities && typeof payload.capabilities === 'object' && !Array.isArray(payload.capabilities)
-          ? (payload.capabilities as AgentWorkerCapabilities)
-          : null,
+      capabilities,
+      // The machine's zone, when the worker reports it. Limit providers parse local reset times
+      // ("resets 3am") with it; an operator-set value is never overwritten by the report.
+      ...(worker.timezone ? {} : { timezone: optionalString(capabilities?.timezone, 64) }),
       lastSeenAt: new Date(),
       ...(firstContact ? { registeredAt: new Date() } : {}),
     });

@@ -7,7 +7,7 @@ import { AgentTask } from './AgentTask';
 import { AgentTaskComment } from './AgentTaskComment';
 import { AgentStageExecution } from './AgentStageExecution';
 import { AgentRunLog } from './AgentRunLog';
-import type { AgentRunStatus, AgentRunTrigger, AgentRunExecutorOverride, PipelineSpecDef } from '../types/agentiz';
+import type { AgentJobDeferReason, AgentRunStatus, AgentRunTrigger, AgentRunExecutorOverride, PipelineSpecDef } from '../types/agentiz';
 
 /**
  * "У каждой задачи будут запуски" - one row per pipeline execution attempt for an AgentTask.
@@ -128,6 +128,19 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
 
   @Column({ type: DataType.TEXT, allowNull: true })
   declare errorMessage: string | null;
+
+  /**
+   * Set while the run is parked waiting for a harness limit or a schedule window; cleared by the
+   * next claim (markRunStarted). Deliberately NOT a new status in the ENUM: `sync({alter})` on
+   * postgres extends ENUMs unreliably, and every status consumer (mobile-api, admin selects, MCP)
+   * would break on an unknown value. The run stays `running`/`pending` and the "waiting until
+   * 21:00" badge is drawn from these two fields, degrading invisibly where they are unknown.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare waitingUntil: Date | null;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare waitingReason: AgentJobDeferReason | null;
 
   @Column({ type: DataType.DATE, defaultValue: DataType.NOW })
   declare createdAt: Date;

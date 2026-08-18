@@ -114,6 +114,30 @@
   the mobile API, the task screen and `agentiz.runDetails`. Its first page is the **tail**, keyed by
   `(createdAt, id)` — a run streaming its tool calls outgrows any fixed limit, and a reader taking
   "the first N" stops showing new lines exactly on the run somebody is watching.
+- Harness limits and queue scheduling (design: `.ai-notes/harness-limits-and-scheduling.md`): a
+  usage limit belongs to an **account**, so the core models it as `AgentHarnessSubscription`
+  (+ `AgentWorkerHarness` binding per worker × harness, + `AgentHarnessUsageSample` history).
+  `subscription.exhaustedUntil` is the **only** field that closes the claim gate; `windows` is
+  advisory telemetry that reaches enforcement solely through `stopPolicy` thresholds or a
+  classified refusal — both applied in `AgentCapacityService`, the single write point (samples,
+  cache invalidation, waking deferred jobs on recovery). Provider specifics (refusal wordings,
+  usage-report shapes) never enter the core: they come through the `harnessLimitProviders`
+  collection — `layers/app-agentiz-claude-limits` is the first provider — and with an empty
+  collection everything still works manually (`agentiz.manageWorker markHarnessExhausted` /
+  `clearHarnessLimit`). Both claim sites now delegate to `AgentJobClaimService.claim()` — a new
+  queue filter goes **there** (still as a SQL column, never JSON), not into two hand-kept WHEREs;
+  the same service enforces `AgentWorker.maxConcurrentJobs` under a `FOR UPDATE` of the worker
+  row. A failed pipeline result whose error text a provider classifies as a limit is **deferred,
+  not failed**: job → `released` + `deferReason` with the claim's `attempt` increment refunded
+  (deferrals have their own budget, `AGENTIZ_JOB_MAX_DEFERRALS`), run keeps its status and only
+  carries `waitingReason`/`waitingUntil` (deliberately not a new status ENUM value), and a pinned
+  job's `availableAt` is the actual reset time while an unpinned one retries in minutes on another
+  worker. `AgentRunJob.harnessKey` is derived only in `lib/harness.ts` ('mixed' in the column ⇒
+  exact list in `snapshot.harnessKeys`); git-only jobs stay NULL and are never limit-gated.
+  Working hours live in `spec.constraints.activeHours` (start-only enforcement; `pause` needs a
+  worker release and is rejected by validation) and in `AgentWorker.activeHours` — the first is a
+  job property and lands in `availableAt`, the second is a claim-side gate and must never touch
+  `availableAt`.
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
