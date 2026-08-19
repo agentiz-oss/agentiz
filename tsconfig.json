@@ -6,7 +6,13 @@
     "moduleResolution": "Node",
     "esModuleInterop": true,
     "sourceMap": false,
-    "declaration": true,
+    // This is an application, not a published library: `npm run build` is `tsc --noEmit`, the image
+    // builds with `vite build`, and package.json declares no `types`. The only thing `declaration`
+    // did here was demand that every public API be *emittable* as a .d.ts, which sequelize model
+    // shapes are not — 20 TS4050s across app-agentiz-mobile-api, invisible until now only because
+    // earlier errors stopped tsc before declaration checking. Turn it back on if a layer is ever
+    // published on its own, and annotate those return types then.
+    "declaration": false,
     "removeComments": false,
     "skipLibCheck": true,
     "emitDecoratorMetadata": true,

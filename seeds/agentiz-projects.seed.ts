@@ -169,8 +169,9 @@ export async function seed(appManager: AppManager) {
 
     const specAttrs = {
       name: 'Default pipeline',
-      // No matchTags: this is the catch-all every task of the project resolves to.
-      matchTags: null,
+      // No matchTags: this is the catch-all every task of the project resolves to. Annotated
+      // because a bare `null` in an object literal has no inferable type under noImplicitAny.
+      matchTags: null as string[] | null,
       isDefault: true,
       isActive: true,
       version: 1,

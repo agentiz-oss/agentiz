@@ -1,14 +1,32 @@
 import { z } from 'zod';
 import {
     AbstractAiModelService,
-    AiAgentConnectionStatus,
-    AiAgentSessionMeta,
-    AiAgentStreamEvent,
-    AiAgentUiHints,
     User,
 } from '@nodeknit/app-adminizer';
 import type { AppManager } from '@nodeknit/app-manager';
 import type { AppMCP } from '@nodeknit/app-mcp';
+
+/**
+ * The assistant contract adminizer 5.0.0-build.12 exports as types. `local_modules/app-adminizer`
+ * pins build.7, whose `AbstractAiModelService` is `getMetadata` and nothing else, so these are
+ * declared here rather than imported: structural shapes wide enough for what this file returns,
+ * which is all a consumer of the newer build needs them to be. Delete them in favour of the imports
+ * once the submodule moves.
+ */
+type AiAgentConnectionStatus = { state: string; provider?: string; baseUrl?: string; lastError?: string };
+type AiAgentUiHints = Record<string, unknown>;
+type AiAgentSessionMeta = Record<string, unknown>;
+type AiAgentStreamEvent = { type: string; [key: string]: unknown };
+
+/**
+ * The data skills the newer build provides on the base class. Absent on build.7, and calling them
+ * blind is what turned "the assistant has no data tools here" into a TypeError the first time
+ * anyone opened the chat.
+ */
+type AgentSkillHost = {
+    getAgentSkills?: (user: User) => Array<{ id: string; description: string; inputSchema: any }>;
+    executeAgentSkill?: (id: string, input: Record<string, unknown>, user: User) => Promise<unknown>;
+};
 
 type StreamEvent = AiAgentStreamEvent;
 
@@ -17,6 +35,8 @@ const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_TOOL_RESULT_CHARS = 64_000;
 const MAX_TOOL_ARRAY_ITEMS = 50;
 const MAX_TOOL_OBJECT_KEYS = 100;
+const VISION_OFF = new Set(['0', 'false', 'no', 'off']);
+const IMAGE_TOKENS_ESTIMATE = 1_200;
 
 function truncateText(value: string, maxChars: number): { text: string; truncated: boolean; originalChars: number } {
     if (value.length <= maxChars) return { text: value, truncated: false, originalChars: value.length };
@@ -52,6 +72,36 @@ function clampForAgentPayload(value: unknown, maxDepth = 5): unknown {
     return String(value);
 }
 
+/**
+ * Rough "used context" number for the panel's meter, shown until the provider reports real usage.
+ * Image parts count as a flat estimate instead of their length: an inlined photo is megabytes of
+ * base64 but roughly a thousand tokens, so measuring the history by JSON size would report a
+ * session many times over its window the moment somebody attaches a screenshot.
+ */
+function estimateContextTokens(messages: unknown): number {
+    let chars = 0;
+    let images = 0;
+    const walk = (value: unknown): void => {
+        if (value === null || value === undefined) return;
+        if (Array.isArray(value)) {
+            value.forEach(walk);
+            return;
+        }
+        if (typeof value === 'object') {
+            const type = (value as { type?: unknown }).type;
+            if (type === 'image' || type === 'file') {
+                images += 1;
+                return;
+            }
+            for (const entry of Object.values(value as Record<string, unknown>)) walk(entry);
+            return;
+        }
+        chars += String(value).length;
+    };
+    walk(messages);
+    return Math.round(chars / 4) + images * IMAGE_TOKENS_ESTIMATE;
+}
+
 function summarizeToolResult(toolName: string, result: unknown): Record<string, unknown> {
     const limited = clampForAgentPayload(result);
     const json = JSON.stringify(limited);
@@ -70,7 +120,8 @@ function summarizeToolResult(toolName: string, result: unknown): Record<string, 
  * It does not implement its own domain tools: every capability comes from the `mcpTools`
  * collection (app-mcp), reached in-process through `list_mcp_tools`/`call_mcp_tool` — the same
  * bridge pattern restoapp's OpenHarness agent uses for its own MCP server. Credentials are plain
- * env vars (OPENHARNESS_API_KEY/_BASE_URL/_MODEL); there is no broker/auto-registration here.
+ * env vars (OPENHARNESS_API_KEY/_BASE_URL/_MODEL/_VISION); there is no broker/auto-registration
+ * here.
  */
 export class AgentizAssistantService extends AbstractAiModelService {
     private readonly sessions = new Map<number, any>();
@@ -131,11 +182,11 @@ export class AgentizAssistantService extends AbstractAiModelService {
 
     getSessionMeta(user: User): AiAgentSessionMeta {
         const session = this.sessions.get(user.id);
-        const contextTokens = session ? Math.round(JSON.stringify(session.messages ?? []).length / 4) : 0;
+        const contextTokens = session ? estimateContextTokens(session.messages ?? []) : 0;
         return {
             model: process.env.OPENHARNESS_MODEL || DEFAULT_MODEL,
             contextWindow: Number(process.env.OPENHARNESS_CONTEXT_WINDOW) || 128_000,
-            vision: false,
+            vision: this.supportsVision(),
             turns: session?.turns ?? 0,
             totalUsage: session?.totalUsage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
             contextTokens,
@@ -169,6 +220,20 @@ export class AgentizAssistantService extends AbstractAiModelService {
         return { compacted: done, tokensBefore, tokensAfter, messagesRemoved };
     }
 
+    /**
+     * Adminizer asks this **before** the turn (`buildInput` in its AiAgentController): with
+     * `false` every attached image is replaced by the text stub "[Image attached: … — the current
+     * model cannot see images]", so a photo never leaves this process and the model answers that
+     * it cannot see pictures — the provider behind OPENHARNESS_BASE_URL is never involved in that
+     * decision. `OPENHARNESS_MODEL` is only the alias that endpoint routes on and says nothing
+     * about capabilities, so this stays a plain switch: on by default, `OPENHARNESS_VISION=0`
+     * puts the stub back for a text-only model.
+     */
+    private supportsVision(): boolean {
+        const raw = (process.env.OPENHARNESS_VISION ?? '').trim().toLowerCase();
+        return raw === '' || !VISION_OFF.has(raw);
+    }
+
     private getBaseUrl(): string {
         return process.env.OPENHARNESS_BASE_URL || DEFAULT_BASE_URL;
     }
@@ -200,7 +265,8 @@ export class AgentizAssistantService extends AbstractAiModelService {
             inputSchema: z.object({ group: z.string().min(1).optional() }),
             execute: async (input: { group?: string }) => {
                 if (!user.isAdministrator) return { error: 'MCP tools are only available for administrators.' };
-                const server = this.mcpApp.server;
+                // `server` is public at runtime; only the shipped declarations mark it private.
+                const server = (this.mcpApp as any).server;
                 if (input.group) {
                     const tools = server.listTools(input.group);
                     if (tools.length === 0) {
@@ -215,7 +281,7 @@ export class AgentizAssistantService extends AbstractAiModelService {
                     return summarizeToolResult('list_mcp_tools', { group: input.group, count: tools.length, tools });
                 }
                 const groups = server.listGroups();
-                const tools = server.listTools().map((entry) => ({
+                const tools = server.listTools().map((entry: any) => ({
                     name: entry.name,
                     group: entry.group,
                     mode: entry.mode,
@@ -241,7 +307,7 @@ export class AgentizAssistantService extends AbstractAiModelService {
                     // app-mcp ships its own nested @nodeknit/app-manager copy, so its AppManager
                     // type is nominally distinct from this file's — same runtime object, so the
                     // cast is safe.
-                    const result = await this.mcpApp.server.callTool(input.tool_name, input.params ?? {}, { appManager: this.appManager as any });
+                    const result = await (this.mcpApp as any).server.callTool(input.tool_name, input.params ?? {}, { appManager: this.appManager as any });
                     return summarizeToolResult(input.tool_name, result);
                 } catch (error: any) {
                     return { error: error?.message || 'MCP tool call failed.' };
@@ -253,13 +319,14 @@ export class AgentizAssistantService extends AbstractAiModelService {
         // update_model_record, create_model_record, ...): every call re-checks this user's model
         // permissions server-side. Available to every user, not just administrators.
         const skillTools: Record<string, any> = {};
-        for (const skill of this.getAgentSkills(user)) {
+        const skillHost = this as AgentSkillHost;
+        for (const skill of skillHost.getAgentSkills?.(user) ?? []) {
             skillTools[skill.id] = tool({
                 description: skill.description,
                 inputSchema: jsonSchema(skill.inputSchema),
                 execute: async (input: Record<string, unknown>) => {
                     try {
-                        const result = await this.executeAgentSkill(skill.id, input ?? {}, user);
+                        const result = await skillHost.executeAgentSkill!(skill.id, input ?? {}, user);
                         return summarizeToolResult(skill.id, result);
                     } catch (error: any) {
                         return { error: error?.message || `Skill "${skill.id}" failed.` };

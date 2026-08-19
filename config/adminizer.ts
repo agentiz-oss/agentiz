@@ -78,6 +78,14 @@ export const adminizerConfig: AdminizerConfig = {
                 section: 'Agentiz',
             },
             {
+                id: 'workflows',
+                title: 'Воркфлоу',
+                link: '/dashboard/workflows',
+                type: 'self',
+                icon: 'account_tree',
+                section: 'Agentiz',
+            },
+            {
                 id: 'agentiz-gitlab',
                 title: 'GitLab-интеграции',
                 link: '/dashboard/agentiz-gitlab',
