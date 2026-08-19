@@ -16,6 +16,7 @@ export default defineConfig({
         AgentizRuns: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizRuns.tsx'),
         AgentizInteractions: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizInteractions.tsx'),
         AgentizRepositories: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizRepositories.tsx'),
+        AgentizNotifications: path.resolve(__dirname, 'layers/app-agentiz/adminizer/modules/AgentizNotifications.tsx'),
         AgentizGitlab: path.resolve(__dirname, 'layers/app-agentiz-gitlab-integration/adminizer/modules/AgentizGitlab.tsx'),
         AgentizGithub: path.resolve(__dirname, 'layers/app-agentiz-github-integration/adminizer/modules/AgentizGithub.tsx'),
         MobileAssistant: path.resolve(__dirname, 'layers/app-agentiz-mobile-api/adminizer/modules/MobileAssistant.tsx'),

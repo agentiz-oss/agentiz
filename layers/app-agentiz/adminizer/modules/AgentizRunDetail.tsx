@@ -17,6 +17,7 @@ interface AgentRun {
   status: string;
   trigger: string;
   currentStageIndex: number;
+  pipelineSpecId?: string | null;
   resultSummary?: string | null;
   responseUrl?: string | null;
   commitUrl?: string | null;
@@ -121,6 +122,54 @@ interface RunDetails {
 
 const PREFIX = (window as any).routePrefix ?? "/dashboard";
 const API_URL = `${PREFIX}/agentiz-runs`;
+const NOTIFICATIONS_URL = `${PREFIX}/agentiz-notifications`;
+
+/** Read on this screen, not edited: the events a run produces, in the order they matter here. */
+const RUN_NOTIFY_TYPES = ["interaction.created", "proposal.waiting_review", "run.failed", "run.succeeded"];
+const PUSH_TITLES: Record<string, string> = { on: "будит", silent: "тихо", off: "не шлём" };
+
+/**
+ * What this run's pipeline will and will not notify about — an explanation, never a control.
+ *
+ * "Почему мне не пришло" is asked here, on the run, but the answer belongs to the pipeline: an
+ * editor on this screen would invite "замьютить вот этот запуск", and a run is not a scope of the
+ * policy (it inherits its pipeline's rules, so muting it would mute every future run of it).
+ */
+const RunNotificationHint: React.FC<{ pipelineSpecId: string; projectId: string }> = ({ pipelineSpecId, projectId }) => {
+  const [rows, setRows] = useState<Array<{ type: string; label: string; push: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    axios
+      .get(NOTIFICATIONS_URL, { params: { _method: "getScope", scope: "pipeline", id: pipelineSpecId } })
+      .then((res) => {
+        if (cancelled) return;
+        const types: any[] = res.data?.data?.types ?? [];
+        setRows(RUN_NOTIFY_TYPES
+          .map((type) => types.find((row) => row.type === type))
+          .filter(Boolean)
+          .map((row: any) => ({ type: row.type, label: row.label, push: row.effective.push })));
+      })
+      .catch(() => {
+        // The hint is decoration; a run screen must still render when it cannot be loaded.
+      });
+    return () => { cancelled = true; };
+  }, [pipelineSpecId]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span>Уведомления по этому пайплайну:</span>
+      {rows.map((row) => (
+        <span key={row.type} className="rounded border px-2 py-0.5" title={row.type}>
+          {row.label} — {PUSH_TITLES[row.push] ?? row.push}
+        </span>
+      ))}
+      <a href={`${PREFIX}/agentiz-pipelines?projectId=${projectId}&specId=${pipelineSpecId}`} className="underline">настроить →</a>
+    </div>
+  );
+};
 
 /** How close to the bottom still counts as "following the log" — a reader who scrolled up keeps
  *  their place instead of being yanked down by the next line. */
@@ -371,6 +420,7 @@ const AgentizRunDetail: React.FC = () => {
               <StatusBadge status={run.status} /> {run.trigger} · {formatDateTime(run.createdAt)}
             </p>
           )}
+          {run?.pipelineSpecId && <div className="mt-2"><RunNotificationHint pipelineSpecId={run.pipelineSpecId} projectId={run.projectId} /></div>}
         </div>
         {run && (
           <a href={`${PREFIX}/agentiz-tasks`} className="text-xs underline">

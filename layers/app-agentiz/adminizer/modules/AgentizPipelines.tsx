@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { PipelineHooksSection } from "./hooks/PipelineHooksSection";
+import NotificationPolicySection from "./components/NotificationPolicySection";
 
 /**
  * ACP-agent assignment and pipeline-spec editing for one project. Split out of the project
@@ -112,6 +113,7 @@ const HOME_URL = `${PREFIX}/agentiz`;
 const REPOS_URL = `${PREFIX}/agentiz-repos`;
 const WORKERS_URL = `${PREFIX}/agentiz-workers`;
 const API_URL = `${PREFIX}/agentiz-pipelines`;
+const NOTIFICATIONS_URL = `${PREFIX}/agentiz-notifications`;
 
 /**
  * The path a `worker_workspace` pipeline names directly, instead of a key declared on the worker.
@@ -187,11 +189,18 @@ const AgentizPipelines: React.FC = () => {
   const [roles, setRoles] = useState<AgentRoleConfig[]>([]);
   const [pipelineSpecs, setPipelineSpecs] = useState<PipelineSpecConfig[]>([]);
   const [selectedPipelineSpecId, setSelectedPipelineSpecId] = useState("");
+  // Which specs have notification rules of their own — a muted pipeline must be visible in the
+  // list, not only after opening it: silence with no visible cause is what nobody debugs.
+  const [notifyMarks, setNotifyMarks] = useState<Record<string, { mute: boolean; count: number }>>({});
   const [workspaceNameMode, setWorkspaceNameMode] = useState<"key" | "path">("key");
   const [pendingWorkerWorkspace, setPendingWorkerWorkspace] = useState(false);
   const [pendingWorkerId, setPendingWorkerId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ?specId= comes from the notifications page, which links straight at one pipeline's rules.
+  // Consumed once the project's specs have loaded, then dropped so switching projects is free.
+  const presetSpecId = useRef<string | null>(new URLSearchParams(window.location.search).get("specId"));
 
   useEffect(() => {
     const preset = new URLSearchParams(window.location.search).get("projectId");
@@ -243,16 +252,32 @@ const AgentizPipelines: React.FC = () => {
       const specs: PipelineSpecConfig[] = data.specs ?? [];
       setRoles(data.roles ?? []);
       setPipelineSpecs(specs);
-      setSelectedPipelineSpecId((current) => current || specs.find((spec) => spec.isDefault)?.id || specs[0]?.id || "");
+      const preset = specs.find((spec) => spec.id === presetSpecId.current)?.id;
+      presetSpecId.current = null;
+      setSelectedPipelineSpecId((current) => current || preset || specs.find((spec) => spec.isDefault)?.id || specs[0]?.id || "");
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось загрузить настройки пайплайна");
+    }
+  }, []);
+
+  const fetchNotifyMarks = useCallback(async () => {
+    try {
+      const res = await axios.get(NOTIFICATIONS_URL, { params: { _method: "getOverrides" } });
+      const marks: Record<string, { mute: boolean; count: number }> = {};
+      for (const item of res.data?.data ?? []) {
+        if (item.scope === "pipeline" && item.id) marks[item.id] = { mute: item.mute, count: item.types?.length ?? 0 };
+      }
+      setNotifyMarks(marks);
+    } catch {
+      // A missing badge is not worth an error banner over the pipeline editor.
     }
   }, []);
 
   useEffect(() => {
     fetchProjects();
     fetchWorkers();
-  }, [fetchProjects, fetchWorkers]);
+    fetchNotifyMarks();
+  }, [fetchProjects, fetchWorkers, fetchNotifyMarks]);
 
   useEffect(() => {
     fetchPipelineConfiguration(selectedProjectId);
@@ -439,7 +464,11 @@ const AgentizPipelines: React.FC = () => {
               onChange={(event) => setSelectedPipelineSpecId(event.target.value)}
               className="rounded border px-2 py-1 text-sm"
             >
-              {pipelineSpecs.map((spec) => <option key={spec.id} value={spec.id}>{spec.name}{spec.isDefault ? " · default" : ""}</option>)}
+              {pipelineSpecs.map((spec) => {
+                const mark = notifyMarks[spec.id];
+                const notify = mark?.mute ? " · 🔕" : mark ? " · 🔔" : "";
+                return <option key={spec.id} value={spec.id}>{spec.name}{spec.isDefault ? " · default" : ""}{notify}</option>;
+              })}
             </select>
           )}
         </div>
@@ -761,6 +790,16 @@ const AgentizPipelines: React.FC = () => {
           </div>
         )}
       </div>
+
+      {selectedPipelineSpec && (
+        <NotificationPolicySection
+          key={selectedPipelineSpec.id}
+          scope="pipeline"
+          id={selectedPipelineSpec.id}
+          inheritsFrom="из проекта"
+          onSaved={fetchNotifyMarks}
+        />
+      )}
     </div>
   );
 };

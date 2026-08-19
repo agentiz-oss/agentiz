@@ -209,6 +209,30 @@ describe('NotificationPolicyService', () => {
     expect(succeeded.effective.push).toBe('off');
   });
 
+  it('lists every scope that says something, named and grouped by project', async () => {
+    await NotificationPolicyService.set({
+      defaults: { 'run.succeeded': { push: 'off' } },
+      projects: { [projectId]: { mute: true } },
+      pipelines: { [specId]: { 'run.failed': { push: 'on' } } },
+    });
+
+    const overrides = await NotificationPolicyService.listOverrides();
+
+    expect(overrides.map((item) => item.scope)).toEqual(['defaults', 'project', 'pipeline']);
+    expect(overrides[1]).toMatchObject({ id: projectId, name: 'Owned', mute: true, types: [] });
+    expect(overrides[2]).toMatchObject({ id: specId, name: 'Release', projectName: 'Owned', mute: false, types: ['run.failed'] });
+  });
+
+  it('says so instead of showing a blank name when an override outlived its project', async () => {
+    // A stale id survives in the document until the next write prunes it, so the list must read.
+    process.env[NOTIFY_POLICY_KEY] = JSON.stringify({ projects: { 'gone-project': { mute: true } } });
+
+    const overrides = await NotificationPolicyService.listOverrides();
+
+    expect(overrides).toHaveLength(1);
+    expect(overrides[0].name).toContain('удалён');
+  });
+
   it('removes the stored document on set(null)', async () => {
     await NotificationPolicyService.set({ defaults: { 'run.failed': { push: 'off' } } });
     expect(NotificationPolicyService.describe().source).toBe('settings');

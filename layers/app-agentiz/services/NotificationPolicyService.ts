@@ -60,6 +60,18 @@ export interface PolicyScopeTypeView {
   inherited: ActivityChannelPolicy;
 }
 
+/** One scope that stores something, with the name of the thing it is attached to. */
+export interface PolicyOverrideView {
+  scope: PolicyScopeRef['scope'];
+  id?: string;
+  name: string;
+  /** For a pipeline — the project it inherits from, so a list can group by it and link into it. */
+  projectId?: string;
+  projectName?: string;
+  mute: boolean;
+  types: string[];
+}
+
 export interface PolicyScopeView {
   scope: PolicyScopeRef['scope'];
   id?: string;
@@ -210,6 +222,59 @@ export class NotificationPolicyService {
       shadowedByEnvironment: isNotifyPolicyShadowedByEnvironment(),
       warnings: this.describe().warnings,
     };
+  }
+
+  /**
+   * Every scope the document actually says something about, named.
+   *
+   * Without this the document becomes a place where an override made months ago in a project card
+   * cannot be found again: nothing else ever lists them, and silence has no visible cause.
+   */
+  static async listOverrides(): Promise<PolicyOverrideView[]> {
+    const document = notifyPolicy();
+    const projectIds = Object.keys(document.projects ?? {});
+    const pipelineIds = Object.keys(document.pipelines ?? {});
+
+    const specs = pipelineIds.length > 0
+      ? await PipelineSpec.findAll({ where: { id: { [Op.in]: pipelineIds } }, attributes: ['id', 'name', 'projectId'] })
+      : [];
+    // The projects to name are those with an entry of their own *plus* the owners of every listed
+    // pipeline — a pipeline is shown under its project even when the project says nothing.
+    const namedProjectIds = [...new Set([...projectIds, ...specs.map((spec) => spec.projectId)])];
+    const projects = namedProjectIds.length > 0
+      ? await AgentProject.findAll({ where: { id: { [Op.in]: namedProjectIds } }, attributes: ['id', 'name'] })
+      : [];
+    const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+
+    const typesOf = (scope: ActivityPolicyScope) => Object.keys(scope).filter((key) => key !== 'mute');
+    const views: PolicyOverrideView[] = [];
+
+    if (document.defaults && Object.keys(document.defaults).length > 0) {
+      views.push({ scope: 'defaults', name: 'Общие настройки', mute: document.defaults.mute === true, types: typesOf(document.defaults) });
+    }
+    for (const [id, scope] of Object.entries(document.projects ?? {})) {
+      views.push({
+        scope: 'project',
+        id,
+        // A stale id survives here until the next write prunes it, so say so rather than show blank.
+        name: projectNames.get(id) ?? `Проект ${id} (удалён)`,
+        mute: scope.mute === true,
+        types: typesOf(scope),
+      });
+    }
+    for (const [id, scope] of Object.entries(document.pipelines ?? {})) {
+      const spec = specs.find((item) => item.id === id);
+      views.push({
+        scope: 'pipeline',
+        id,
+        name: spec?.name ?? `Пайплайн ${id} (удалён)`,
+        projectId: spec?.projectId,
+        projectName: spec ? projectNames.get(spec.projectId) ?? undefined : undefined,
+        mute: scope.mute === true,
+        types: typesOf(scope),
+      });
+    }
+    return views;
   }
 
   /**

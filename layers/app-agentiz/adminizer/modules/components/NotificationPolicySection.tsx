@@ -17,7 +17,7 @@ import axios from "axios";
  */
 
 const PREFIX = (window as any).routePrefix ?? "/dashboard";
-const API_URL = `${PREFIX}/agentiz`;
+const API_URL = `${PREFIX}/agentiz-notifications`;
 
 type PushMode = "on" | "silent" | "off";
 type DashboardMode = "on" | "off";
@@ -65,9 +65,11 @@ export interface NotificationPolicySectionProps {
   id?: string;
   /** What this scope falls back to, in words — shown under the heading. */
   inheritsFrom?: string;
+  /** Called after a successful write, for screens showing "where it is overridden" alongside. */
+  onSaved?: () => void;
 }
 
-const NotificationPolicySection: React.FC<NotificationPolicySectionProps> = ({ scope, id, inheritsFrom }) => {
+const NotificationPolicySection: React.FC<NotificationPolicySectionProps> = ({ scope, id, inheritsFrom, onSaved }) => {
   const [view, setView] = useState<ScopeView | null>(null);
   const [draft, setDraft] = useState<Record<string, PolicyEntry>>({});
   const [mute, setMute] = useState(false);
@@ -85,7 +87,7 @@ const NotificationPolicySection: React.FC<NotificationPolicySectionProps> = ({ s
     if (scope !== "defaults" && !id) return;
     setError(null);
     try {
-      const res = await axios.get(API_URL, { params: { _method: "getNotificationPolicy", scope, id } });
+      const res = await axios.get(API_URL, { params: { _method: "getScope", scope, id } });
       adopt(res.data?.data);
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось загрузить политику уведомлений");
@@ -119,14 +121,15 @@ const NotificationPolicySection: React.FC<NotificationPolicySectionProps> = ({ s
     setBusy(true);
     setError(null);
     try {
-      const res = await axios.post(API_URL, { _method: "setNotificationPolicy", scope, id, entry });
+      const res = await axios.post(API_URL, { _method: "setScope", scope, id, entry });
       adopt(res.data?.data);
+      onSaved?.();
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось сохранить политику уведомлений");
     } finally {
       setBusy(false);
     }
-  }, [scope, id, adopt]);
+  }, [scope, id, adopt, onSaved]);
 
   const saveDraft = () => {
     const entry: Record<string, unknown> = {};
