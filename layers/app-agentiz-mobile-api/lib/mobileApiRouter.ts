@@ -2,10 +2,13 @@ import express, { type NextFunction, type Request, type Response, type Router } 
 import cors from 'cors';
 import type { Model, Sequelize } from 'sequelize';
 import { bearerToken, verifyMobileToken } from './mobileAuth';
+import { MobileActivityService } from '../services/MobileActivityService';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
 import { MobileCapacityService } from '../services/MobileCapacityService';
 import { MobileDeviceService } from '../services/MobileDeviceService';
 import { MobileInteractionService } from '../services/MobileInteractionService';
+import { MobileNotificationPolicyService } from '../services/MobileNotificationPolicyService';
+import { MobileProposalService } from '../services/MobileProposalService';
 import { MobilePushService } from '../services/MobilePushService';
 import { MobileProjectService } from '../services/MobileProjectService';
 import { MobileRunService } from '../services/MobileRunService';
@@ -328,6 +331,104 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
         actorOf(req),
       );
       res.json({ data });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * The activity feed — the same journal for every project the caller owns, newest first, paged by
+   * an opaque `before` cursor. Written on every event whatever the notification policy says, so
+   * "почему не пришёл пуш" is answerable from here.
+   */
+  router.get('/activities', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileActivityService.list(ownerOf(req), {
+        before: typeof req.query.before === 'string' ? req.query.before : null,
+        ...(Number(req.query.limit) > 0 ? { limit: Number(req.query.limit) } : {}),
+      }) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /** "Ленту видел" — moves the per-user mark the unseen badge is counted against. */
+  router.post('/activities/seen', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const at = req.body?.at ? new Date(String(req.body.at)) : undefined;
+      const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
+      res.json({ data: await MobileActivityService.markSeen(userId, at) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Everything actionable right now (questions, reviews, held diffs) plus the unseen counter —
+   * one request instead of polling several lists, and the number the app badge shows.
+   */
+  router.get('/activities/summary', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
+      res.json({ data: await MobileActivityService.summary(ownerOf(req), userId) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /** Workspace proposals of the caller's projects; `holding=true` widens to everything holding a directory. */
+  router.get('/proposals', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileProposalService.list(ownerOf(req), { holding: req.query.holding === 'true' }) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/proposals/:id/approve', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const data = await MobileProposalService.approve(idOf(req), ownerOf(req), {
+        revision: Number(req.body?.revision),
+        targetBranch: req.body?.targetBranch === undefined ? undefined : String(req.body.targetBranch),
+        commitMessage: req.body?.commitMessage === undefined ? undefined : String(req.body.commitMessage),
+      }, actorOf(req));
+      res.json({ data });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/proposals/:id/reject', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const data = await MobileProposalService.reject(idOf(req), ownerOf(req), {
+        revision: Number(req.body?.revision),
+      }, actorOf(req));
+      res.json({ data });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /** The notification policy, cut down to the caller's projects and their pipelines. */
+  router.get('/notification-policy', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileNotificationPolicyService.describe(ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Replaces `defaults` and the caller's own project/pipeline entries; foreign entries survive
+   * untouched. Last-write-wins between simultaneous editors — v1's accepted trade.
+   */
+  router.put('/notification-policy', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileNotificationPolicyService.update(ownerOf(req), {
+        defaults: req.body?.defaults,
+        projects: req.body?.projects,
+        pipelines: req.body?.pipelines,
+      }) });
     } catch (error) {
       errorResponse(res, error);
     }

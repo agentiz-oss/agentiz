@@ -35,7 +35,7 @@ export class AgentizNotificationService extends AbstractNotificationService {
       } else {
         // Undirected: everyone allowed to see this class gets a row. For installation-wide news (a
         // worker going offline), never for anything naming one project's work — see
-        // DashboardInteractionNotifier, which always addresses the owner.
+        // DashboardActivityNotifier, which always addresses the owner.
         const users = await this.userModel().find({});
         for (const user of users) {
           if (!this.adminizer.accessRightsHelper.hasPermission(`notification-${this.notificationClass}`, user)) continue;

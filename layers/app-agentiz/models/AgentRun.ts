@@ -1,4 +1,4 @@
-import { Table, Column, Model, DataType, BelongsTo, HasMany, ForeignKey, Default } from 'sequelize-typescript';
+import { Table, Column, Model, DataType, BelongsTo, HasMany, ForeignKey, Default, AfterUpdate } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
@@ -89,6 +89,14 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @AdminizerField({ title: 'Pipeline Snapshot', type: 'jsoneditor', views: { list: false, add: false, edit: false } })
   @Column({ type: DataType.JSONB, allowNull: false })
   declare pipelineSnapshot: PipelineSpecDef;
+
+  /**
+   * The PipelineSpec this run was created from. Not resolvable through `task.pipelineSpecId` —
+   * that holds the spec of the task's *latest* run, and an older run may have used another one.
+   * The notification policy's pipeline scope keys on this (lib/notifications/policySettings.ts).
+   */
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare pipelineSpecId: string | null;
 
   @Column({ type: DataType.INTEGER, allowNull: false, defaultValue: 0 })
   declare currentStageIndex: number;
@@ -192,4 +200,47 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
 
   @HasMany(() => AgentRunLog, 'runId')
   declare logs: AgentRunLog[];
+
+  /**
+   * Emits the run.succeeded/failed/cancelled activity on the first transition into a terminal
+   * status. A model hook, not calls at the ~10 places that terminalize a run: explicit calls in
+   * five files would drift apart exactly the way dual claim sites used to.
+   *
+   * CONSTRAINT: a terminal status must be written through an **instance** `run.update(...)`. A
+   * bulk `AgentRun.update({status}, {where})` bypasses this hook and the activity is never born
+   * (sequelize only runs per-instance hooks with `individualHooks`, which nothing here passes).
+   * Today every terminal transition is instance-level; keep it that way.
+   */
+  @AfterUpdate
+  static async emitTerminalActivity(instance: AgentRun): Promise<void> {
+    if (!instance.changed('status')) return;
+    const terminal = ['succeeded', 'failed', 'cancelled'];
+    const status = instance.status;
+    const previous = instance.previous('status');
+    if (!terminal.includes(status) || previous === undefined || terminal.includes(String(previous))) return;
+    // Dynamic import: the service imports models, so a static import here would be a cycle.
+    const { ActivityService } = await import('../services/ActivityService');
+    const titles: Record<string, string> = {
+      succeeded: 'Запуск завершён успешно',
+      failed: 'Запуск завершился с ошибкой',
+      cancelled: 'Запуск отменён',
+    };
+    await ActivityService.record({
+      type: `run.${status}`,
+      projectId: instance.projectId,
+      runId: instance.id,
+      taskId: instance.taskId,
+      proposalId: instance.proposalId ?? null,
+      title: titles[status],
+      body: status === 'failed'
+        ? (instance.errorMessage ?? 'Причина не сообщена')
+        : (instance.resultSummary ?? instance.errorMessage ?? ''),
+      data: {
+        status,
+        ...(instance.errorMessage ? { errorMessage: instance.errorMessage.slice(0, 1000) } : {}),
+        ...(instance.commitUrl ? { commitUrl: instance.commitUrl } : {}),
+        ...(instance.responseUrl ? { responseUrl: instance.responseUrl } : {}),
+      },
+    });
+  }
 }

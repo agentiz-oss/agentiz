@@ -7,6 +7,7 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentRepository } from '../models/AgentRepository';
 import { AgentPipelineService } from './AgentPipelineService';
+import { ActivityService } from './ActivityService';
 import { assertWorkspaceBranch } from '../lib/workspaceBranch';
 
 export class WorkspaceProposalError extends Error {
@@ -76,7 +77,9 @@ export class AgentWorkspaceProposalService {
     try {
       await this.enqueueAction(proposal, 'workspace_commit_push');
     } catch (error) {
-      await proposal.update({ status: 'push_failed', lastError: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      await proposal.update({ status: 'push_failed', lastError: message });
+      await this.recordFailureActivity(proposal, 'push_failed', message);
       throw error;
     }
     return proposal;
@@ -96,7 +99,9 @@ export class AgentWorkspaceProposalService {
     try {
       await this.enqueueAction(proposal, 'workspace_reset');
     } catch (error) {
-      await proposal.update({ status: 'reset_failed', lastError: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      await proposal.update({ status: 'reset_failed', lastError: message });
+      await this.recordFailureActivity(proposal, 'reset_failed', message);
       throw error;
     }
     return proposal;
@@ -243,5 +248,29 @@ export class AgentWorkspaceProposalService {
     const proposal = await AgentWorkspaceProposal.findByPk(id);
     if (!proposal) throw new WorkspaceProposalError(404, 'Workspace proposal not found');
     return proposal;
+  }
+
+  /**
+   * The queue-time twin of the worker-result emit in AgentWorkerApiService: an approve/reject
+   * whose action job could not even be queued leaves the proposal in the same push_failed /
+   * reset_failed state, and the owner has to hear about it the same way.
+   * `resetAfterUnreviewableFailure` deliberately stays silent — that is cleanup, and run.failed
+   * has already said the important part.
+   */
+  private static async recordFailureActivity(
+    proposal: AgentWorkspaceProposal,
+    failure: 'push_failed' | 'reset_failed',
+    message: string,
+  ): Promise<void> {
+    await ActivityService.record({
+      type: `proposal.${failure}`,
+      projectId: proposal.projectId,
+      runId: proposal.latestRunId,
+      taskId: proposal.taskId,
+      proposalId: proposal.id,
+      title: failure === 'push_failed' ? 'Push изменений не удался' : 'Сброс воркспейса не удался',
+      body: message,
+      data: { revision: proposal.revision, errorMessage: message.slice(0, 1000) },
+    });
   }
 }

@@ -55,16 +55,29 @@
   (`worker/src/agentiz_worker/main.py`): the ACP server applies it to the session after it starts
   (`set_config_option`/`set_session_model`), not via a CLI flag or env var — `claude-agent-acp`
   otherwise falls back to `ANTHROPIC_MODEL`/its own default.
-- A new agent question (`AgentRunInteractionService.create`) is announced through the
-  `interactionNotifiers` collection (`layers/app-agentiz/lib/interactionNotifiers.ts`) — app-agentiz
-  owns the event and contributes no *push* listener, because reaching a phone means device tokens and
-  credentials. Today there are two listeners: `MobilePushService` in the mobile-api layer, and
-  `DashboardInteractionNotifier` in app-agentiz itself — the second is not an exception to that rule,
-  its recipient is a user of the panel app-agentiz already runs inside, so no credential enters the
-  core. Delivery is
-  fire-and-forget on purpose: it runs inside the worker's `requestHumanInput` call and must never
-  delay or fail it — which is also why nothing there retries, only classifies. Push credentials are
-  optional everywhere — with none configured nothing is sent and `/devices` still stores tokens.
+- Every "a person may care" event (a question asked, a review waiting, a run finished, a failed
+  push — catalogue in `layers/app-agentiz/lib/notifications/activityTypes.ts`, the single source
+  the policy schema, the built-in defaults and the UI hints all derive from) goes through **one
+  dispatcher**, `ActivityService.record()`: it always INSERTs an `AgentActivity` feed row first —
+  the journal is complete whatever the notification policy says — then resolves the policy once
+  and fans out through the `activityNotifiers` collection
+  (`layers/app-agentiz/lib/activityNotifiers.ts`). A notifier only declares its *channel*
+  (`push`/`dashboard`); the policy check lives in the dispatcher, so a new delivery layer cannot
+  forget it. app-agentiz owns the events and contributes no *push* listener, because reaching a
+  phone means device tokens and credentials. Today there are two listeners: `MobilePushService` in
+  the mobile-api layer, and `DashboardActivityNotifier` in app-agentiz itself — the second is not
+  an exception to that rule, its recipient is a user of the panel app-agentiz already runs inside,
+  so no credential enters the core. Fan-out is fire-and-forget on purpose: some emitters run
+  inside the worker's `requestHumanInput` call and must never delay or fail it — which is also why
+  nothing there retries, only classifies; `record()` itself never throws either. Push credentials
+  are optional everywhere — with none configured nothing is sent and `/devices` still stores
+  tokens. Two emit rules with sharp edges: `run.succeeded/failed/cancelled` comes from an
+  `@AfterUpdate` hook on `AgentRun`, so a terminal status must be written through an **instance**
+  `run.update()` — a bulk `AgentRun.update({status},{where})` bypasses the hook and the activity
+  is never born; proposal events are explicit calls at their four sites instead, because
+  auto-approve passes `waiting_review` only in transit and a hook would announce a review that no
+  longer exists. `interaction.created` keeps its legacy push payload (`type=interaction`) for
+  older app builds; every other type travels as `type=activity`.
 - *How* a push travels is chosen once, from `PUSH_PROVIDER`, and never branched on again:
   `MobilePushService` builds one FCM-HTTP-v1-shaped `PushMessage` and sends it through a
   `PushProvider` (`layers/app-agentiz-mobile-api/lib/push/`). `firebase` (default) signs and posts to
@@ -94,6 +107,21 @@
   `resetPushProviders()` — the cached provider pair is what makes a change take effect without a
   restart, and it lives on a `Symbol.for` global for the same reason every other registry here does.
   Stored values are write-only through this layer: `describe()` masks and nothing returns a credential.
+- *Which* events reach push/bell is one json app-manager setting, `AGENTIZ_NOTIFY_POLICY`
+  (`layers/app-agentiz/lib/notifications/policySettings.ts`, slot + schema generated from
+  `activityTypes.ts`; writes via `NotificationPolicyService` / MCP
+  `agentiz.manageNotificationPolicy`, mobile `GET/PUT /notification-policy` merges only the
+  caller's own entries). Same mechanics as `pushSetting()`: env wins — and shadows the stored
+  document **entirely** — every read reports `source`, a shadowed write returns a warning. Not in
+  `PipelineSpec.spec` on purpose: a spec snapshots into the run and ships to the worker, and "будить
+  ли человека" is the recipient's preference, which must not freeze at queue time. Three scopes,
+  resolved per channel from specific to general — `pipelines[specId]` (via `AgentRun.pipelineSpecId`,
+  set in `createRun`; `task.pipelineSpecId` is the *latest* run's spec and cannot stand in) →
+  `projects[projectId]` → `defaults` → built-in; inside a scope an explicit type entry beats the
+  scope's `mute: true`, so "проект замьючен, кроме явно включённого пайплайна" needs no special
+  code. `set()` prunes entries whose project/pipeline id no longer exists. The policy filters
+  **delivery only**: the `AgentActivity` feed row is written regardless, which is what makes
+  "почему не пришло" debuggable (`GET /activities`, per-user seen mark in `AgentActivitySeen`).
 - Agentiz sends into Adminizer's own notification subsystem (the bell) through one seam,
   `layers/app-agentiz/lib/notifications/dashboardNotifications.ts`, under its own class `agentiz`
   (permission token `notification-agentiz`, registered by adminizer's base service). Two things about

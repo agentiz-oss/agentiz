@@ -18,5 +18,7 @@ export { AgentRunDiff } from './AgentRunDiff';
 export { AgentWorkspaceProposal } from './AgentWorkspaceProposal';
 export { AgentRunInteraction } from './AgentRunInteraction';
 export { AgentHarnessSubscription } from './AgentHarnessSubscription';
+export { AgentActivity } from './AgentActivity';
+export { AgentActivitySeen } from './AgentActivitySeen';
 export { AgentWorkerHarness } from './AgentWorkerHarness';
 export { AgentHarnessUsageSample } from './AgentHarnessUsageSample';

@@ -1,15 +1,12 @@
-import { Op } from 'sequelize';
-import { AgentProject } from '../../app-agentiz/models/AgentProject';
-import { AgentRun } from '../../app-agentiz/models/AgentRun';
-import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteraction';
-import { AgentTask } from '../../app-agentiz/models/AgentTask';
-import type { InteractionCreatedEvent, InteractionNotifier } from '../../app-agentiz/lib/interactionNotifiers';
+import type { ActivityEvent, ActivityNotifier } from '../../app-agentiz/lib/activityNotifiers';
+import { activityTypeDef, ANDROID_CHANNEL_RESULTS } from '../../app-agentiz/lib/notifications/activityTypes';
 import { isInvalidToken, isRetryable, pushFailureOf, type PushMessage, type PushResult } from '../lib/push';
 import { pushConfigured, pushProvider } from '../lib/push/providers';
 import { MobileDevice } from '../models/MobileDevice';
+import { MobileActivityService } from './MobileActivityService';
 import { MobileDeviceService } from './MobileDeviceService';
 
-/** A notification is a preview, not the question: the form is read in the app. */
+/** A notification is a preview, not the event: the details are read in the app. */
 const MAX_BODY = 180;
 
 function truncate(text: string, limit: number): string {
@@ -18,76 +15,111 @@ function truncate(text: string, limit: number): string {
 }
 
 /**
- * Turns "an agent is waiting for a human" into a push on that human's phones.
+ * Turns a feed event into a push on the project owner's phones.
  *
- * This is the layer's `interactionNotifiers` contribution (app-agentiz owns the event, see
- * app-agentiz/lib/interactionNotifiers.ts). The recipient is the *project's owner*, which is the
- * same rule the whole mobile API is scoped by: a person sees, and is told about, exactly the
- * projects whose `ownerId` is theirs.
+ * This is the layer's `activityNotifiers` contribution (app-agentiz owns the events, see
+ * app-agentiz/lib/activityNotifiers.ts). The dispatcher has already resolved the policy — this is
+ * only called when push for the type is not off — and already resolved owner/task context, so
+ * nothing here loads a model beyond the device rows.
  *
- * The payload's job is to be openable. `type=interaction` plus `interactionId` is what the app
- * routes on, and taskId/projectId/projectName are carried along so the question's page can be built
- * without a round trip while the app is still starting up.
+ * The payload's job is to be openable. For `interaction.created` it is **bit-for-bit the legacy
+ * shape** (`type=interaction` + `interactionId` + task/project context): older app builds route
+ * questions on exactly that, and a question must survive a server deploy the phone has not caught
+ * up with. Every other type travels as `type=activity` — an old build shows it as a plain banner
+ * without deep-routing (its Push.kt returns null for unknown types), which is the intended soft
+ * degradation.
+ *
+ * `delivery.push === 'silent'` keeps the message but takes the noise out: normal priority, the
+ * low-importance results channel on Android, no sound-worthy alert anywhere.
  *
  * Nothing here knows how a message travels. It builds one `PushMessage` and hands it to the
  * configured provider (`lib/push/providers.ts`), so `PUSH_PROVIDER=firebase` and
  * `PUSH_PROVIDER=gateway` run exactly this code.
  */
-export class MobilePushService implements InteractionNotifier {
-  readonly id = 'app-agentiz-mobile-api:interaction-push';
+export class MobilePushService implements ActivityNotifier {
+  readonly id = 'app-agentiz-mobile-api:activity-push';
+  readonly channel = 'push';
 
   static configured(): boolean {
     return pushConfigured();
   }
 
-  async notifyCreated(event: InteractionCreatedEvent): Promise<void> {
+  async notify(event: ActivityEvent): Promise<void> {
     if (!MobilePushService.configured()) return;
 
-    const project = await AgentProject.findByPk(event.projectId);
+    const { activity, context } = event;
     // No owner means nobody to notify — the same blind spot the API has by design: a project with
     // no `ownerId` is invisible to every mobile user.
-    if (!project?.ownerId) return;
-    const userId = Number(project.ownerId);
+    if (!context.ownerId) return;
+    const userId = Number(context.ownerId);
     const devices = await MobileDeviceService.forUser(userId);
     if (devices.length === 0) return;
 
-    const run = await AgentRun.findByPk(event.runId);
-    const task = run ? await AgentTask.findByPk(run.taskId) : null;
+    const silent = event.delivery.push === 'silent';
+    const def = activityTypeDef(activity.type);
 
-    // One notification per run: a stage that asks twice in a row replaces its own card instead of
-    // burying the phone in near-identical questions.
-    const collapseId = `agentiz-run-${event.runId}`;
-    const badge = await MobilePushService.pendingCount(userId);
+    // One notification per run: a run that raises several events in a row replaces its own card
+    // instead of burying the phone. Events without a run collapse per proposal, then per activity.
+    const collapseId = activity.runId
+      ? `agentiz-run-${activity.runId}`
+      : activity.proposalId
+        ? `agentiz-proposal-${activity.proposalId}`
+        : `agentiz-activity-${activity.id}`;
+
+    // The icon badge counts what actually needs the person, honoring per-project mutes — not the
+    // raw pending-question count anymore (see MobileActivityService.badgeCount).
+    const badge = await MobileActivityService.badgeCount(userId);
+
+    const data: Record<string, string> = activity.type === 'interaction.created'
+      ? {
+          type: 'interaction',
+          interactionId: activity.interactionId ?? '',
+          runId: activity.runId ?? '',
+          projectId: activity.projectId,
+          projectName: context.projectName,
+          taskId: activity.taskId ?? '',
+          taskTitle: context.taskTitle ?? '',
+          source: String(activity.data?.source ?? ''),
+        }
+      : {
+          type: 'activity',
+          activityType: activity.type,
+          activityId: activity.id,
+          kind: activity.kind,
+          runId: activity.runId ?? '',
+          taskId: activity.taskId ?? '',
+          taskTitle: context.taskTitle ?? '',
+          proposalId: activity.proposalId ?? '',
+          projectId: activity.projectId,
+          projectName: context.projectName,
+          ...(typeof activity.data?.prUrl === 'string' ? { prUrl: activity.data.prUrl } : {}),
+        };
+
     const message: PushMessage = {
       // Filled in per device — everything else about the message is the same for all of them.
       token: '',
       notification: {
-        title: task?.title ? truncate(task.title, 60) : `Вопрос агента · ${project.name}`,
-        body: truncate(event.message, MAX_BODY),
+        title: context.taskTitle
+          ? truncate(context.taskTitle, 60)
+          : `${activity.title} · ${context.projectName}`,
+        body: truncate(activity.type === 'interaction.created' ? activity.body : `${activity.title}. ${activity.body}`.trim(), MAX_BODY),
       },
-      data: {
-        type: 'interaction',
-        interactionId: event.interactionId,
-        runId: event.runId,
-        projectId: event.projectId,
-        projectName: project.name ?? '',
-        taskId: run?.taskId ?? '',
-        taskTitle: task?.title ?? '',
-        source: event.source,
-      },
+      data,
       android: {
-        // A parked run is the whole point of the notification, so it is worth waking the device.
-        priority: 'HIGH',
+        // Waking the device is what an actionable event is for; a silenced one keeps normal
+        // priority and lands on the low-importance channel, so the OS shows it without a sound.
+        priority: silent ? 'NORMAL' : 'HIGH',
         collapseKey: collapseId,
-        notification: { channelId: 'agentiz-interactions' },
+        notification: { channelId: silent ? ANDROID_CHANNEL_RESULTS : def.androidChannel },
       },
       apns: {
         headers: { 'apns-collapse-id': collapseId.slice(0, 64) },
         payload: {
           aps: {
             badge,
-            // Groups every question of one run into a single notification stack.
+            // Groups every event of one run into a single notification stack.
             'thread-id': collapseId,
+            ...(silent ? {} : { sound: 'default' }),
           },
         },
       },
@@ -96,24 +128,16 @@ export class MobilePushService implements InteractionNotifier {
     await MobilePushService.deliver(devices, message);
   }
 
-  /** How many questions this person now has open — the number the iOS badge shows. */
-  private static async pendingCount(userId: number): Promise<number> {
-    const projects = await AgentProject.findAll({ where: { ownerId: userId as any }, attributes: ['id'] });
-    if (projects.length === 0) return 0;
-    return AgentRunInteraction.count({
-      where: { projectId: { [Op.in]: projects.map((project) => project.id) }, status: 'pending' },
-    });
-  }
-
   /**
    * Sends to every device in parallel and prunes whatever came back dead. Failures are logged and
-   * swallowed: a push that does not arrive must never affect the run it is about — the question is
-   * still in the app's list either way.
+   * swallowed: a push that does not arrive must never affect the run it is about — the event is
+   * still in the app's feed either way.
    *
-   * There is no retry here on purpose. Delivery runs inside the worker's `requestHumanInput` call,
-   * so waiting out a rate limit would delay the agent for a notification; a retryable failure is
-   * logged as such and the next question re-notifies. What is *not* postponed is `invalid-token`:
-   * that device is gone for good and its row goes with it, or every later push repeats the failure.
+   * There is no retry here on purpose. Delivery can run inside the worker's `requestHumanInput`
+   * call, so waiting out a rate limit would delay the agent for a notification; a retryable
+   * failure is logged as such and the next event re-notifies. What is *not* postponed is
+   * `invalid-token`: that device is gone for good and its row goes with it, or every later push
+   * repeats the failure.
    */
   private static async deliver(devices: MobileDevice[], message: PushMessage): Promise<void> {
     const results = await Promise.all(devices.map(async (device) => {

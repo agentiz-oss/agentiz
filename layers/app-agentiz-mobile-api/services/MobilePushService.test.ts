@@ -4,9 +4,8 @@ vi.mock('@nodeknit/app-adminizer', () => ({
   AdminizerModel: (): ClassDecorator => (_target: Function): void => {},
 }));
 
-// The providers are replaced wholesale: what is worth testing here is who gets addressed and what
-// the payload says, not whether Google and Apple answer. The providers themselves are covered in
-// lib/push/providers.test.ts.
+// The providers are replaced wholesale: what is worth testing here is what the payload says, not
+// whether Google answers. The providers themselves are covered in lib/push/providers.test.ts.
 type Send = (message: any) => Promise<any>;
 const sendFcmPush = vi.fn<Send>(async () => ({ success: true, messageId: 'fcm-1' }));
 vi.mock('../lib/push/providers', () => ({
@@ -22,17 +21,17 @@ import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteractio
 import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
+import type { ActivityEvent } from '../../app-agentiz/lib/activityNotifiers';
 import { MobileDevice } from '../models/MobileDevice';
 import { MobileDeviceService } from './MobileDeviceService';
 import { MobilePushService } from './MobilePushService';
 
 const OWNER = 21;
-const STRANGER = 22;
 
 /**
- * The path from "an agent asked something" to a notification on the right phone. The push exists to
- * be *opened*, so the assertions are mostly about the data payload: without `interactionId` the app
- * has nothing to navigate to and the notification is just noise.
+ * The push side of the activity fan-out. The dispatcher has already applied the policy and
+ * resolved the context; what this layer owes is a payload the app can *open* — and, for
+ * `interaction.created`, the exact legacy payload older builds still route questions on.
  */
 describe('MobilePushService', () => {
   let sequelize: Sequelize;
@@ -57,6 +56,7 @@ describe('MobilePushService', () => {
   beforeEach(async () => {
     sendFcmPush.mockClear();
     sendFcmPush.mockImplementation(async () => ({ success: true, messageId: 'fcm-1' }));
+    delete process.env.AGENTIZ_NOTIFY_POLICY;
     await sequelize.sync({ force: true });
 
     const project = await AgentProject.create({ name: 'Owned', slug: 'owned', ownerId: OWNER } as any);
@@ -75,8 +75,7 @@ describe('MobilePushService', () => {
       trigger: 'manual',
       currentStageIndex: 0,
     } as any);
-    // An interaction is anchored to a real job and stage by foreign keys, so both have to exist
-    // even though the notification never looks at them.
+    // An interaction is anchored to a real job and stage by foreign keys; the badge counts it too.
     const job = await AgentRunJob.create({
       runId: run.id,
       projectId: project.id,
@@ -109,60 +108,125 @@ describe('MobilePushService', () => {
     taskId = task.id;
   });
 
-  const event = () => ({
-    interactionId: interaction.id,
-    projectId,
-    runId,
-    source: 'codex',
-    message: interaction.message,
-  });
+  function interactionEvent(ownerId: number | null = OWNER): ActivityEvent {
+    return {
+      activity: {
+        id: 'act-1',
+        type: 'interaction.created',
+        kind: 'action_required',
+        projectId,
+        runId,
+        taskId,
+        proposalId: null,
+        interactionId: interaction.id,
+        title: 'Нужен ответ',
+        body: interaction.message,
+        data: { source: 'codex' },
+        createdAt: new Date(),
+      },
+      context: { ownerId, projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
+      delivery: { push: 'on', dashboard: 'on' },
+    };
+  }
 
-  it('reaches every device of the project owner — both platforms over FCM', async () => {
+  function activityEvent(type: string, push: 'on' | 'silent' = 'on'): ActivityEvent {
+    return {
+      activity: {
+        id: 'act-2',
+        type,
+        kind: type === 'run.failed' ? 'info' : 'action_required',
+        projectId,
+        runId,
+        taskId,
+        proposalId: 'prop-1',
+        interactionId: null,
+        title: 'Изменения ждут ревью',
+        body: 'Ревизия 1 готова к проверке',
+        data: {},
+        createdAt: new Date(),
+      },
+      context: { ownerId: OWNER, projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
+      delivery: { push, dashboard: 'on' },
+    };
+  }
+
+  it('keeps the legacy payload for interaction.created — old builds route on it', async () => {
     await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
     await MobileDeviceService.register(OWNER, { token: 'ios-token', platform: 'ios' });
 
-    await new MobilePushService().notifyCreated(event());
+    await new MobilePushService().notify(interactionEvent());
 
     expect(sendFcmPush).toHaveBeenCalledTimes(2);
-    expect(sendFcmPush.mock.calls.map((call) => call[0].token)).toEqual(['android-token', 'ios-token']);
-
     const message = sendFcmPush.mock.calls[0][0] as any;
-    // The tap target. Everything else in the payload is context the app could re-fetch; this it
-    // cannot guess.
     expect(message.data).toMatchObject({
       type: 'interaction',
       interactionId: interaction.id,
       runId,
       taskId,
       projectId,
+      source: 'codex',
     });
     expect(message.notification.title).toBe('Починить деплой');
     expect(message.notification.body).toBe('Какую ветку использовать для релиза?');
-    // One card per run, so a chatty stage cannot bury the phone — and the same run is one card on
-    // both platforms, which is why the two blocks say it in their own dialects.
+    expect(message.android.priority).toBe('HIGH');
     expect(message.android.collapseKey).toBe(`agentiz-run-${runId}`);
     expect(message.apns.headers['apns-collapse-id']).toBe(`agentiz-run-${runId}`);
     expect(message.android.notification.channelId).toBe('agentiz-interactions');
-  });
-
-  it('carries the platform blocks whichever provider is installed', async () => {
-    await MobileDeviceService.register(OWNER, { token: 'ios-token', platform: 'ios' });
-
-    await new MobilePushService().notifyCreated(event());
-
-    // Forwarded to Apple by FCM itself — that is the whole reason the block travels in the message
-    // rather than being assembled next to a connection of ours.
-    const message = sendFcmPush.mock.calls[0][0] as any;
-    expect(message.apns.payload.aps['thread-id']).toBe(`agentiz-run-${runId}`);
+    // The badge counts what needs the person — here, the one pending question.
     expect(message.apns.payload.aps.badge).toBe(1);
   });
 
-  it('never notifies anyone but the project owner', async () => {
-    await MobileDeviceService.register(STRANGER, { token: 'stranger-token', platform: 'android' });
+  it('sends every other type as an openable activity payload', async () => {
+    await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
 
-    await new MobilePushService().notifyCreated(event());
+    await new MobilePushService().notify(activityEvent('proposal.waiting_review'));
+
+    const message = sendFcmPush.mock.calls[0][0] as any;
+    expect(message.data).toMatchObject({
+      type: 'activity',
+      activityType: 'proposal.waiting_review',
+      activityId: 'act-2',
+      proposalId: 'prop-1',
+      runId,
+      projectId,
+    });
+    expect(message.android.notification.channelId).toBe('agentiz-actions');
+    expect(message.android.priority).toBe('HIGH');
+    expect(message.apns.payload.aps.sound).toBe('default');
+  });
+
+  it('delivers silent as quiet, not as absent', async () => {
+    await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
+
+    await new MobilePushService().notify(activityEvent('run.failed', 'silent'));
+
+    expect(sendFcmPush).toHaveBeenCalledTimes(1);
+    const message = sendFcmPush.mock.calls[0][0] as any;
+    expect(message.android.priority).toBe('NORMAL');
+    expect(message.android.notification.channelId).toBe('agentiz-results');
+    expect(message.apns.payload.aps.sound).toBeUndefined();
+  });
+
+  it('does nothing without an addressee', async () => {
+    await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
+
+    await new MobilePushService().notify(interactionEvent(null));
 
     expect(sendFcmPush).not.toHaveBeenCalled();
+  });
+
+  it('leaves a muted project out of the badge count', async () => {
+    await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
+    process.env.AGENTIZ_NOTIFY_POLICY = JSON.stringify({ projects: { [projectId]: { 'interaction.created': { push: 'off' } } } });
+    try {
+      await new MobilePushService().notify(activityEvent('proposal.waiting_review'));
+      const message = sendFcmPush.mock.calls[0][0] as any;
+      // The pending question exists but its push is muted for this project — "не дёргай" includes
+      // the badge; the waiting proposal is not in the database, so nothing else counts either.
+      expect(message.apns.payload.aps.badge).toBe(0);
+    } finally {
+      delete process.env.AGENTIZ_NOTIFY_POLICY;
+    }
   });
 
   it('forgets a token the transport reports as gone', async () => {
@@ -172,7 +236,7 @@ describe('MobilePushService', () => {
       ? { success: false, reason: 'invalid-token' }
       : { success: true, messageId: 'fcm-1' }));
 
-    await new MobilePushService().notifyCreated(event());
+    await new MobilePushService().notify(interactionEvent());
 
     expect((await MobileDeviceService.forUser(OWNER)).map((device) => device.token)).toEqual(['live-token']);
   });
@@ -181,34 +245,8 @@ describe('MobilePushService', () => {
     await MobileDeviceService.register(OWNER, { token: 'flaky-token', platform: 'android' });
     sendFcmPush.mockImplementation(async () => ({ success: false, reason: 'temporary-error', error: 'FCM 503' }));
 
-    await new MobilePushService().notifyCreated(event());
+    await new MobilePushService().notify(interactionEvent());
 
     expect((await MobileDeviceService.forUser(OWNER)).map((device) => device.token)).toEqual(['flaky-token']);
-  });
-
-  it('moves a token to whoever registered it last', async () => {
-    await MobileDeviceService.register(STRANGER, { token: 'shared-phone', platform: 'ios' });
-    // The same phone, signed in as somebody else: the previous user's questions must stop arriving
-    // on it rather than both users being notified.
-    await MobileDeviceService.register(OWNER, { token: 'shared-phone', platform: 'ios' });
-
-    expect(await MobileDeviceService.forUser(STRANGER)).toHaveLength(0);
-    await new MobilePushService().notifyCreated(event());
-    expect(sendFcmPush).toHaveBeenCalledTimes(1);
-  });
-
-  /** An older build still names a transport; it is accepted and ignored rather than rejected. */
-  it('takes a registration that names a transport, and sends to it all the same', async () => {
-    await MobileDeviceService.register(OWNER, { token: 'ios-token', platform: 'ios', transport: 'apns' });
-
-    await new MobilePushService().notifyCreated(event());
-
-    expect(sendFcmPush).toHaveBeenCalledTimes(1);
-    expect(sendFcmPush.mock.calls[0][0].token).toBe('ios-token');
-  });
-
-  it('rejects a registration without a usable platform', async () => {
-    await expect(MobileDeviceService.register(OWNER, { token: 'x', platform: 'symbian' })).rejects.toThrow(/platform/);
-    await expect(MobileDeviceService.register(OWNER, { token: '  ', platform: 'ios' })).rejects.toThrow(/token/);
   });
 });

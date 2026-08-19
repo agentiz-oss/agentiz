@@ -68,6 +68,7 @@ import { up as upRunLogStreamIndex, down as downRunLogStreamIndex } from './umzu
 import { up as upHarnessLimits, down as downHarnessLimits } from './umzug/1788000000000_harness_limits';
 import { up as upRunTokenUsage, down as downRunTokenUsage } from './umzug/1788000100000_run_token_usage';
 import { up as upSubscriptionAlignReset, down as downSubscriptionAlignReset } from './umzug/1788000200000_subscription_align_reset';
+import { up as upAgentActivities, down as downAgentActivities } from './umzug/1788000300000_agent_activities';
 
 export const umzugExports: Migration[] = [
   {
@@ -214,5 +215,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000200000,
     up: upSubscriptionAlignReset,
     down: downSubscriptionAlignReset,
+  },
+  {
+    name: 'agent_activities',
+    timestamp: 1788000300000,
+    up: upAgentActivities,
+    down: downAgentActivities,
   },
 ];

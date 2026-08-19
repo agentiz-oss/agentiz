@@ -12,7 +12,7 @@ import { migrations } from './migrations';
 import { MobileDevice } from './models/MobileDevice';
 import { MobilePushService } from './services/MobilePushService';
 import { PushSettingsService } from './services/PushSettingsService';
-import type { InteractionNotifier } from '../app-agentiz/lib/interactionNotifiers';
+import type { ActivityNotifier } from '../app-agentiz/lib/activityNotifiers';
 
 /**
  * Mobile API layer for Agentiz.
@@ -55,12 +55,13 @@ export class AppAgentizMobileApi extends AbstractApp {
   migrations: any[] = migrations.umzug;
 
   /**
-   * Turns a new agent question into a push on the project owner's phones. app-agentiz owns the
-   * `interactionNotifiers` collection and emits the event; the credentials, the device rows and the
-   * push providers live here.
+   * Turns a feed event — a question, a waiting review, a failed push — into a push on the project
+   * owner's phones. app-agentiz owns the `activityNotifiers` collection, emits the events and
+   * applies the notification policy; the credentials, the device rows and the push providers live
+   * here.
    */
   @Collection
-  interactionNotifiers: InteractionNotifier[] = [new MobilePushService()];
+  activityNotifiers: ActivityNotifier[] = [new MobilePushService()];
 
   /**
    * Push over MCP: what is configured and where it came from, a way to install a credential without

@@ -35,3 +35,55 @@ Authorization: Bearer {{mobileLogin.response.body.token}}
 ### Projects owned by the logged-in user
 GET {{mobileBase}}/projects
 Authorization: Bearer {{mobileLogin.response.body.token}}
+
+### Activity feed (newest first; page older rows with ?before=<nextBefore>)
+GET {{mobileBase}}/activities?limit=50
+Authorization: Bearer {{mobileLogin.response.body.token}}
+
+### Everything actionable right now + unseen counter (the app badge)
+GET {{mobileBase}}/activities/summary
+Authorization: Bearer {{mobileLogin.response.body.token}}
+
+### Mark the feed seen up to now
+POST {{mobileBase}}/activities/seen
+Authorization: Bearer {{mobileLogin.response.body.token}}
+Content-Type: application/json
+
+{}
+
+### Proposals needing a decision (holding=true widens to everything holding a directory)
+GET {{mobileBase}}/proposals
+Authorization: Bearer {{mobileLogin.response.body.token}}
+
+### Approve a proposal revision (edits optional)
+POST {{mobileBase}}/proposals/PROPOSAL_ID/approve
+Authorization: Bearer {{mobileLogin.response.body.token}}
+Content-Type: application/json
+
+{
+  "revision": 1,
+  "commitMessage": "Fix auth, reviewed"
+}
+
+### Reject a proposal revision (queues a workspace reset)
+POST {{mobileBase}}/proposals/PROPOSAL_ID/reject
+Authorization: Bearer {{mobileLogin.response.body.token}}
+Content-Type: application/json
+
+{
+  "revision": 1
+}
+
+### Notification policy, scoped to the caller's projects
+GET {{mobileBase}}/notification-policy
+Authorization: Bearer {{mobileLogin.response.body.token}}
+
+### Replace defaults + own project entries (foreign entries survive)
+PUT {{mobileBase}}/notification-policy
+Authorization: Bearer {{mobileLogin.response.body.token}}
+Content-Type: application/json
+
+{
+  "defaults": { "run.succeeded": { "push": "off" } },
+  "projects": { "PROJECT_ID": { "mute": true } }
+}

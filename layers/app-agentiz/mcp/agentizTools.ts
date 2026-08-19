@@ -20,6 +20,7 @@ import { capacityOverview, usageHistory, workerHarnessView } from '../lib/capaci
 import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
 import { agentizProposalMcpTools } from './agentizProposalTools';
 import { agentizCapacityActionTools } from './agentizCapacityTools';
+import { notificationPolicyMcpTools } from './notificationPolicyTools';
 
 type Params = Record<string, unknown>;
 
@@ -530,4 +531,5 @@ export const agentizMcpTools: IMcpTool[] = [
   syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
   ...agentizProposalMcpTools,
   ...agentizCapacityActionTools,
+  ...notificationPolicyMcpTools,
 ];

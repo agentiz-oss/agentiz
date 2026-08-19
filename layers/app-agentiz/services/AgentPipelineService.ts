@@ -14,6 +14,7 @@ import { AgentProjectRepository } from '../models/AgentProjectRepository';
 import { AgentRepository } from '../models/AgentRepository';
 import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
 import { RepositoryResolverService } from './RepositoryResolverService';
+import { ActivityService } from './ActivityService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
@@ -128,6 +129,9 @@ export class AgentPipelineService {
       previousRunId: previousRun?.id ?? null,
       executorOverride: options.executorOverride ?? null,
       pipelineSnapshot: snapshot,
+      // Kept on the run itself: task.pipelineSpecId below is overwritten by every later run, and
+      // the notification policy's pipeline scope must see the spec *this* run came from.
+      pipelineSpecId: spec.id,
       currentStageIndex: 0,
     });
 
@@ -409,6 +413,15 @@ export class AgentPipelineService {
       await writeLog(run.id, run.projectId, null, 'info',
         `Final action: ${action.type} held for approval, ${changes.length} operation(s) waiting in Agentiz`,
         { diffId: diff?.id ?? null });
+      await ActivityService.record({
+        type: 'run.held_for_approval',
+        projectId: run.projectId,
+        runId: run.id,
+        taskId: task.id,
+        title: 'Изменения удержаны до одобрения',
+        body: summary || `${changes.length} operation(s) ждут одобрения в Agentiz`,
+        data: { diffId: diff?.id ?? null, operations: changes.length },
+      });
       return;
     }
 
@@ -463,6 +476,15 @@ export class AgentPipelineService {
     });
     await run.update({ responseUrl: pr.url });
     await writeLog(run.id, run.projectId, null, 'info', `Opened pull request ${pr.url}`);
+    await ActivityService.record({
+      type: 'pr.opened',
+      projectId: run.projectId,
+      runId: run.id,
+      taskId: task.id,
+      title: 'Открыт pull request',
+      body: pr.url,
+      data: { prUrl: pr.url, branch, commitSha: run.commitSha },
+    });
   }
 
   /**

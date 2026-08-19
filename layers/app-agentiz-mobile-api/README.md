@@ -66,16 +66,20 @@ reach the app.
 
 ## Push notifications
 
-A question nobody sees is a run that stays parked, so a new interaction is pushed to the project
-owner's phones as it is created. The core layer owns the event and knows nothing about devices: it
-emits through the `interactionNotifiers` app-manager collection
-(`app-agentiz/lib/interactionNotifiers.ts`) and this layer contributes `MobilePushService`. Delivery
-is fire-and-forget — a push that fails must never fail the agent's request.
+A question nobody sees is a run that stays parked, so feed events — a new question, a review
+waiting, a failed push, a finished run — are pushed to the project owner's phones as they happen.
+The core layer owns the events and knows nothing about devices: `ActivityService` writes the
+`AgentActivity` feed row, applies the notification policy (`AGENTIZ_NOTIFY_POLICY`) and fans out
+through the `activityNotifiers` app-manager collection
+(`app-agentiz/lib/activityNotifiers.ts`); this layer contributes `MobilePushService` on the
+`push` channel. Delivery is fire-and-forget — a push that fails must never fail the agent's
+request. `interaction.created` keeps the legacy `type=interaction` payload so older builds still
+deep-route questions; every other type travels as `type=activity`.
 
-The phone is not the only listener: app-agentiz sends the same event to Adminizer's notification
-bell (`app-agentiz/lib/notifications/`), so the question is visible to somebody watching the
-dashboard with no app installed. The two channels are independent — one being off changes nothing
-about the other.
+The phone is not the only listener: app-agentiz sends the same events to Adminizer's notification
+bell (`app-agentiz/lib/notifications/`), so they are visible to somebody watching the dashboard
+with no app installed. The two channels are independent — one being off changes nothing about the
+other, and the feed (`GET /activities`) is written whatever the policy silences.
 
 ### Providers
 

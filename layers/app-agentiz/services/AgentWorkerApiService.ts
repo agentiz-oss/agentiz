@@ -24,6 +24,7 @@ import type { AgentWorker } from '../models/AgentWorker';
 import { AgentRunInteractionService, InteractionError } from './AgentRunInteractionService';
 import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
 import { AgentWorkspaceProposalService } from './AgentWorkspaceProposalService';
+import { ActivityService } from './ActivityService';
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_LEASE_MS = 60_000;
@@ -525,7 +526,23 @@ export class AgentWorkerApiService {
       && run.pipelineSnapshot.finalAction.requireApproval !== true) {
       await AgentWorkspaceProposalService.approve(proposal.id, proposal.revision, 'system:auto');
     }
-    return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: runTerminal, proposalStatus: (await proposal.reload()).status };
+    // After the auto-approve block on purpose: a proposal that auto-approve just took to
+    // `apply_queued` passed `waiting_review` only in transit, and announcing that would page a
+    // reviewer about a review that no longer exists.
+    const proposalStatus = (await proposal.reload()).status;
+    if (proposalStatus === 'waiting_review') {
+      await ActivityService.record({
+        type: 'proposal.waiting_review',
+        projectId: run.projectId,
+        runId: run.id,
+        taskId: task.id,
+        proposalId: proposal.id,
+        title: 'Изменения ждут ревью',
+        body: summary || `Ревизия ${proposal.revision} готова к проверке`,
+        data: { revision: proposal.revision, diffId: diff?.id ?? null },
+      });
+    }
+    return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: runTerminal, proposalStatus };
   }
 
   private static async applyWorkspaceActionResult(job: AgentRunJob, payload: WorkerResult): Promise<Record<string, unknown>> {
@@ -547,6 +564,16 @@ export class AgentWorkerApiService {
         await AgentRun.update({ commitSha: payload.commitSha }, { where: { id: proposal.latestRunId } });
         await AgentRunDiff.update({ appliedAt: new Date(), appliedCommitSha: payload.commitSha }, { where: { id: proposal.latestDiffId } });
         await AgentTask.update({ status: 'done' }, { where: { id: proposal.taskId } });
+        await ActivityService.record({
+          type: 'proposal.pushed',
+          projectId: proposal.projectId,
+          runId: proposal.latestRunId,
+          taskId: proposal.taskId,
+          proposalId: proposal.id,
+          title: 'Изменения закоммичены и запушены',
+          body: `Коммит ${payload.commitSha.slice(0, 12)}${proposal.targetBranch ? ` в ${proposal.targetBranch}` : ''}`,
+          data: { commitSha: payload.commitSha, targetBranch: proposal.targetBranch, revision: proposal.revision },
+        });
       } else {
         await proposal.update({ status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: null });
         await AgentTask.update({ status: 'cancelled' }, { where: { id: proposal.taskId } });
@@ -554,9 +581,20 @@ export class AgentWorkerApiService {
       await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null, lastError: null });
     } else {
       const message = payload.errorMessage ?? payload.summary ?? `${job.jobKind} failed`;
-      await proposal.update({ status: job.jobKind === 'workspace_commit_push' ? 'push_failed' : 'reset_failed', lastError: message });
+      const failedStatus = job.jobKind === 'workspace_commit_push' ? 'push_failed' : 'reset_failed';
+      await proposal.update({ status: failedStatus, lastError: message });
       await job.update({ status: payload.status === 'cancelled' ? 'cancelled' : 'failed', result: payload as unknown as Record<string, unknown>, lockedUntil: null, lastError: message });
       await AgentTask.update({ status: 'waiting_review' }, { where: { id: proposal.taskId } });
+      await ActivityService.record({
+        type: `proposal.${failedStatus}`,
+        projectId: proposal.projectId,
+        runId: proposal.latestRunId,
+        taskId: proposal.taskId,
+        proposalId: proposal.id,
+        title: failedStatus === 'push_failed' ? 'Push изменений не удался' : 'Сброс воркспейса не удался',
+        body: message,
+        data: { revision: proposal.revision, errorMessage: message.slice(0, 1000) },
+      });
     }
     return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: null, proposalStatus: (await proposal.reload()).status };
   }

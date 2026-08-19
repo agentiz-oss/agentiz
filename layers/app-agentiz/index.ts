@@ -28,6 +28,8 @@ import { AgentWorkspaceProposal } from './models/AgentWorkspaceProposal';
 import { AgentHarnessSubscription } from './models/AgentHarnessSubscription';
 import { AgentWorkerHarness } from './models/AgentWorkerHarness';
 import { AgentHarnessUsageSample } from './models/AgentHarnessUsageSample';
+import { AgentActivity } from './models/AgentActivity';
+import { AgentActivitySeen } from './models/AgentActivitySeen';
 import { AgentCapacityService } from './services/AgentCapacityService';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
@@ -45,11 +47,13 @@ import {
 } from './lib/git';
 import type { GitProviderAdapter } from './lib/git';
 import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
-import { InteractionNotifierCollectionHandler } from './lib/InteractionNotifierCollection';
+import { ActivityNotifierCollectionHandler } from './lib/ActivityNotifierCollection';
 import { HarnessLimitProviderCollectionHandler } from './lib/HarnessLimitProviderCollection';
-import { registerInteractionNotifier, unregisterInteractionNotifier } from './lib/interactionNotifiers';
-import { DashboardInteractionNotifier } from './lib/notifications/DashboardInteractionNotifier';
+import { registerActivityNotifier, unregisterActivityNotifier } from './lib/activityNotifiers';
+import { DashboardActivityNotifier } from './lib/notifications/DashboardActivityNotifier';
 import { forgetAdminizerNotifications, useAdminizerNotifications } from './lib/notifications/dashboardNotifications';
+import { forgetNotifySettingStorage, notifyPolicySettingSlots, useNotifySettingStorage } from './lib/notifications/policySettings';
+import { NotificationPolicyService } from './services/NotificationPolicyService';
 import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTaskManager';
 import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerCollection';
 import type { TaskManagerAdapter } from './lib/taskManager';
@@ -100,6 +104,8 @@ export class AppAgentiz extends AbstractApp {
         AgentHarnessSubscription,
         AgentWorkerHarness,
         AgentHarnessUsageSample,
+        AgentActivity,
+        AgentActivitySeen,
     ];
 
     @Collection
@@ -129,17 +135,26 @@ export class AppAgentiz extends AbstractApp {
     taskManagers: TaskManagerAdapter[] = [githubIssuesTaskManagerAdapter];
 
     /**
-     * Listeners for "an agent is waiting for a human". app-agentiz owns the event and contributes
-     * no *push* notifier: reaching a phone means tokens, credentials and device bookkeeping, which
-     * belong to the layer that owns those devices (app-agentiz-mobile-api).
+     * Listeners for feed events — a question asked, a review waiting, a run finished (see
+     * services/ActivityService.ts). app-agentiz owns the events and contributes no *push*
+     * notifier: reaching a phone means tokens, credentials and device bookkeeping, which belong
+     * to the layer that owns those devices (app-agentiz-mobile-api).
      *
-     * The one listener it does contribute is DashboardInteractionNotifier — the Adminizer bell,
+     * The one listener it does contribute is DashboardActivityNotifier — the Adminizer bell,
      * whose recipient is a user of the panel this layer already runs inside, so no credential and
      * no device registry enters the core. It is registered from `mount()` (it needs the Adminizer
      * instance), not declared as a collection item.
      */
-    @CollectionHandler('interactionNotifiers')
-    interactionNotifiersHandler = new InteractionNotifierCollectionHandler();
+    @CollectionHandler('activityNotifiers')
+    activityNotifiersHandler = new ActivityNotifierCollectionHandler();
+
+    /**
+     * The notification policy slot (AGENTIZ_NOTIFY_POLICY): which event types reach push/bell,
+     * per project and pipeline. An app-manager setting, so it changes without a deploy; the feed
+     * is written regardless of anything in it.
+     */
+    @Collection
+    settings: any[] = notifyPolicySettingSlots;
 
     /**
      * Provider-specific knowledge about harness usage limits (Claude, Codex, …). The core owns
@@ -357,13 +372,18 @@ export class AppAgentiz extends AbstractApp {
         const adminizerApp = this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined;
         const mcpApp = this.appManager.appStorage.get('app-mcp')?.appInstance as AppMCP | undefined;
 
+        // The policy slot's value was loaded while the settings collection was processed; this
+        // hands the readers the storage and the writer its model. Both before any event can fire.
+        useNotifySettingStorage(this.appManager);
+        NotificationPolicyService.use(this.appManager);
+
         if (adminizerApp) {
-            // Second channel for a pending question: the panel's own bell. Registered here rather
-            // than through the `interactionNotifiers` collection because the notifier needs the
+            // Second delivery channel for feed events: the panel's own bell. Registered here rather
+            // than through the `activityNotifiers` collection because the notifier needs the
             // Adminizer instance — tying it to that instance being there is honest, and a panel
             // started without `notifications.enabled` simply reports back false.
             const notifications = useAdminizerNotifications(adminizerApp.adminizer);
-            registerInteractionNotifier(new DashboardInteractionNotifier());
+            registerActivityNotifier(new DashboardActivityNotifier());
             console.log(notifications
                 ? '[AppAgentiz] dashboard notifications enabled (class "agentiz")'
                 : '[AppAgentiz] dashboard notifications are off (set notifications.enabled in the adminizer config)');
@@ -399,8 +419,10 @@ export class AppAgentiz extends AbstractApp {
         }
         unregisterTaskGitProviderResolver(this.appId);
         unregisterTaskRepositoryResolver(this.appId);
-        unregisterInteractionNotifier('app-agentiz:interaction-dashboard');
+        unregisterActivityNotifier('app-agentiz:activity-dashboard');
         forgetAdminizerNotifications();
+        forgetNotifySettingStorage();
+        NotificationPolicyService.forget();
         AgentWorkerQueueService.stop();
         AgentJobReaperService.stop();
         AgentCapacityService.stop();
