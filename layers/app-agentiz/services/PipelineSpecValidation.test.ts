@@ -23,6 +23,14 @@ const workspacePathExample = {
   stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
   finalAction: { type: 'comment_only' },
 };
+const workspaceStrictExample = {
+  source: {
+    kind: 'worker_workspace',
+    workspace: { workerId: 'worker-1', workspaceKey: 'lyapka', stashDirty: false },
+  },
+  stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
+  finalAction: { type: 'comment_only' },
+};
 const workspaceGitExample = {
   source: { kind: 'worker_workspace', repositoryId: 'repo-1', workspace: { workerId: 'worker-1', workspaceKey: 'lyapka' } },
   stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', runtime: { mode: 'host' } }],
@@ -161,5 +169,11 @@ describe('hasUpstreamThread', () => {
   it('is true for anything mirrored from outside', () => {
     expect(hasUpstreamThread('github')).toBe(true);
     expect(hasUpstreamThread('gitlab-issues')).toBe(true);
+  });
+
+  // additionalProperties is false on the workspace object, so an opt-out the schema does not know
+  // about is not an opt-out but a rejected spec.
+  it('accepts turning the dirty-workspace stash off', () => {
+    expect(() => assertValidSpec(coerceSpec(workspaceStrictExample))).not.toThrow();
   });
 });

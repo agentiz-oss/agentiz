@@ -78,7 +78,7 @@ interface PipelineStageConfig {
 
 interface PipelineSourceConfig {
   kind?: "repository" | "worker_workspace";
-  workspace?: { workerId: string; workspaceKey?: string; path?: string; createIfMissing?: boolean };
+  workspace?: { workerId: string; workspaceKey?: string; path?: string; createIfMissing?: boolean; stashDirty?: boolean };
   repositoryId?: string;
 }
 
@@ -368,6 +368,9 @@ const AgentizPipelines: React.FC = () => {
       // The editors below rebuild `workspace` from scratch, so the repository the delivery points at
       // has to be carried over here rather than by every call site.
       const repositoryId = source.repositoryId ?? (source.kind === "worker_workspace" ? current.source?.repositoryId : undefined);
+      // Same reason, same place: an editor that rebuilds `workspace` would otherwise silently put the
+      // dirty-workspace policy back to its default every time the directory is re-picked.
+      const stashDirty = source.workspace?.stashDirty ?? current.source?.workspace?.stashDirty;
       const keepsCommit = !!repositoryId
         && !!workspacePushGrant(worker, declared?.path ?? source.workspace?.path, declared);
       const downgrade = source.kind === "worker_workspace"
@@ -375,7 +378,11 @@ const AgentizPipelines: React.FC = () => {
       // `repositoryId` is only accepted alongside a workspace `commit`, so it goes with the downgrade.
       return {
         ...current,
-        source: { ...source, repositoryId: downgrade ? undefined : repositoryId },
+        source: {
+          ...source,
+          repositoryId: downgrade ? undefined : repositoryId,
+          ...(source.workspace ? { workspace: { ...source.workspace, stashDirty } } : {}),
+        },
         finalAction: downgrade ? { ...current.finalAction, type: "comment_only" as const } : current.finalAction,
       };
     }, "Не удалось сохранить источник пайплайна");
@@ -650,6 +657,26 @@ const AgentizPipelines: React.FC = () => {
                     setPipelineSource({ kind: "worker_workspace", workspace: { workerId, path, createIfMissing } });
                   }}
                 />
+              )}
+
+              {displayedSourceKind === "worker_workspace" && pipelineSource?.workspace && (
+                <label className="mt-2 flex items-start gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={pipelineSource.workspace.stashDirty !== false}
+                    disabled={busy}
+                    onChange={(event) => setPipelineSource({
+                      ...pipelineSource,
+                      // Absent is the default, so only the opt-out is ever written into the spec.
+                      workspace: { ...pipelineSource.workspace!, stashDirty: event.target.checked ? undefined : false },
+                    })}
+                  />
+                  <span>
+                    Убирать в <code>git stash</code> чужие изменения, найденные в папке перед запуском.
+                    Без этого запуск откажется стартовать, пока папку не приведут в порядок руками.
+                  </span>
+                </label>
               )}
 
               {pipelineSourceKind === "worker_workspace" ? (

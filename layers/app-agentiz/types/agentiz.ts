@@ -280,6 +280,15 @@ export interface PipelineWorkerWorkspaceDef {
    * there should surface as an error rather than a silently created empty tree.
    */
   createIfMissing?: boolean;
+  /**
+   * What to do about work already in the directory when a run starts — work the agent did not do.
+   *
+   * Absent means `true`: it goes into a `git stash` (named after the proposal, sha in the run log)
+   * and the run starts from a clean tree. Refusing instead used to be the only behaviour, and it
+   * stopped runs over a file somebody forgot to commit weeks ago. `false` restores that refusal for
+   * a directory whose contents must never be moved without a human looking first.
+   */
+  stashDirty?: boolean;
 }
 
 export interface PipelineSourceDef {

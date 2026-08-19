@@ -4,7 +4,9 @@ import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentTask } from '../models/AgentTask';
 import { AgentPipelineService } from './AgentPipelineService';
 import { AgentRunInteractionService } from './AgentRunInteractionService';
+import { ActivityService } from './ActivityService';
 import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
+import { AgentWorkspaceProposalService } from './AgentWorkspaceProposalService';
 
 /** How often the sweep runs. */
 const SWEEP_INTERVAL_MS = Number(process.env.AGENTIZ_JOB_REAPER_INTERVAL_MS ?? 15_000);
@@ -12,6 +14,10 @@ const SWEEP_INTERVAL_MS = Number(process.env.AGENTIZ_JOB_REAPER_INTERVAL_MS ?? 1
 const MAX_ATTEMPTS = Number(process.env.AGENTIZ_JOB_MAX_ATTEMPTS ?? 5);
 /** Backoff applied when a lease is reclaimed, so a job that kills workers does not spin. */
 const RETRY_BACKOFF_MS = Number(process.env.AGENTIZ_JOB_RETRY_BACKOFF_MS ?? 30_000);
+/** How long an approve/reject may sit in a queue no worker is emptying before the decision reopens. */
+const ACTION_TIMEOUT_MS = Number(process.env.AGENTIZ_PROPOSAL_ACTION_TIMEOUT_MS ?? 15 * 60_000);
+/** Grace after a run ends before its proposal counts as stranded, so this never races the result. */
+const STRANDED_GRACE_MS = Number(process.env.AGENTIZ_PROPOSAL_STRANDED_GRACE_MS ?? 2 * 60_000);
 
 /**
  * Returns abandoned jobs to the queue.
@@ -50,13 +56,16 @@ export class AgentJobReaperService {
     }
   }
 
-  static async sweepOnce(): Promise<{ requeuedReleased: number; reclaimedLeases: number; buried: number }> {
-    if (this.running) return { requeuedReleased: 0, reclaimedLeases: 0, buried: 0 };
+  static async sweepOnce(): Promise<{
+    requeuedReleased: number; reclaimedLeases: number; buried: number; recoveredProposals: number;
+  }> {
+    if (this.running) return { requeuedReleased: 0, reclaimedLeases: 0, buried: 0, recoveredProposals: 0 };
     this.running = true;
     try {
       const requeuedReleased = await this.requeueReleased();
       const { reclaimed, buried } = await this.reclaimExpiredLeases();
-      return { requeuedReleased, reclaimedLeases: reclaimed, buried };
+      const recoveredProposals = await this.recoverStrandedProposals();
+      return { requeuedReleased, reclaimedLeases: reclaimed, buried, recoveredProposals };
     } finally {
       this.running = false;
     }
@@ -111,6 +120,110 @@ export class AgentJobReaperService {
       reclaimed += 1;
     }
     return { reclaimed, buried };
+  }
+
+  /**
+   * Brings a workspace reservation nobody is working on back to a state that has a button.
+   *
+   * A proposal holds its directory against every later run, and only a worker result moves it out
+   * of the four machine-owned statuses. Two gaps leave one hanging there forever, and the lease
+   * machinery above closes neither, because both are jobs that no worker ever took:
+   *
+   * - `working`/`continuing` after the run is over — a cancelled run, or a pipeline job buried by
+   *   `buryIfExhausted` (which skips proposals for `pipeline` jobs, since only the worker knows
+   *   whether the on-disk marker exists). Handled by queuing the same reset an unreviewable failure
+   *   queues; the directory is restored and the reservation falls away with that job's result.
+   * - `apply_queued`/`reset_queued` whose action job was never claimed — the owning worker is
+   *   offline, paused or revoked, so `attempt` never increments and the bury path is unreachable.
+   *   The decision is reopened as `push_failed`/`reset_failed`, which the review UI and MCP can act
+   *   on again; the stale job is cancelled so it cannot wake up later and report against a proposal
+   *   that has moved on.
+   *
+   * Queuing a reset without asking anyone is safe because the reset stashes: the worker puts the
+   * directory into `git stash` before restoring it, and the sha comes back on the proposal. What
+   * neither arm does is clear `reservationKey` on its own — the worker's on-disk marker outlives
+   * the row, so a release nobody carried out would trade this block for a less legible one. That
+   * decision stays with a person: `AgentWorkspaceProposalService.release`.
+   */
+  private static async recoverStrandedProposals(): Promise<number> {
+    const now = Date.now();
+    const proposals = await AgentWorkspaceProposal.findAll({
+      where: {
+        reservationKey: { [Op.ne]: null },
+        status: { [Op.in]: ['working', 'continuing', 'apply_queued', 'applying', 'reset_queued', 'resetting'] },
+        updatedAt: { [Op.lt]: new Date(now - Math.min(STRANDED_GRACE_MS, ACTION_TIMEOUT_MS)) },
+      },
+      limit: 50,
+    });
+    let recovered = 0;
+    for (const proposal of proposals) {
+      const handled = ['working', 'continuing'].includes(proposal.status)
+        ? await this.recoverAbandonedRun(proposal, now)
+        : await this.reopenUnclaimedDecision(proposal, now);
+      if (handled) recovered += 1;
+    }
+    return recovered;
+  }
+
+  /** `working`/`continuing` whose run has ended without anything reporting the proposal. */
+  private static async recoverAbandonedRun(proposal: AgentWorkspaceProposal, now: number): Promise<boolean> {
+    if (proposal.updatedAt.getTime() > now - STRANDED_GRACE_MS) return false;
+    const live = await AgentRunJob.count({
+      where: { runId: proposal.latestRunId, status: { [Op.in]: ['queued', 'released', 'leased', 'running'] } },
+    });
+    if (live > 0) return false;
+    const run = await AgentRun.findByPk(proposal.latestRunId);
+    if (run && !['succeeded', 'failed', 'cancelled'].includes(run.status)) return false;
+    const reason = `Run ${proposal.latestRunId} ended as ${run?.status ?? 'missing'} without deciding the workspace proposal`;
+    await AgentPipelineService.log(proposal.latestRunId, proposal.projectId, null, 'warn',
+      `Stranded workspace proposal recovered: ${reason}`, { proposalId: proposal.id, workspacePath: proposal.workspacePath });
+    try {
+      await AgentWorkspaceProposalService.resetAfterUnreviewableFailure(proposal, reason);
+    } catch (error) {
+      // A concurrent decision won the race; the next sweep sees the new status.
+      console.warn('[AgentizJobReaper] proposal recovery skipped:', error instanceof Error ? error.message : error);
+      return false;
+    }
+    return true;
+  }
+
+  /** `*_queued` whose action job no worker ever claimed. */
+  private static async reopenUnclaimedDecision(proposal: AgentWorkspaceProposal, now: number): Promise<boolean> {
+    if (proposal.updatedAt.getTime() > now - ACTION_TIMEOUT_MS) return false;
+    const jobKind = ['apply_queued', 'applying'].includes(proposal.status) ? 'workspace_commit_push' : 'workspace_reset';
+    const job = await AgentRunJob.findOne({
+      where: { proposalId: proposal.id, jobKind },
+      order: [['createdAt', 'DESC']],
+    });
+    // Anything ever claimed travels the lease path above: it is retried, and buried into the same
+    // failed status once its attempts are spent. Only a job still sitting at attempt 0 is stuck.
+    if (job && !(['queued', 'released'].includes(job.status) && job.attempt === 0)) return false;
+    if (job && job.createdAt.getTime() > now - ACTION_TIMEOUT_MS) return false;
+    const minutes = Math.round(ACTION_TIMEOUT_MS / 60_000);
+    const reason = job
+      ? `No worker claimed ${jobKind} within ${minutes} min (worker ${proposal.workerId} offline, paused or revoked)`
+      : `${jobKind} job disappeared before any worker ran it`;
+    const failedStatus = jobKind === 'workspace_commit_push' ? 'push_failed' : 'reset_failed';
+    const [changed] = await AgentWorkspaceProposal.update(
+      { status: failedStatus, lastError: reason },
+      { where: { id: proposal.id, status: proposal.status } },
+    );
+    if (changed !== 1) return false;
+    if (job) await job.update({ status: 'cancelled', cancelRequestedAt: new Date(), cancelReason: reason, lockedUntil: null });
+    await AgentTask.update({ status: 'waiting_review' }, { where: { id: proposal.taskId } });
+    await AgentPipelineService.log(proposal.latestRunId, proposal.projectId, null, 'error',
+      `Workspace decision reopened: ${reason}`, { proposalId: proposal.id, jobKind });
+    await ActivityService.record({
+      type: `proposal.${failedStatus}`,
+      projectId: proposal.projectId,
+      runId: proposal.latestRunId,
+      taskId: proposal.taskId,
+      proposalId: proposal.id,
+      title: failedStatus === 'push_failed' ? 'Push изменений не удался' : 'Сброс воркспейса не удался',
+      body: reason,
+      data: { revision: proposal.revision, errorMessage: reason, workspacePath: proposal.workspacePath },
+    });
+    return true;
   }
 
   /**

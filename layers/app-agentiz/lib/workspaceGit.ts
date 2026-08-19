@@ -18,6 +18,18 @@ import type { AgentWorkerWorkspace } from '../types/agentiz';
 
 export const DEFAULT_WORKSPACE_REMOTE = 'origin';
 
+/**
+ * The message a `workspace_reset` stash carries, spelled from data the server already holds.
+ *
+ * Kept identical to `_stash_workspace` in `worker/src/agentiz_worker/workspace_git.py`: the sha
+ * only exists after a worker has run, but the *name* is knowable in advance, and that is what makes
+ * a stash findable (`git stash list`) even in the one case no sha ever comes back — a force-release,
+ * which drops the reservation precisely because the worker is unreachable.
+ */
+export function workspaceStashLabel(proposalId: string, revision?: number | null): string {
+  return `agentiz: proposal ${proposalId}` + (revision ? ` revision ${revision}` : '');
+}
+
 export interface WorkspaceGitGrant {
   pushEnabled: true;
   remote: string;

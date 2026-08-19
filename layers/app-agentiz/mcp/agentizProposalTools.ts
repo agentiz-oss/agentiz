@@ -111,19 +111,21 @@ const proposalsTool: IMcpTool = {
 const manageProposalTool: IMcpTool = {
   name: 'agentiz.manageProposal', group: 'agentiz-actions',
   shortDescription: 'Approves, rejects or continues a workspace Git proposal.',
-  description: 'Decides a workspace Git proposal. reject queues a workspace_reset job on the owning worker: the directory is reset to the proposal base, the worker drops its on-disk marker and the reservation is released — this is how a workspace blocked by an abandoned proposal is freed, and the only available decision when a run failed with nothing to review (agentiz.proposals reports approvable=false). approve queues commit/push of the reviewed revision. continue starts another run on the same workspace from a comment. Inspect the proposal with agentiz.proposals first; rejecting discards uncommitted work in that directory.',
+  description: 'Decides a workspace Git proposal. reject queues a workspace_reset job on the owning worker: the directory is stashed, then reset to the proposal base, the worker drops its on-disk marker and the reservation is released — this is how a workspace blocked by an abandoned proposal is freed, and the only available decision when a run failed with nothing to review (agentiz.proposals reports approvable=false). approve queues commit/push of the reviewed revision. continue starts another run on the same workspace from a comment. release does what reject does but from any live status, including the ones reject refuses with 409 (working, continuing, apply_queued, reset_queued) — use it when a run was cancelled or its worker died and the directory stayed reserved; release with force=true additionally drops the reservation without waiting for the worker, for a worker that is gone for good, and then leaves the directory untouched for a human to clean. Neither destroys work: the worker stashes the directory before restoring it (git stash apply <stashSha>, reported back on the proposal), so reject/release is a verdict on the proposal, not on the files. Only force=true skips that, because it skips the worker.',
   mode: 'protected',
   inputSchema: {
     type: 'object',
     required: ['action', 'proposalId'],
     properties: {
-      action: { type: 'string', enum: ['approve', 'reject', 'continue'] },
+      action: { type: 'string', enum: ['approve', 'reject', 'continue', 'release'] },
       proposalId: { type: 'string' },
       revision: { type: 'integer', description: 'Optimistic guard: the revision you read. Omit only when acting on state just fetched — the proposal\'s current revision is then used.' },
       actor: { type: 'string', description: 'Recorded as the deciding actor. Defaults to "mcp".' },
       targetBranch: { type: 'string', description: 'approve only: overrides the branch the commit is pushed to.' },
       commitMessage: { type: 'string', description: 'approve only: overrides the commit message.' },
       comment: { type: 'string', description: 'continue only: the instruction for the next run. Required for continue.' },
+      force: { type: 'boolean', description: 'release only: drop the reservation immediately instead of waiting for the worker to restore the directory. Only for a worker that will not come back — the files are left as they are and the next run there fails until somebody cleans it.' },
+      reason: { type: 'string', description: 'release only: recorded on the proposal and in the run log.' },
     },
   },
   async handler(params) {
@@ -139,6 +141,21 @@ const manageProposalTool: IMcpTool = {
       const comment = requiredString(payload, 'comment');
       const run = await AgentWorkspaceProposalService.continueWork(proposalId, revision, { id: null, name: actor }, comment);
       return { action, proposalId, revision, runId: run.id, runStatus: run.status };
+    }
+    if (action === 'release') {
+      const outcome = await AgentWorkspaceProposalService.release(proposalId, actor, {
+        force: payload.force === true,
+        reason: stringParam(payload, 'reason'),
+      });
+      const diff = outcome.proposal.latestDiffId ? await AgentRunDiff.findByPk(outcome.proposal.latestDiffId) : null;
+      return {
+        action, proposalId,
+        proposal: proposalTeaser(outcome.proposal, diff),
+        queuedJob: outcome.queuedJobId,
+        note: outcome.released
+          ? `Reservation dropped without a worker; ${outcome.proposal.workspacePath} was not restored and may still hold uncommitted work.`
+          : `Queued workspace_reset on worker ${outcome.proposal.workerId}; the workspace stays reserved until that job reports success.`,
+      };
     }
     if (action !== 'approve' && action !== 'reject') throw new Error(`Unsupported action: ${action}`);
 

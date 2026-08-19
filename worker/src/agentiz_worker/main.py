@@ -584,6 +584,8 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
     job_root: Path | None = None
     workdir: Path | None = None
     workspace_marker: dict[str, Any] | None = None
+    # Filled by guard/preflight when they clear a marker an abandoned proposal left behind.
+    workspace_report: dict[str, Any] = {}
     workspace_lock_context: Any = None
     failed = False
     try:
@@ -618,10 +620,34 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 emit("job.workspace", None, f"Работа идёт в готовой папке воркера: {workdir}")
 
         if pinned:
-            workspace_lock_context = guard_workspace(workdir, str(proposal.get("id")) if proposal else None)
+            # The server sets this when its reservation table shows nobody holding the directory,
+            # which makes a marker still lying in it the leftover of a proposal that is already over.
+            allow_stale_marker = bool((job.get("workspace") or {}).get("staleMarkerAllowed"))
+            workspace_lock_context = guard_workspace(
+                workdir, str(proposal.get("id")) if proposal else None,
+                allow_stale_marker=allow_stale_marker, report=workspace_report,
+            )
             locked_root = workspace_lock_context.__enter__()
             if proposal:
-                workdir, workspace_marker = workspace_git_preflight(locked_root, proposal, repository)
+                workdir, workspace_marker = workspace_git_preflight(
+                    locked_root, proposal, repository, allow_stale_marker=allow_stale_marker,
+                    report=workspace_report,
+                    # Absent means stash: an older server sends no flag, and the new default is the
+                    # one that does not stop a run over work nobody claimed.
+                    stash_dirty=(job.get("workspace") or {}).get("stashDirty") is not False,
+                )
+            preexisting = workspace_report.get("preexisting")
+            if preexisting:
+                emit("workspace.stashed", None,
+                     f"В папке была чужая работа — убрана в git stash {str(preexisting['stashSha'])[:12]}")
+            recovered = workspace_report.get("recovered")
+            if recovered:
+                # Said out loud the moment it happens: the run may still die before it reports, and
+                # a stash nobody can name is barely better than a deletion.
+                emit("workspace.recovered", None,
+                     f"Забытая работа предложения {recovered.get('proposalId') or '?'} убрана в git stash"
+                     + (f" {str(recovered.get('stashSha'))[:12]}" if recovered.get("stashSha")
+                        else " (в папке нечего было сохранять)"))
                 emit("workspace.git.ready", None,
                      f"Git proposal {proposal.get('id')} revision {proposal.get('revision')} at {workspace_marker['baseSha'][:12]}")
 
@@ -735,6 +761,10 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
             "summary": redact("\n".join(f"- {item['summary']}" for item in outputs)), "stageOutputs": outputs}
         if hook_records:
             result["hooks"] = hook_records
+        if workspace_report.get("recovered"):
+            result["recoveredStash"] = workspace_report["recovered"]
+        if workspace_report.get("preexisting"):
+            result["preexistingStash"] = workspace_report["preexisting"]
         # A workspace proposal needs its diff whether or not a hosted repository is pinned — since
         # `repositoryId` became optional for worker directories, `repository` alone would skip the
         # collection and leave the proposal with nothing to review. Mirrors the failure path below.
@@ -767,6 +797,12 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
         terminal_status = "cancelled" if "cancellation requested" in str(error).lower() else "failed"
         failure_result: dict[str, Any] = {"resultId": str(uuid.uuid4()), "status": terminal_status,
             "errorMessage": redact(str(error)), "stageOutputs": outputs}
+        if workspace_report.get("preexisting"):
+            failure_result["preexistingStash"] = workspace_report["preexisting"]
+        if workspace_report.get("recovered"):
+            # Travels on the failure path too: the stash belongs to the *previous* proposal, and
+            # whether this run then worked out has nothing to do with recording where it went.
+            failure_result["recoveredStash"] = workspace_report["recovered"]
         if pinned and proposal and workspace_marker is None:
             # Preflight runs before hooks/stages. Without a marker Agentiz never touched the tree,
             # so the server may safely release the reservation without attempting reset.

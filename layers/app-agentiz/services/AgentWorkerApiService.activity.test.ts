@@ -144,6 +144,51 @@ describe('AgentWorkerApiService activity emits', () => {
     expect((await proposal.reload()).status).toBe('push_failed');
   });
 
+  it('records where a rejected revision was stashed, so it can be found again', async () => {
+    await setUp({ type: 'commit', targetBranch: { mode: 'new' } });
+    await proposal.update({ status: 'reset_queued' });
+    const actionJob = await AgentRunJob.create({
+      runId: run.id, projectId: run.projectId, jobKind: 'workspace_reset', proposalId: proposal.id,
+      status: 'running', priority: 50, attempt: 1, snapshot: { proposal: { revision: 1 } },
+    } as any);
+
+    await (AgentWorkerApiService as any).applyWorkspaceActionResult(actionJob, {
+      schemaVersion: 1, attempt: 1, leaseToken: 't', resultId: 'r5', status: 'succeeded',
+      stashSha: 'e'.repeat(40), stashMessage: 'agentiz: proposal p revision 1',
+      abandonedRef: 'refs/agentiz/abandoned/p',
+    });
+
+    await proposal.reload();
+    // Released — and the receipt outlives the release, which is the whole point of the columns.
+    expect(proposal.status).toBe('rejected');
+    expect(proposal.reservationKey).toBeNull();
+    expect(proposal.stashSha).toBe('e'.repeat(40));
+    expect(proposal.abandonedRef).toBe('refs/agentiz/abandoned/p');
+  });
+
+  it('files a stash a later run found under the proposal it belonged to', async () => {
+    await setUp({ type: 'commit', targetBranch: { mode: 'new' } });
+    // The force-release shape: reservation already gone, nothing ever stashed it.
+    await proposal.update({ status: 'rejected', reservationKey: null, stashSha: null });
+
+    await (AgentWorkerApiService as any).recordRecoveredStash(job, {
+      recoveredStash: { proposalId: proposal.id, stashSha: 'f'.repeat(40), stashMessage: 'agentiz: proposal x revision 1' },
+    });
+
+    expect((await proposal.reload()).stashSha).toBe('f'.repeat(40));
+  });
+
+  it('never overwrites the stash a proposal\'s own reset reported', async () => {
+    await setUp({ type: 'commit', targetBranch: { mode: 'new' } });
+    await proposal.update({ status: 'rejected', reservationKey: null, stashSha: 'a'.repeat(40) });
+
+    await (AgentWorkerApiService as any).recordRecoveredStash(job, {
+      recoveredStash: { proposalId: proposal.id, stashSha: 'f'.repeat(40) },
+    });
+
+    expect((await proposal.reload()).stashSha).toBe('a'.repeat(40));
+  });
+
   it('announces proposal.reset_failed when the reset job fails', async () => {
     await setUp({ type: 'commit', targetBranch: { mode: 'new' } });
     await proposal.update({ status: 'reset_queued' });

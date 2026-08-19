@@ -175,6 +175,11 @@
               "type": "boolean",
               "default": false,
               "description": "Only meaningful with path: create the directory if it does not exist, instead of failing. Ignored (and rejected) with workspaceKey."
+            },
+            "stashDirty": {
+              "type": "boolean",
+              "default": true,
+              "description": "Changes already sitting in the directory when a run starts are not the agent's, so by default the worker puts them into a git stash (reported back in the run log with the sha) and starts from a clean tree. Set false to refuse the run instead, leaving the directory untouched for whoever left work there."
             }
           }
         }

@@ -78,6 +78,22 @@ describe('AgentWorkerJobBuilder workspace reservation', () => {
     );
   });
 
+  // The snapshot is the only thing the worker reads, so an opt-out that never reaches it is not an
+  // opt-out. Absent means stash — including for every spec written before the field existed.
+  it('defaults the dirty-workspace policy to stash, including for specs written before the field', async () => {
+    const run = await runFor({ workerId: worker.id, workspaceKey: 'repo' });
+    await expect(AgentWorkerJobBuilder.buildSnapshot(run)).resolves.toMatchObject({
+      workspace: { stashDirty: true },
+    });
+  });
+
+  it('carries the opt-out to the worker', async () => {
+    const run = await runFor({ workerId: worker.id, workspaceKey: 'repo', stashDirty: false });
+    await expect(AgentWorkerJobBuilder.buildSnapshot(run)).resolves.toMatchObject({
+      workspace: { stashDirty: false },
+    });
+  });
+
   it('ignores a released reservation on the same directory', async () => {
     const stale = await reserve('/srv/repo');
     await stale.update({ status: 'pushed', reservationKey: null });

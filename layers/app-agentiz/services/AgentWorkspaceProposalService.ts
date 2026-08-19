@@ -7,8 +7,26 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentRepository } from '../models/AgentRepository';
 import { AgentPipelineService } from './AgentPipelineService';
+import { AgentRunInteractionService } from './AgentRunInteractionService';
 import { ActivityService } from './ActivityService';
 import { assertWorkspaceBranch } from '../lib/workspaceBranch';
+import { workspaceStashLabel } from '../lib/workspaceGit';
+import type { AgentWorkspaceProposalStatus } from '../types/agentiz';
+
+/**
+ * The statuses in which a proposal still owns its directory. Everything else has already cleared
+ * `reservationKey`, so there is nothing left to release.
+ */
+export const LIVE_PROPOSAL_STATUSES: readonly AgentWorkspaceProposalStatus[] = [
+  'working', 'continuing', 'waiting_review',
+  'apply_queued', 'applying', 'reset_queued', 'resetting',
+  'push_failed', 'reset_failed',
+];
+
+/** A worker is mid-action on the directory; a second job queued now would only fight it for the lock. */
+export const IN_FLIGHT_PROPOSAL_STATUSES: readonly AgentWorkspaceProposalStatus[] = [
+  'apply_queued', 'applying', 'reset_queued', 'resetting',
+];
 
 export class WorkspaceProposalError extends Error {
   constructor(public readonly statusCode: number, message: string) { super(message); }
@@ -108,6 +126,136 @@ export class AgentWorkspaceProposalService {
   }
 
   /**
+   * Frees the directory from *any* live status — the manual counterpart of the reaper's recovery
+   * sweep, and the only exit some of those statuses have.
+   *
+   * `reject()` is a review decision and refuses everything but the three states a reviewer is
+   * looking at, because approving or rejecting mid-action would race the worker's own report. Every
+   * other live status keeps the directory reserved all the same, and until this existed only a
+   * worker result could leave them: a cancelled run, a buried pipeline job or a worker that never
+   * came back blocked the path for good, answering `Workspace ... is reserved by proposal <id>` to
+   * every later run while `reject` answered 409. This is what a person presses then.
+   *
+   * Safe mode stops whatever is in flight and queues the same `workspace_reset` a rejection would,
+   * so the directory is restored, the worker drops its marker and the reservation falls away with
+   * that job's result. `force` is for the case that cannot ever work — the owning worker is gone:
+   * the reservation is dropped here and now and nothing is promised about the files, which stay
+   * exactly as that machine left them.
+   */
+  static async release(
+    proposalId: string,
+    actor: string,
+    options: { force?: boolean; reason?: string } = {},
+  ): Promise<{ proposal: AgentWorkspaceProposal; released: boolean; queuedJobId: string | null }> {
+    const proposal = await this.require(proposalId);
+    const reason = options.reason?.trim() || `Workspace released by ${actor}`;
+    // Idempotent on purpose: two people pressing the button, or a button pressed after the reaper
+    // already recovered the proposal, must not turn into an error the second time.
+    if (!proposal.reservationKey) return { proposal, released: true, queuedJobId: null };
+
+    const holder = await this.liveLeaseHolder(proposal);
+    if (holder && !options.force) {
+      // Ask before refusing, so the retry this suggests has something to succeed against: a live
+      // lease also owns the worker-side flock, and a reset queued now would only fail on it.
+      await holder.update({ cancelRequestedAt: new Date(), cancelReason: reason });
+      throw new WorkspaceProposalError(
+        409,
+        `Worker is still running job ${holder.id} in this directory; cancellation has been requested`
+        + ' — retry the release once it stops, or force it if the worker is gone for good',
+      );
+    }
+    await this.stopInFlightWork(proposal, reason);
+
+    if (options.force) {
+      await proposal.update({
+        status: 'rejected',
+        reservationKey: null,
+        rejectedAt: new Date(),
+        decisionActor: actor,
+        decisionAt: new Date(),
+        // Written into `lastError` rather than swallowed: the directory was *not* restored, and no
+        // worker was there to stash it. Naming the stash that *would* have been taken is what keeps
+        // this recoverable — the next run on this directory takes exactly that stash and reports
+        // its sha back here, and until then `git stash list` on the machine finds it by that name.
+        lastError: `${reason} (forced: the directory was not restored. Whatever is left there will be`
+          + ` stashed as "${workspaceStashLabel(proposal.id, proposal.revision)}" by the next run,`
+          + ' or can be recovered by hand on the worker)',
+      });
+      await AgentPipelineService.log(proposal.latestRunId, proposal.projectId, null, 'warn',
+        `Workspace reservation force-released by ${actor}`,
+        { proposalId: proposal.id, workspacePath: proposal.workspacePath });
+      await AgentTask.update({ status: 'cancelled' }, { where: { id: proposal.taskId } });
+      return { proposal, released: true, queuedJobId: null };
+    }
+
+    // Guarded on holding the directory rather than on the status list: this is the exit of last
+    // resort, and a row whose status somehow fell outside that list while `reservationKey` is still
+    // set is exactly the row that must not be told to try again later.
+    const [changed] = await AgentWorkspaceProposal.update({
+      status: 'reset_queued', decisionActor: actor, decisionAt: new Date(), lastError: reason,
+    }, { where: { id: proposal.id, reservationKey: { [Op.ne]: null } } });
+    if (changed !== 1) throw new WorkspaceProposalError(409, 'Proposal changed while it was being released');
+    await proposal.reload();
+    let job: AgentRunJob;
+    try {
+      job = await this.enqueueAction(proposal, 'workspace_reset');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await proposal.update({ status: 'reset_failed', lastError: `${reason}; workspace reset could not be queued: ${message}` });
+      await this.recordFailureActivity(proposal, 'reset_failed', message);
+      throw error;
+    }
+    return { proposal, released: false, queuedJobId: job.id };
+  }
+
+  /**
+   * The job actually holding the directory right now, if any.
+   *
+   * Only a live lease counts: an expired one belongs to a worker that died, and
+   * AgentJobReaperService is what returns those to the queue. A job whose lease is alive owns the
+   * worker-side `flock` too, so queuing a reset against it produces nothing but a second failure.
+   */
+  private static async liveLeaseHolder(proposal: AgentWorkspaceProposal): Promise<AgentRunJob | null> {
+    return AgentRunJob.findOne({
+      where: {
+        [Op.or]: [{ proposalId: proposal.id }, { runId: proposal.latestRunId }],
+        status: { [Op.in]: ['leased', 'running'] },
+        lockedUntil: { [Op.gt]: new Date() },
+      },
+    });
+  }
+
+  /**
+   * Takes the proposal's unfinished work out of the queue before the directory changes hands.
+   *
+   * Whatever is still queued would otherwise report against a proposal that has moved on and be
+   * refused with a 409, and — worse for a `force` — a job claimed afterwards would touch a
+   * directory nobody is tracking any more. A live lease can only be *asked* to stop; the reaper
+   * collects it when it expires.
+   */
+  private static async stopInFlightWork(proposal: AgentWorkspaceProposal, reason: string): Promise<void> {
+    const jobs = await AgentRunJob.findAll({
+      where: {
+        [Op.or]: [{ proposalId: proposal.id }, { runId: proposal.latestRunId }],
+        status: { [Op.in]: ['queued', 'released', 'leased', 'running'] },
+      },
+    });
+    for (const job of jobs) {
+      await AgentRunInteractionService.closeForJob(job, 'cancelled', reason);
+      if (job.status === 'queued' || job.status === 'released') {
+        await job.update({ status: 'cancelled', cancelRequestedAt: new Date(), cancelReason: reason, lockedUntil: null });
+      } else {
+        await job.update({ cancelRequestedAt: new Date(), cancelReason: reason });
+      }
+    }
+    const run = await AgentRun.findByPk(proposal.latestRunId);
+    if (run && !['succeeded', 'failed', 'cancelled'].includes(run.status)) {
+      // An instance update: `run.cancelled` is emitted from the model's @AfterUpdate hook.
+      await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
+    }
+  }
+
+  /**
    * A pipeline can fail after the worker has written its on-disk proposal marker but before it has
    * produced anything reviewable.  That marker must be removed by the worker; releasing the
    * database reservation alone would make later runs fail on the stale marker forever.
@@ -192,12 +340,15 @@ export class AgentWorkspaceProposalService {
     proposal: AgentWorkspaceProposal,
     jobKind: 'workspace_commit_push' | 'workspace_reset',
   ): Promise<AgentRunJob> {
-    const [run, repository] = await Promise.all([
+    const [latestRun, repository] = await Promise.all([
       AgentRun.findByPk(proposal.latestRunId),
       // Absent by design when the directory pushes through its own remote; only a *pinned* repository
       // that has since been deleted is an error worth stopping for.
       proposal.repositoryId ? AgentRepository.findByPk(proposal.repositoryId) : Promise.resolve(null),
     ]);
+    // A job needs some run to hang off. Falling back to the first one keeps a reset possible when
+    // the latest run row is gone — without it a missing row would make the directory unreleasable.
+    const run = latestRun ?? await AgentRun.findByPk(proposal.initialRunId);
     if (!run) throw new WorkspaceProposalError(404, 'Proposal run is missing');
     if (proposal.repositoryId && !repository) {
       throw new WorkspaceProposalError(404, `Proposal repository ${proposal.repositoryId} no longer exists`);

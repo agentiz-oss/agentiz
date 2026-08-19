@@ -37,6 +37,12 @@
   repository is **not** required for that push: `source.repositoryId` is optional for
   `worker_workspace` + `commit`, and pinning one only adds the check that the checkout's remote still
   matches its `cloneUrl` (`_verify_remote` in `worker/src/agentiz_worker/workspace_git.py`).
+  Work already sitting in that directory when a run starts is **not** the agent's, and by default
+  the worker stashes it (`source.workspace.stashDirty`, absent = true) instead of refusing to start
+  — a file somebody forgot to commit used to stop the whole pipeline, and would otherwise land in
+  the run's diff as the agent's own. The sha is reported back as `preexistingStash` and logged on
+  the run; `stashDirty: false` restores the refusal for a directory whose contents must not move
+  without a human looking first.
   Anything filtering the job queue must be added to **both** claim sites —
   `AgentWorkerApiService.claim()` and `AgentWorkerQueueService.claimLocalJob()` — and as a column,
   not a `snapshot` field: the queue filters in SQL under `FOR UPDATE SKIP LOCKED`, and JSON filtering
@@ -288,6 +294,61 @@ curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
 only when that job reports success, so watch `agentiz.jobs`. `approvable:false` in the listing means
 approve is closed for good on that revision — a run that failed before changing anything leaves an
 empty diff, and reject is then the only exit.
+
+`reject` is a *review* decision and answers 409 in every status where nobody is reviewing anything
+(`working`, `continuing`, `apply_queued`, `reset_queued`) — which is exactly where a cancelled run
+or a dead worker leaves a proposal that still holds its directory. `release` is the exit from those:
+
+```bash
+curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
+  -d '{"action":"release","proposalId":"<id>"}' https://agentiz.m42.cx/mcp/call/agentiz.manageProposal
+```
+
+It stops whatever is still queued and queues the same reset, so the reservation still falls away
+with the worker's report — `force: true` skips the worker entirely and drops the reservation now,
+which is only right when that machine is not coming back: the files stay exactly as they were and
+the next run there fails on a workspace that is not clean until somebody cleans it. The same two
+buttons sit on the run screen under the proposal card, and a *safe* release is refused while a
+worker still holds a live lease on the directory (the job is asked to stop; retry once it has).
+
+None of this destroys work, which is what makes it safe to do automatically: `workspace_reset`
+**stashes** the directory (`git stash push -u`, plus `refs/agentiz/abandoned/<proposalId>` when the
+agent had committed) before restoring it to the base. The receipt lands on the proposal as
+`stashSha`/`abandonedRef` and in the run log — the stash *commit*, not `stash@{0}`, because the
+positional name shifts under the next stash. That is also why cancelling a run now settles its
+proposal instead of leaving it in `working`: `cancelRun` releases it whenever it terminates the run
+itself, and leaves it alone when the worker is still executing and will report anyway.
+
+Two invariants hold the whole thing up, and both are easy to break by adding an innocent-looking
+check:
+
+1. **A `workspace_reset` must never be refusable.** A reset that cannot run is a reservation that
+   cannot be released, and every refusal added to that path is a new way to wedge a directory with
+   `force` as the only exit. So `run_action` asks `job_kind == "workspace_reset"` before every
+   check it inherited from the push path: a missing or foreign marker answers *success* ("this
+   proposal no longer holds the directory"), an unreadable marker, a moved remote, a base that
+   drifted from the database and a tree that changed after review are all ignored, and the reset
+   targets the **marker's** base rather than the proposal's — the marker is what this checkout
+   actually started from. Nothing is lost by being permissive here, because the stash happens
+   first.
+2. **The stash is always nameable from the server.** `workspaceStashLabel()` in
+   `lib/workspaceGit.ts` spells the same string as `_stash_workspace` in the worker, from data the
+   server already holds, so even the one case that produces no sha — `force`, which by definition
+   has no worker — records the label the stash will get, and a person can find it with `git stash
+   list`. The sha arrives later anyway: the next pipeline run on that directory is what stashes a
+   force-released leftover (`staleMarkerAllowed`), and it reports `recoveredStash` back, which
+   `AgentWorkerApiService.recordRecoveredStash` files under the proposal it belonged to — on the
+   failure path too, since whether *that* run worked has nothing to do with the work it found.
+
+Reaching one of those statuses is not supposed to need a human at all: `AgentJobReaperService`
+sweeps them. A proposal left `working` after its run ended gets the reset queued for it, and a
+decision whose action job no worker ever claimed (`attempt` still 0 —  the lease machinery never
+sees it) reopens as `push_failed`/`reset_failed` after `AGENTIZ_PROPOSAL_ACTION_TIMEOUT_MS`
+(15 min). Neither arm ever clears `reservationKey` itself: the worker's on-disk marker outlives the
+row, so an automatic release would trade this block for a less legible one. The counterpart on the
+worker is `staleMarkerAllowed` in the job snapshot — set when the reservation table shows nobody
+holding the path, which is what lets a force-released directory drop the marker its proposal never
+got to remove.
 
 Before debugging code, check that prod is actually running the code you're reading — these drift
 independently and a fix pushed after the failed run explains the failure without any bug:

@@ -77,6 +77,21 @@ type WorkerResult = {
   };
   commitSha?: string;
   targetBranch?: string;
+  /** `workspace_reset` receipts: what the worker stashed/parked instead of deleting. */
+  stashSha?: string | null;
+  stashMessage?: string | null;
+  abandonedRef?: string | null;
+  /**
+   * What a *pipeline* job found lying in the directory from an abandoned proposal and stashed on
+   * its way in — the far end of a force-release, whose reset never ran. Belongs to the proposal it
+   * names, not to this run.
+   */
+  recoveredStash?: { proposalId?: string | null; stashSha?: string | null; stashMessage?: string | null };
+  /**
+   * Work that was already in the directory when this run started — nobody's proposal, just files
+   * someone left. Stashed on the way in unless `source.workspace.stashDirty` is false.
+   */
+  preexistingStash?: { stashSha?: string | null; stashMessage?: string | null };
   workspaceUntouched?: boolean;
   diffStats?: { files?: number; insertions?: number; deletions?: number };
   stageOutputs?: Array<{
@@ -264,6 +279,8 @@ export class AgentWorkerApiService {
       return { schemaVersion: SCHEMA_VERSION, deduplicated: true, terminalRunStatus: run?.status ?? null, resultDedupId: dedup.id };
     }
 
+    await this.recordRecoveredStash(job, payload);
+
     if (job.jobKind !== 'pipeline') {
       return this.applyWorkspaceActionResult(job, payload);
     }
@@ -447,6 +464,40 @@ export class AgentWorkerApiService {
     return diff;
   }
 
+  /**
+   * Files whatever the worker found in the directory before this run's own work started.
+   *
+   * A force-release drops the reservation without a worker, so nothing stashes the directory at
+   * that moment; the next run there does it instead, under the old proposal's name. This is the
+   * only moment the server learns that stash's sha — the run reporting it has nothing to do with
+   * the work inside it, which is why it is recorded before the result is even interpreted, and why
+   * a failure here must not fail the result: the stash exists on disk either way, and its label
+   * (`agentiz: proposal <id> ...`) is spelled from data the server already has.
+   */
+  private static async recordRecoveredStash(job: AgentRunJob, payload: WorkerResult): Promise<void> {
+    const preexisting = payload.preexistingStash;
+    if (preexisting?.stashSha) {
+      // No proposal owns this one — it predates every proposal on the directory — so the run that
+      // found it is the only place it can be filed. `listRunLogs` is what makes that findable.
+      await AgentPipelineService.log(job.runId, job.projectId, null, 'warn',
+        `В папке была работа, которую агент не делал — сохранена: git stash apply ${preexisting.stashSha}`,
+        { stashSha: preexisting.stashSha, stashMessage: preexisting.stashMessage ?? null })
+        .catch((error) => console.error('[app-agentiz] could not log a pre-existing stash:', error));
+    }
+    const recovered = payload.recoveredStash;
+    if (!recovered?.proposalId || !recovered.stashSha) return;
+    try {
+      const proposal = await AgentWorkspaceProposal.findByPk(String(recovered.proposalId));
+      // Only if it has none: a proposal whose own reset ran already reported the authoritative one.
+      if (proposal && !proposal.stashSha) await proposal.update({ stashSha: recovered.stashSha });
+      await AgentPipelineService.log(job.runId, job.projectId, null, 'warn',
+        `Найдена и сохранена работа предложения ${recovered.proposalId}: git stash apply ${recovered.stashSha}`,
+        { proposalId: recovered.proposalId, stashSha: recovered.stashSha, stashMessage: recovered.stashMessage ?? null });
+    } catch (error) {
+      console.error('[app-agentiz] could not record a recovered stash:', error);
+    }
+  }
+
   private static async applyWorkspacePipelineResult(
     job: AgentRunJob,
     run: AgentRun,
@@ -575,8 +626,22 @@ export class AgentWorkerApiService {
           data: { commitSha: payload.commitSha, targetBranch: proposal.targetBranch, revision: proposal.revision },
         });
       } else {
-        await proposal.update({ status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: null });
+        await proposal.update({
+          status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: null,
+          // Null when the directory had nothing to keep — a reject after a run that changed nothing.
+          stashSha: payload.stashSha ?? null,
+          abandonedRef: payload.abandonedRef ?? null,
+        });
         await AgentTask.update({ status: 'cancelled' }, { where: { id: proposal.taskId } });
+        if (payload.stashSha || payload.abandonedRef) {
+          // The one line that makes the stash findable months later: the proposal card shows the
+          // sha, the run log says which directory on which worker it is sitting in.
+          await AgentPipelineService.log(proposal.latestRunId, proposal.projectId, null, 'info',
+            `Отклонённые изменения сохранены в ${proposal.workspacePath}: `
+            + [payload.stashSha ? `git stash apply ${payload.stashSha}` : null, payload.abandonedRef]
+              .filter(Boolean).join(', '),
+            { proposalId: proposal.id, workerId: proposal.workerId, stashSha: payload.stashSha ?? null });
+        }
       }
       await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null, lastError: null });
     } else {

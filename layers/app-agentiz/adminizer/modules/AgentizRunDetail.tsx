@@ -78,6 +78,9 @@ interface WorkspaceProposal {
   revision: number;
   status: string;
   workspacePath: string;
+  /** Non-null while this proposal blocks every other run on its directory. */
+  reservationKey?: string | null;
+  workerId?: string;
   baseSha: string | null;
   baseBranch: string | null;
   expectedTreeSha: string | null;
@@ -87,6 +90,8 @@ interface WorkspaceProposal {
   decisionActor?: string | null;
   decisionAt?: string | null;
   lastError?: string | null;
+  stashSha?: string | null;
+  abandonedRef?: string | null;
   pushedCommitSha?: string | null;
 }
 
@@ -126,6 +131,19 @@ const NOTIFICATIONS_URL = `${PREFIX}/agentiz-notifications`;
 
 /** Read on this screen, not edited: the events a run produces, in the order they matter here. */
 const RUN_NOTIFY_TYPES = ["interaction.created", "proposal.waiting_review", "run.failed", "run.succeeded"];
+
+/**
+ * Statuses in which nobody is reviewing anything and only a worker report could move the proposal
+ * on — the states where the directory used to stay reserved with no button anywhere.
+ */
+const STUCK_PROPOSAL_STATUSES = ["working", "continuing", "apply_queued", "applying", "reset_queued", "resetting"];
+
+/**
+ * Where the escape hatch is offered: the safe release has either already failed or is waiting on a
+ * worker that may never answer. Deliberately not on `waiting_review` — there the ordinary reject
+ * does the same thing properly, and forcing would only leave the directory dirty for no reason.
+ */
+const FORCEABLE_PROPOSAL_STATUSES = [...STUCK_PROPOSAL_STATUSES, "push_failed", "reset_failed"];
 const PUSH_TITLES: Record<string, string> = { on: "будит", silent: "тихо", off: "не шлём" };
 
 /**
@@ -378,7 +396,18 @@ const AgentizRunDetail: React.FC = () => {
     const proposal = details?.proposal;
     if (!proposal) return;
     if (method === "rejectWorkspaceProposal" && !window.confirm(
-      `Все отслеживаемые изменения в ${proposal.workspacePath} будут возвращены к ${proposal.baseSha}, новые неотслеживаемые файлы будут удалены. Игнорируемые файлы сохранятся. Продолжить?`,
+      `Каталог ${proposal.workspacePath} вернётся к ${(proposal.baseSha ?? "").slice(0, 12)}.`
+      + " Работа агента не пропадёт: воркер уберёт её в git stash, sha появится в этой же карточке."
+      + " Игнорируемые файлы останутся на месте. Продолжить?",
+    )) return;
+    if (method === "releaseWorkspaceProposal" && !window.confirm(extra.force
+      ? `Резерв на ${proposal.workspacePath} будет снят немедленно, без участия воркера.`
+        + " Каталог никто не тронет — и не приберёт: незакоммиченная работа и служебный маркер останутся"
+        + " на машине как есть, stash сделать некому, и следующий запуск здесь будет падать, пока каталог"
+        + " не почистят руками. Так стоит делать, только если воркер уже не вернётся. Продолжить?"
+      : `Текущая работа над ${proposal.workspacePath} будет остановлена, каталог возвращён к`
+        + ` ${(proposal.baseSha ?? "").slice(0, 12)}, а всё несохранённое уйдёт в git stash.`
+        + " Резерв снимется, когда воркер отчитается. Продолжить?",
     )) return;
     setBusy(true);
     setError(null);
@@ -482,6 +511,14 @@ const AgentizRunDetail: React.FC = () => {
                 {details!.proposal.expectedTreeSha && <> · tree <code>{details!.proposal.expectedTreeSha.slice(0, 12)}</code></>}
               </div>
               {details!.proposal.lastError && <div className="mt-2 text-sm" style={{ color: "#b91c1c" }}>{details!.proposal.lastError}</div>}
+              {(details!.proposal.stashSha || details!.proposal.abandonedRef) && (
+                <div className="mt-2 text-xs">
+                  Работа из отклонённой ревизии не потеряна — она лежит на воркере в{" "}
+                  <code>{details!.proposal.workspacePath}</code>:
+                  {details!.proposal.stashSha && <> <code>git stash apply {details!.proposal.stashSha.slice(0, 12)}</code></>}
+                  {details!.proposal.abandonedRef && <> коммит в <code>{details!.proposal.abandonedRef}</code></>}
+                </div>
+              )}
               {details!.revisions.length > 1 && (
                 <div className="mt-2 text-xs">История: {details!.revisions.map((revision) => (
                   <span key={revision.id} className="mr-2">#{revision.revision}: {revision.stats?.files ?? 0} файл(ов)</span>
@@ -517,6 +554,32 @@ const AgentizRunDetail: React.FC = () => {
               )}
               {details!.proposal.status === "reset_failed" && (
                 <button onClick={() => proposalAction("rejectWorkspaceProposal")} disabled={busy} className="mt-3 rounded border px-3 py-1.5 text-xs" style={{ borderColor: "#ef4444", color: "#b91c1c" }}>Повторить безопасный reset</button>
+              )}
+              {details!.proposal.reservationKey && (
+                <div className="mt-4 border-t pt-3 text-xs" style={{ borderColor: "#ddd6fe" }}>
+                  <div className="text-muted-foreground">
+                    Пока это предложение не решено, <code>{details!.proposal.workspacePath}</code> закрыт
+                    для всех остальных запусков — они падают с «Workspace is reserved by proposal».
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {STUCK_PROPOSAL_STATUSES.includes(details!.proposal.status) && (
+                      <button
+                        onClick={() => proposalAction("releaseWorkspaceProposal")}
+                        disabled={busy}
+                        className="rounded border px-3 py-1.5 text-xs disabled:opacity-50"
+                        style={{ borderColor: "#ef4444", color: "#b91c1c" }}
+                      >Освободить workspace</button>
+                    )}
+                    {FORCEABLE_PROPOSAL_STATUSES.includes(details!.proposal.status) && (
+                      <button
+                        onClick={() => proposalAction("releaseWorkspaceProposal", { force: true })}
+                        disabled={busy}
+                        className="rounded border px-3 py-1.5 text-xs disabled:opacity-50"
+                        style={{ borderColor: "#ef4444", color: "#b91c1c" }}
+                      >Снять резерв принудительно</button>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           )}

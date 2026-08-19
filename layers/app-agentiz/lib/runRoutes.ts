@@ -268,6 +268,21 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
           return res.json({ data: proposal.toJSON() });
         }
 
+        // Deliberately takes no revision: this is the exit from the statuses where nobody is
+        // reviewing anything, and refusing it over a stale revision would keep the directory locked
+        // for the sake of an optimistic check on a decision that is not being made.
+        if (method === 'releaseWorkspaceProposal') {
+          const outcome = await AgentWorkspaceProposalService.release(
+            str(req.body?.proposalId), actorOf(req).name,
+            { force: req.body?.force === true || str(req.body?.force) === 'true' },
+          );
+          return res.json({
+            data: outcome.proposal.toJSON(),
+            released: outcome.released,
+            queuedJobId: outcome.queuedJobId,
+          });
+        }
+
         if (method === 'answerInteraction') {
           const interactionId = str(req.body?.interactionId);
           if (!interactionId) return res.status(400).json({ message: 'interactionId is required' });

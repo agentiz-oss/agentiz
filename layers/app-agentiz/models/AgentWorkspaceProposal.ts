@@ -64,6 +64,13 @@ export class AgentWorkspaceProposal extends Model<
   @Column({ type: DataType.STRING, allowNull: true }) declare decisionActor: string | null;
   @Column({ type: DataType.DATE, allowNull: true }) declare decisionAt: Date | null;
   @Column({ type: DataType.TEXT, allowNull: true }) declare lastError: string | null;
+  /**
+   * Where a rejected proposal's work was put. `workspace_reset` stashes the directory rather than
+   * deleting it, so this is the receipt: the stash *commit* (`stash@{0}` shifts under the next
+   * stash, this does not), and the ref parking a commit the agent made before the reject.
+   */
+  @Column({ type: DataType.STRING, allowNull: true }) declare stashSha: string | null;
+  @Column({ type: DataType.STRING, allowNull: true }) declare abandonedRef: string | null;
   @Column({ type: DataType.STRING, allowNull: true }) declare pushedCommitSha: string | null;
   @Column({ type: DataType.DATE, allowNull: true }) declare pushedAt: Date | null;
   @Column({ type: DataType.DATE, allowNull: true }) declare rejectedAt: Date | null;

@@ -104,8 +104,58 @@ def workspace_lock(path: Path) -> Iterator[Path]:
         yield root
 
 
+def _recover_stale_marker(root: Path, proposal_id: str | None, allow_stale: bool,
+                          report: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Clears a marker left by a proposal the server no longer knows about, keeping its work.
+
+    The marker is only the server's reservation written where this process can see it, so the
+    server decides it is stale: `allowStaleMarker` in the job means nothing holds this directory
+    any more. Without this, a reservation released while the worker was down would keep blocking
+    the path forever, with no proposal left anywhere to point a person at.
+
+    Three things have to go right for that to be a real exit rather than a different wall:
+
+    - a marker that cannot be parsed is stale too. It names no proposal, so nothing can ever match
+      it, and refusing to read it would leave `rm` as the only way out;
+    - whatever the abandoned proposal left in the directory goes into a stash under *its* name, not
+      into the next run's diff and not into the bin. The first-run path insists on a clean tree, so
+      without this the directory would simply fail one message later;
+    - the stash is reported back through `report`, so the server can write the sha onto the
+      proposal it belonged to. A stash nobody can name is barely better than a deletion.
+    """
+    try:
+        marker = _load_marker(root)
+    except WorkspaceGitError:
+        if not allow_stale:
+            raise
+        _remove_marker(root)
+        if report is not None:
+            report["recovered"] = {"proposalId": None, **(_stash_workspace(root, {}) or {})}
+        return None
+    if not marker or marker.get("proposalId") == proposal_id:
+        return marker
+    if not allow_stale:
+        raise WorkspaceGitError(f"Workspace is reserved by proposal {marker.get('proposalId')}")
+    stale_id = str(marker.get("proposalId") or "unknown")
+    stash = _stash_workspace(root, {"id": marker.get("proposalId"), "revision": marker.get("revision")})
+    # The commits too, and for the same reason the reset does it: a stash covers the working tree
+    # only, and leaving HEAD ahead of the remote would just move the wall one message along — the
+    # first-run path below fast-forwards to the remote and cannot do that from a diverged HEAD.
+    abandoned = None
+    head = _git(root, ["rev-parse", "HEAD"])
+    base_sha = str(marker.get("baseSha") or "")
+    if base_sha and head != base_sha and _git(root, ["cat-file", "-e", f"{base_sha}^{{commit}}"], check=False) == "":
+        abandoned = _keep_abandoned_commits(root, stale_id, head, base_sha)
+        _git(root, ["reset", "--hard", base_sha])
+    _remove_marker(root)
+    if report is not None:
+        report["recovered"] = {"proposalId": marker.get("proposalId"), "abandonedRef": abandoned, **(stash or {})}
+    return None
+
+
 @contextmanager
-def guard_workspace(path: Path, proposal_id: str | None = None) -> Iterator[Path]:
+def guard_workspace(path: Path, proposal_id: str | None = None, allow_stale_marker: bool = False,
+                    report: dict[str, Any] | None = None) -> Iterator[Path]:
     """Lock a Git workspace for one process and enforce any persistent proposal marker.
 
     Non-Git prepared directories keep their historical behaviour and simply pass through.
@@ -116,9 +166,7 @@ def guard_workspace(path: Path, proposal_id: str | None = None) -> Iterator[Path
         yield path
         return
     with workspace_lock(Path(probe.stdout.strip())) as root:
-        marker = _load_marker(root)
-        if marker and marker.get("proposalId") != proposal_id:
-            raise WorkspaceGitError(f"Workspace is reserved by proposal {marker.get('proposalId')}")
+        _recover_stale_marker(root, proposal_id, allow_stale_marker, report)
         yield root
 
 
@@ -142,7 +190,10 @@ def _verify_remote(root: Path, remote: str, expected_url: str) -> str:
     return safe_remote_url(actual)
 
 
-def preflight(path: Path, proposal: dict[str, Any], repository: dict[str, Any] | None) -> tuple[Path, dict[str, Any]]:
+def preflight(path: Path, proposal: dict[str, Any], repository: dict[str, Any] | None,
+              allow_stale_marker: bool = False,
+              report: dict[str, Any] | None = None,
+              stash_dirty: bool = True) -> tuple[Path, dict[str, Any]]:
     """Reserve/check a checkout before an agent is allowed to touch it."""
     root = Path(_git(path, ["rev-parse", "--show-toplevel"])).resolve()
     proposal_id = str(proposal.get("id") or "")
@@ -152,11 +203,21 @@ def preflight(path: Path, proposal: dict[str, Any], repository: dict[str, Any] |
     remote = str(proposal.get("remote") or "origin")
     if not proposal_id or revision < 1:
         raise WorkspaceGitError("Workspace Git job is missing proposal identity")
-    marker = _load_marker(root)
+    marker = _recover_stale_marker(root, proposal_id, allow_stale_marker, report)
     if marker is None:
         dirty = _git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
-        if dirty:
-            raise WorkspaceGitError("Managed workspace must be clean before the first proposal run")
+        if dirty and stash_dirty:
+            # Not the agent's work — it was here before the run started. Refusing over it used to
+            # stop the whole pipeline on a file somebody forgot to commit weeks ago; the stash keeps
+            # it intact and reports where it went, which answers the same worry without the wall.
+            preexisting = _stash_workspace(root, {"id": f"pre-existing before {proposal_id}"})
+            if report is not None and preexisting:
+                report["preexisting"] = preexisting
+        elif dirty:
+            raise WorkspaceGitError(
+                "Managed workspace must be clean before the first proposal run"
+                " (set source.workspace.stashDirty to stash it instead)",
+            )
         base_sha = _git(root, ["rev-parse", "HEAD"])
         try:
             base_branch = _git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"])
@@ -210,16 +271,84 @@ def finalize_action(path: Path, proposal_id: str) -> None:
         _remove_marker(root)
 
 
+def _stash_identity(root: Path) -> list[str]:
+    """`git stash` writes commit objects, so it needs an identity the plain reset never did.
+
+    Only supplied when the checkout has none: overriding a configured one would put Agentiz's name
+    on a stash of somebody else's work.
+    """
+    if _git(root, ["config", "user.email"], check=False) and _git(root, ["config", "user.name"], check=False):
+        return []
+    return ["-c", "user.name=Agentiz", "-c", "user.email=agentiz@localhost"]
+
+
+def _stash_workspace(root: Path, proposal: dict[str, Any]) -> dict[str, Any] | None:
+    """Puts everything the agent left in the directory into a stash instead of deleting it.
+
+    A reject is a verdict on a *proposal*, not on the files: whoever pressed it is saying "do not
+    commit this", and had no way to know whether something in there is worth keeping. The stash is
+    what makes that decision reversible — and what lets the server queue a reset on its own (a
+    cancelled run, a stranded proposal) without asking anyone first.
+
+    Ignored files stay where they are, exactly as `git clean -fd` left them before.
+    """
+    if not _git(root, ["status", "--porcelain=v1", "--untracked-files=all"]):
+        return None
+    # The server can spell this label without asking the worker, which is what makes a stash
+    # findable (`git stash list`) even when the sha never made it back — an unreadable marker
+    # leaves no proposal id, and only then does the label fall back to the time.
+    name = proposal.get("id") or "unknown"
+    revision = proposal.get("revision")
+    label = f"agentiz: proposal {name}" + (f" revision {revision}" if revision else "")
+    _git(root, [*_stash_identity(root), "stash", "push", "--include-untracked", "--message", label])
+    # The stash *commit*, not `stash@{0}`: the positional name shifts under the next stash, and this
+    # sha stays valid for `git stash apply` even after the entry is dropped.
+    return {"stashSha": _git(root, ["rev-parse", "refs/stash"]), "stashMessage": label}
+
+
+def _keep_abandoned_commits(root: Path, proposal_id: str, head: str, base_sha: str) -> str | None:
+    """Parks HEAD under `refs/agentiz/abandoned/` when the agent committed before the reject.
+
+    A stash covers the working tree only. Resetting over a commit would leave it reachable through
+    the reflog alone — until gc, which is not a promise worth making about someone's work.
+    """
+    if head == base_sha:
+        return None
+    ref = f"refs/agentiz/abandoned/{proposal_id}"
+    _git(root, ["update-ref", ref, head])
+    return ref
+
+
 def run_action(path: Path, job_kind: str, proposal: dict[str, Any], repository: dict[str, Any] | None) -> dict[str, Any]:
     with workspace_lock(path) as root:
-        marker = _load_marker(root)
+        # A reset that cannot run is a reservation that cannot be released, so every check below
+        # asks whether it applies to a *reset* before it refuses one. A reset is local, reversible
+        # and idempotent: it pushes nothing, it stashes before it touches anything, and being asked
+        # to release a directory this proposal no longer holds is a success, not a conflict.
+        try:
+            marker = _load_marker(root)
+        except WorkspaceGitError:
+            if job_kind != "workspace_reset":
+                raise
+            marker = None
         if not marker or marker.get("proposalId") != proposal.get("id"):
+            if job_kind == "workspace_reset":
+                return {"summary": "Workspace is no longer held by this proposal; nothing to reset",
+                        "stashSha": None, "stashMessage": None, "abandonedRef": None}
             raise WorkspaceGitError("Workspace proposal marker is missing or belongs to another proposal")
-        if marker.get("baseSha") != proposal.get("baseSha"):
-            raise WorkspaceGitError("Workspace base SHA no longer matches the reviewed proposal")
-        _verify_remote(root, str(proposal.get("remote") or "origin"), str((repository or {}).get("cloneUrl") or ""))
+        if job_kind != "workspace_reset":
+            if marker.get("baseSha") != proposal.get("baseSha"):
+                raise WorkspaceGitError("Workspace base SHA no longer matches the reviewed proposal")
+            # Local-only: a reset neither reads nor writes the remote, and refusing to restore a
+            # directory because somebody repointed `origin` would be obstruction, not safety.
+            _verify_remote(root, str(proposal.get("remote") or "origin"), str((repository or {}).get("cloneUrl") or ""))
         if marker.get("actionCompleted") == "reset" and job_kind == "workspace_reset":
-            return {"summary": f"Workspace reset to {str(marker['baseSha'])[:12]}"}
+            stash = marker.get("stash") or {}
+            return {
+                "summary": f"Workspace reset to {str(marker['baseSha'])[:12]}",
+                "stashSha": stash.get("stashSha"),
+                "stashMessage": stash.get("stashMessage"),
+            }
         if marker.get("actionCompleted") == "push" and job_kind == "workspace_commit_push":
             commit_sha = str(marker.get("commitSha") or "")
             target = str(marker.get("targetBranch") or "")
@@ -229,10 +358,16 @@ def run_action(path: Path, job_kind: str, proposal: dict[str, Any], repository: 
         _git(root, ["add", "-A"])
         tree_sha = _git(root, ["write-tree"])
         expected_tree = proposal.get("expectedTreeSha")
-        if expected_tree:
+        if job_kind == "workspace_reset":
+            # Deliberately unchecked. This check exists so a commit cannot deliver something nobody
+            # reviewed; a reset delivers nothing and stashes whatever it finds, so a tree that moved
+            # after review is a reason to save more, never a reason to refuse and wedge the
+            # directory in `reset_failed` with force as the only way out.
+            pass
+        elif expected_tree:
             if tree_sha != expected_tree:
                 raise WorkspaceGitError("Workspace tree changed after review; refusing a destructive Git action")
-        elif job_kind != "workspace_reset":
+        else:
             # A run that never reported a diff leaves no reviewed tree. A commit must not invent an
             # approval, but a reset is the operator discarding the directory on purpose — refusing it
             # would wedge the workspace for good, since the reservation is released only when a reset
@@ -240,15 +375,39 @@ def run_action(path: Path, job_kind: str, proposal: dict[str, Any], repository: 
             raise WorkspaceGitError("Workspace proposal has no reviewed tree; commit/push is blocked")
 
         if job_kind == "workspace_reset":
-            base_sha = str(proposal["baseSha"])
-            base_branch = str(proposal["baseBranch"])
+            # The marker over the proposal: it records what this checkout actually started from, and
+            # the two differ exactly when the database and the disk disagree — the case where
+            # trusting the database would move a directory somewhere it has never been.
+            base_sha = str(marker.get("baseSha") or proposal["baseSha"])
+            base_branch = str(marker.get("baseBranch") or proposal["baseBranch"])
+            # Before anything moves: the stash has to be taken on the branch the work was done on.
+            stash = _stash_workspace(root, proposal)
+            abandoned = _keep_abandoned_commits(
+                root, str(proposal.get("id")), _git(root, ["rev-parse", "HEAD"]), base_sha,
+            )
             if _git(root, ["rev-parse", "--abbrev-ref", "HEAD"]) != base_branch:
                 _git(root, ["checkout", "-f", base_branch])
             _git(root, ["reset", "--hard", base_sha])
+            # Still needed after a stash: empty directories and anything `stash push` declined.
             _git(root, ["clean", "-fd"])
             marker["actionCompleted"] = "reset"
+            if stash:
+                marker["stash"] = stash
             _save_marker(root, marker)
-            return {"summary": f"Workspace reset to {base_sha[:12]}"}
+            kept = []
+            if stash:
+                kept.append(f"stash {stash['stashSha'][:12]}")
+            if abandoned:
+                kept.append(abandoned)
+            summary = f"Workspace reset to {base_sha[:12]}"
+            if kept:
+                summary += f"; work kept as {', '.join(kept)}"
+            return {
+                "summary": summary,
+                "stashSha": stash["stashSha"] if stash else None,
+                "stashMessage": stash["stashMessage"] if stash else None,
+                "abandonedRef": abandoned,
+            }
 
         if job_kind != "workspace_commit_push":
             raise WorkspaceGitError(f"Unknown workspace action {job_kind}")

@@ -59,7 +59,17 @@ export interface RunWorkspaceRef {
   label: string | null;
   /** Create `path` if it does not exist yet, instead of failing. Only ever true for a `path`-named workspace. */
   createIfMissing: boolean;
+  /** Stash work already in the directory rather than refusing the run. See PipelineWorkerWorkspaceDef. */
+  stashDirty: boolean;
   git: { pushEnabled: boolean; remote: string } | null;
+  /**
+   * Set when no proposal holds this directory in the database, which makes any marker still lying
+   * in the checkout stale by definition — the reservation table is the authority on who owns a
+   * directory, and the marker is only that decision written where the worker can see it. Without
+   * this a force-released reservation (a worker that never came back to run its reset) would leave
+   * the path blocked by its own leftovers, with no proposal left anywhere to point a person at.
+   */
+  staleMarkerAllowed?: boolean;
 }
 
 export interface RunConversation {
@@ -591,17 +601,50 @@ export class AgentPipelineService {
       await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
       await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(run.taskId, 'cancelled');
       await writeLog(run.id, run.projectId, null, 'warn', `Queued run cancelled: ${reason}`);
+      await this.releaseProposalAfterCancel(run, reason);
       return run;
     }
     if (job && (job.status === 'leased' || job.status === 'running')) {
       await job.update({ cancelRequestedAt: new Date(), cancelReason: reason });
       await writeLog(run.id, run.projectId, null, 'warn', `Cancel requested for worker job: ${reason}`);
+      // The proposal is deliberately left alone: this run is still executing, and its own result
+      // decides the workspace — the worker is the only thing that can clear its on-disk marker.
       return run;
     }
     await run.update({ status: 'cancelled', finishedAt: new Date(), errorMessage: reason });
     await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(run.taskId, 'cancelled');
     await writeLog(run.id, run.projectId, null, 'warn', `Run cancelled: ${reason}`);
+    await this.releaseProposalAfterCancel(run, reason);
     return run;
+  }
+
+  /**
+   * Cancelling a run also settles the workspace it had reserved.
+   *
+   * Until this existed, "отменить" left the proposal in `working` holding the directory against
+   * every later run, with `reject` answering 409 because there was nothing to review — the single
+   * most common way a workspace got stuck. Answering it as a reject is safe now that a reset
+   * stashes rather than deletes: the files survive as `stash apply <sha>` on the worker, and
+   * nothing the person cancelling might have wanted is spent.
+   *
+   * Never fatal to the cancel itself. If queuing the reset fails the run is still cancelled, and
+   * AgentJobReaperService picks the stranded proposal up on its next sweep.
+   */
+  private static async releaseProposalAfterCancel(run: AgentRun, reason: string): Promise<void> {
+    if (!run.proposalId) return;
+    const proposal = await AgentWorkspaceProposal.findByPk(run.proposalId);
+    if (!proposal?.reservationKey) return;
+    try {
+      const { AgentWorkspaceProposalService } = await import('./AgentWorkspaceProposalService');
+      await AgentWorkspaceProposalService.release(proposal.id, 'system:cancel', { reason });
+      await writeLog(run.id, run.projectId, null, 'info',
+        `Workspace ${proposal.workspacePath} освобождается: изменения уйдут в git stash`,
+        { proposalId: proposal.id });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeLog(run.id, run.projectId, null, 'warn',
+        `Не удалось освободить workspace после отмены: ${message}`, { proposalId: proposal.id });
+    }
   }
 
   static async log(
@@ -731,8 +774,18 @@ export class AgentWorkerJobBuilder {
         // Name the path as well when the spec used a key: the two differ precisely in the case this
         // check exists for, and the id alone sent the last investigation to the wrong proposal.
         const named = workspace.key ? `"${workspace.key}" (${workspace.path})` : `"${workspace.path}"`;
-        throw new Error(`Workspace ${named} is reserved by proposal ${reservation.id}`);
+        // A bare id is where every one of these investigations stalled: it says nothing about which
+        // task is holding the directory, whether anyone can still decide it, or where the button is.
+        const holder = await AgentTask.findByPk(reservation.taskId);
+        throw new Error(
+          `Workspace ${named} is reserved by proposal ${reservation.id}`
+          + ` (${reservation.status}, task "${holder?.title ?? reservation.taskId}")`
+          + ` — decide or release it on the run screen: /dashboard/agentiz-runs?runId=${reservation.latestRunId}`,
+        );
       }
+      // No reservation ⇒ nothing owns the directory, so a marker left in it belongs to a proposal
+      // that is already over and the worker may drop it. See RunWorkspaceRef.staleMarkerAllowed.
+      workspace.staleMarkerAllowed = !reservation;
     }
 
     // finalAction 'none' never touches git (see finalize()), so a task-manager-only project with
@@ -941,6 +994,9 @@ export class AgentWorkerJobBuilder {
         path: directory,
         label: null,
         createIfMissing: !!ref.createIfMissing,
+        // Absent means stash: a spec written before this field existed gets the new default too,
+        // which is the point — refusing over somebody's forgotten file is what it used to do.
+        stashDirty: ref.stashDirty !== false,
         git: worker.gitPushGrant(directory),
       };
     }
@@ -960,6 +1016,7 @@ export class AgentWorkerJobBuilder {
       path: directory,
       label: declared.label ?? null,
       createIfMissing: false,
+      stashDirty: ref.stashDirty !== false,
       git: worker.gitPushGrant(directory, declared),
     };
   }
