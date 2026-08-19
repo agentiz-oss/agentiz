@@ -183,24 +183,36 @@ function resolveChannel<T extends string>(
 }
 
 /**
- * The delivery decision for one event: scopes from specific to general, per channel. Events with
- * no run (hence no known pipeline) simply skip the pipeline scope.
+ * The delivery decision for one event against a given document: scopes from specific to general,
+ * per channel. Events with no run (hence no known pipeline) simply skip the pipeline scope.
+ *
+ * Taking the document as an argument is what lets an editor answer "and what would apply if this
+ * scope's entry were removed" — resolve the same type against a copy without that entry.
  */
-export function effectiveActivityPolicy(
+export function resolveActivityPolicy(
+  document: NotifyPolicyDocument,
   type: string,
-  projectId: string,
+  projectId?: string | null,
   pipelineSpecId?: string | null,
 ): ActivityChannelPolicy {
-  const document = notifyPolicy();
   const builtin = builtinActivityDefaults()[type];
   if (!builtin) throw new Error(`Unknown activity type "${type}"`);
   const scopes = [
     pipelineSpecId ? document.pipelines?.[pipelineSpecId] : undefined,
-    document.projects?.[projectId],
+    projectId ? document.projects?.[projectId] : undefined,
     document.defaults,
   ];
   return {
     push: resolveChannel(scopes, type, 'push', builtin.push),
     dashboard: resolveChannel(scopes, type, 'dashboard', builtin.dashboard),
   };
+}
+
+/** The decision in force right now: `resolveActivityPolicy` against the document actually stored. */
+export function effectiveActivityPolicy(
+  type: string,
+  projectId: string,
+  pipelineSpecId?: string | null,
+): ActivityChannelPolicy {
+  return resolveActivityPolicy(notifyPolicy(), type, projectId, pipelineSpecId);
 }

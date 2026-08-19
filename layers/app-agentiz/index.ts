@@ -53,7 +53,7 @@ import { registerActivityNotifier, unregisterActivityNotifier } from './lib/acti
 import { DashboardActivityNotifier } from './lib/notifications/DashboardActivityNotifier';
 import { forgetAdminizerNotifications, useAdminizerNotifications } from './lib/notifications/dashboardNotifications';
 import { forgetNotifySettingStorage, notifyPolicySettingSlots, useNotifySettingStorage } from './lib/notifications/policySettings';
-import { NotificationPolicyService } from './services/NotificationPolicyService';
+import { NotificationPolicyService, type PolicyScopeRef } from './services/NotificationPolicyService';
 import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTaskManager';
 import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerCollection';
 import type { TaskManagerAdapter } from './lib/taskManager';
@@ -70,6 +70,17 @@ import type { IMcpTool } from '@nodeknit/app-mcp';
 
 /** Sync cadence for every active project. Per-project pollIntervalSec is honoured inside the tick. */
 const SYNC_CRON = process.env.AGENTIZ_SYNC_CRON ?? '*/10 * * * *';
+
+/** `scope`/`id` off a query string or a body, as the notification-policy editor sends them. */
+function notifyScopeRef(input: any): PolicyScopeRef {
+    const scope = String(input?.scope ?? 'defaults');
+    if (scope === 'defaults') return { scope: 'defaults' };
+    const id = typeof input?.id === 'string' ? input.id : '';
+    if (!id) throw new Error(`scope=${scope} requires an id`);
+    if (scope === 'project') return { scope: 'project', id };
+    if (scope === 'pipeline') return { scope: 'pipeline', id };
+    throw new Error(`Unknown scope "${scope}"; use defaults, project or pipeline`);
+}
 
 export class AppAgentiz extends AbstractApp {
     appId: string = 'app-agentiz';
@@ -238,6 +249,14 @@ export class AppAgentiz extends AbstractApp {
                     });
                 }
 
+                if (method === 'getNotificationPolicy') {
+                    try {
+                        return res.json({ data: await NotificationPolicyService.describeScope(notifyScopeRef(req.query)) });
+                    } catch (error: any) {
+                        return res.status(400).json({ message: error?.message ?? String(error) });
+                    }
+                }
+
                 return req.Inertia.render({
                     component: 'module',
                     props: {
@@ -280,6 +299,17 @@ export class AppAgentiz extends AbstractApp {
                         // its own repository plus every configured task manager.
                         const sources = await TaskSourceSyncService.syncProject(projectId);
                         return res.json({ data: { ...result, sources } });
+                    }
+
+                    // One scope at a time, merged into the stored document — see patchScope: the
+                    // project card, the pipeline editor and the defaults page all write here.
+                    if (method === 'setNotificationPolicy') {
+                        const entry = req.body?.entry ?? null;
+                        const data = await NotificationPolicyService.patchScope(
+                            notifyScopeRef(req.body),
+                            entry === null ? null : entry,
+                        );
+                        return res.json({ data });
                     }
 
                     if (method === 'syncAll') {

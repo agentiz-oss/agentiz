@@ -135,6 +135,80 @@ describe('NotificationPolicyService', () => {
     expect(result.document.defaults).toEqual({ 'run.failed': { push: 'off' } });
   });
 
+  it('patches one scope and carries every other scope through untouched', async () => {
+    await NotificationPolicyService.set({
+      defaults: { 'run.succeeded': { push: 'off' } },
+      pipelines: { [specId]: { 'run.failed': { push: 'silent' } } },
+    });
+
+    await NotificationPolicyService.patchScope({ scope: 'project', id: projectId }, { mute: true });
+
+    const document = NotificationPolicyService.describe().document;
+    expect(document.projects).toEqual({ [projectId]: { mute: true } });
+    expect(document.defaults).toEqual({ 'run.succeeded': { push: 'off' } });
+    expect(document.pipelines).toEqual({ [specId]: { 'run.failed': { push: 'silent' } } });
+  });
+
+  it('removes a scope entry on patchScope(..., null) without touching the rest', async () => {
+    await NotificationPolicyService.set({
+      defaults: { 'run.succeeded': { push: 'off' } },
+      projects: { [projectId]: { mute: true } },
+    });
+
+    await NotificationPolicyService.patchScope({ scope: 'project', id: projectId }, null);
+
+    const document = NotificationPolicyService.describe().document;
+    expect(document.projects ?? {}).toEqual({});
+    expect(document.defaults).toEqual({ 'run.succeeded': { push: 'off' } });
+  });
+
+  it('patches over the stored document, not the one the environment shadows', async () => {
+    await NotificationPolicyService.set({ defaults: { 'run.succeeded': { push: 'off' } } });
+    process.env[NOTIFY_POLICY_KEY] = JSON.stringify({ defaults: { 'run.failed': { push: 'off' } } });
+
+    await NotificationPolicyService.patchScope({ scope: 'project', id: projectId }, { mute: true });
+
+    delete process.env[NOTIFY_POLICY_KEY];
+    // The environment's document must not have been merged into the store while it was shadowing.
+    expect(NotificationPolicyService.describe().document).toEqual({
+      defaults: { 'run.succeeded': { push: 'off' } },
+      projects: { [projectId]: { mute: true } },
+    });
+  });
+
+  it('describes a scope with what it stores, what applies and what it inherits', async () => {
+    await NotificationPolicyService.set({
+      defaults: { 'run.succeeded': { push: 'off' } },
+      projects: { [projectId]: { 'run.succeeded': { push: 'on' } } },
+    });
+
+    const view = await NotificationPolicyService.describeScope({ scope: 'project', id: projectId });
+    const row = view.types.find((item) => item.type === 'run.succeeded')!;
+
+    expect(view.mute).toBe(false);
+    expect(row.own).toEqual({ push: 'on' });
+    expect(row.effective.push).toBe('on');
+    // Without this scope's entry the defaults would answer.
+    expect(row.inherited.push).toBe('off');
+  });
+
+  it('resolves a pipeline scope through its own project', async () => {
+    await NotificationPolicyService.set({
+      projects: { [projectId]: { mute: true } },
+      pipelines: { [specId]: { 'run.failed': { push: 'on' } } },
+    });
+
+    const view = await NotificationPolicyService.describeScope({ scope: 'pipeline', id: specId });
+    const failed = view.types.find((item) => item.type === 'run.failed')!;
+    const succeeded = view.types.find((item) => item.type === 'run.succeeded')!;
+
+    expect(failed.effective.push).toBe('on');
+    expect(failed.inherited.push).toBe('off');
+    // Says nothing here, so the project's mute is both effective and inherited.
+    expect(succeeded.own).toEqual({});
+    expect(succeeded.effective.push).toBe('off');
+  });
+
   it('removes the stored document on set(null)', async () => {
     await NotificationPolicyService.set({ defaults: { 'run.failed': { push: 'off' } } });
     expect(NotificationPolicyService.describe().source).toBe('settings');

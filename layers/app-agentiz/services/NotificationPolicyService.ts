@@ -8,6 +8,10 @@ import {
   notifyPolicy,
   notifyPolicyJsonSchema,
   notifyPolicySource,
+  resolveActivityPolicy,
+  storedNotifyPolicy,
+  type ActivityPolicyEntry,
+  type ActivityPolicyScope,
   type NotifyPolicyDocument,
   type NotifyPolicySource,
 } from '../lib/notifications/policySettings';
@@ -34,6 +38,35 @@ export interface NotifyPolicySummary {
   builtinDefaults: Record<string, ActivityChannelPolicy>;
   /** The catalogue, for UIs building the type × channel matrix. */
   types: Array<{ type: string; kind: string; label: string }>;
+  warnings: string[];
+}
+
+/** Which of the document's three scopes an editor is pointed at. */
+export type PolicyScopeRef =
+  | { scope: 'defaults'; id?: undefined }
+  | { scope: 'project'; id: string }
+  | { scope: 'pipeline'; id: string };
+
+/** One type's row in a scope editor: what this scope says, what applies, what would apply without it. */
+export interface PolicyScopeTypeView {
+  type: string;
+  kind: string;
+  label: string;
+  /** Only what *this* scope stores — the editor's own state, empty when it says nothing. */
+  own: ActivityPolicyEntry;
+  /** What is delivered today, this scope included. */
+  effective: ActivityChannelPolicy;
+  /** What would be delivered if this scope's entry were removed — the "наследуется" hint. */
+  inherited: ActivityChannelPolicy;
+}
+
+export interface PolicyScopeView {
+  scope: PolicyScopeRef['scope'];
+  id?: string;
+  mute: boolean;
+  types: PolicyScopeTypeView[];
+  source: NotifyPolicySource;
+  shadowedByEnvironment: boolean;
   warnings: string[];
 }
 
@@ -147,6 +180,94 @@ export class NotificationPolicyService {
     }
 
     return { ...this.describe(), pruned };
+  }
+
+  /**
+   * One scope as an editor sees it: its own entries, what they resolve to, and what would apply
+   * without them. The three scope editors in the panel are the same component pointed at different
+   * refs, so the shape must not depend on which scope it is.
+   */
+  static async describeScope(target: PolicyScopeRef): Promise<PolicyScopeView> {
+    const document = notifyPolicy();
+    const { projectId, pipelineSpecId } = await this.resolveIds(target);
+    const scope = this.scopeOf(document, target) ?? {};
+    // Inheritance is defined as "this scope's entry is gone", so resolve against a copy without it.
+    const without = this.withoutScope(document, target);
+
+    return {
+      scope: target.scope,
+      id: target.id,
+      mute: scope.mute === true,
+      types: activityTypes().map((def) => ({
+        type: def.type,
+        kind: def.kind,
+        label: def.label,
+        own: (typeof scope[def.type] === 'object' ? scope[def.type] as ActivityPolicyEntry : {}),
+        effective: resolveActivityPolicy(document, def.type, projectId, pipelineSpecId),
+        inherited: resolveActivityPolicy(without, def.type, projectId, pipelineSpecId),
+      })),
+      source: notifyPolicySource(),
+      shadowedByEnvironment: isNotifyPolicyShadowedByEnvironment(),
+      warnings: this.describe().warnings,
+    };
+  }
+
+  /**
+   * Replaces one scope's entry, carrying every other scope through untouched — `set()` replaces
+   * the whole document, and three editors (project card, pipeline editor, defaults page) writing
+   * through it would overwrite each other. `null` removes the entry entirely.
+   *
+   * Merged over the **stored** document, never the effective one: writes land in the store, and
+   * with the environment shadowing everything, merging its copy back in would freeze it there.
+   */
+  static async patchScope(target: PolicyScopeRef, entry: ActivityPolicyScope | null): Promise<PolicyScopeView & { pruned: string[] }> {
+    const base: NotifyPolicyDocument = storedNotifyPolicy() ?? {};
+    const merged: NotifyPolicyDocument = { ...base };
+
+    if (target.scope === 'defaults') {
+      if (entry === null) delete merged.defaults;
+      else merged.defaults = entry;
+    } else {
+      const key = target.scope === 'project' ? 'projects' : 'pipelines';
+      const bucket = { ...(base[key] ?? {}) };
+      if (entry === null) delete bucket[target.id];
+      else bucket[target.id] = entry;
+      if (Object.keys(bucket).length > 0) merged[key] = bucket;
+      else delete merged[key];
+    }
+
+    const result = await this.set(merged);
+    return { ...(await this.describeScope(target)), pruned: result.pruned };
+  }
+
+  /** The project/pipeline pair a scope resolves against — a pipeline inherits through its project. */
+  private static async resolveIds(target: PolicyScopeRef): Promise<{ projectId?: string; pipelineSpecId?: string }> {
+    if (target.scope === 'project') return { projectId: target.id };
+    if (target.scope === 'pipeline') {
+      const spec = await PipelineSpec.findByPk(target.id, { attributes: ['id', 'projectId'] });
+      if (!spec) throw new Error(`Pipeline spec ${target.id} not found`);
+      return { projectId: spec.projectId, pipelineSpecId: spec.id };
+    }
+    return {};
+  }
+
+  private static scopeOf(document: NotifyPolicyDocument, target: PolicyScopeRef): ActivityPolicyScope | undefined {
+    if (target.scope === 'defaults') return document.defaults;
+    if (target.scope === 'project') return document.projects?.[target.id];
+    return document.pipelines?.[target.id];
+  }
+
+  private static withoutScope(document: NotifyPolicyDocument, target: PolicyScopeRef): NotifyPolicyDocument {
+    const copy: NotifyPolicyDocument = { ...document };
+    if (target.scope === 'defaults') {
+      delete copy.defaults;
+      return copy;
+    }
+    const key = target.scope === 'project' ? 'projects' : 'pipelines';
+    const bucket = { ...(document[key] ?? {}) };
+    delete bucket[target.id];
+    copy[key] = bucket;
+    return copy;
   }
 
   /** Drops the in-memory value of the removed document, which app-manager leaves in place on destroy. */

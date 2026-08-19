@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
+import NotificationPolicySection from "./components/NotificationPolicySection";
 
 /**
  * The project overview: pick a project, see how it's doing at a glance, then go to the screen
@@ -218,6 +219,13 @@ const AgentizHome: React.FC = () => {
               </div>
             </div>
           )}
+
+          <NotificationPolicySection
+            key={selectedProject.id}
+            scope="project"
+            id={selectedProject.id}
+            inheritsFrom="из общих настроек"
+          />
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <NavCard title="Задачи" description="Трекер: задачи из внешних систем и запуски по ним" href={withProject("/agentiz-tasks")} />
