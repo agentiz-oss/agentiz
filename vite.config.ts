@@ -20,10 +20,13 @@ export default defineConfig({
         AgentizGitlab: path.resolve(__dirname, 'layers/app-agentiz-gitlab-integration/adminizer/modules/AgentizGitlab.tsx'),
         AgentizGithub: path.resolve(__dirname, 'layers/app-agentiz-github-integration/adminizer/modules/AgentizGithub.tsx'),
         MobileAssistant: path.resolve(__dirname, 'layers/app-agentiz-mobile-api/adminizer/modules/MobileAssistant.tsx'),
-        // The workflow canvas is generic and lives in local_modules, but its bundles are built
-        // here like every other module: the panel serves one directory, dist/modules.
-        WorkflowList: path.resolve(__dirname, 'local_modules/app-workflow-admin/adminizer/modules/WorkflowList.tsx'),
-        WorkflowEditor: path.resolve(__dirname, 'local_modules/app-workflow-admin/adminizer/modules/WorkflowEditor.tsx'),
+        // The workflow canvas is generic and ships inside @nodeknit/app-workflow, but its bundles
+        // are built here like every other module: the panel serves one directory, dist/modules.
+        // Resolved through node_modules rather than local_modules on purpose — that path is the
+        // symlink to the local checkout here and the installed package in CI, where local_modules
+        // is empty and a direct path would break the image build.
+        WorkflowList: path.resolve(__dirname, 'node_modules/@nodeknit/app-workflow/adminizer/modules/WorkflowList.tsx'),
+        WorkflowEditor: path.resolve(__dirname, 'node_modules/@nodeknit/app-workflow/adminizer/modules/WorkflowEditor.tsx'),
       },
       formats: ['es'],
     },
@@ -44,8 +47,8 @@ export default defineConfig({
       // Flow — would otherwise drag the project's react@18 jsx-runtime into the bundle, giving
       // the page a second, older React that dies on its first hook. The shim routes those imports
       // back onto the one React that is already there.
-      'react/jsx-runtime': path.resolve(__dirname, 'local_modules/app-workflow-admin/adminizer/modules/lib/jsxRuntimeShim.ts'),
-      'react/jsx-dev-runtime': path.resolve(__dirname, 'local_modules/app-workflow-admin/adminizer/modules/lib/jsxRuntimeShim.ts'),
+      'react/jsx-runtime': path.resolve(__dirname, 'node_modules/@nodeknit/app-workflow/adminizer/modules/lib/jsxRuntimeShim.ts'),
+      'react/jsx-dev-runtime': path.resolve(__dirname, 'node_modules/@nodeknit/app-workflow/adminizer/modules/lib/jsxRuntimeShim.ts'),
     },
     extensions: ['.js', '.ts', '.tsx'],
   },

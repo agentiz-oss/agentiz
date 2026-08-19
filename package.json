@@ -28,7 +28,6 @@
     "@nodeknit/app-mcp": "file:./local_modules/app-mcp",
     "@nodeknit/app-telegram-bot": "file:./local_modules/app-telegram-bot",
     "@nodeknit/app-workflow": "file:./local_modules/app-workflow",
-    "@nodeknit/app-workflow-admin": "file:./local_modules/app-workflow-admin",
     "@openharness/core": "^0.7.0",
     "@types/ajv": "^0.0.5",
     "@types/bcryptjs": "^2.4.6",
