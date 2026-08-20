@@ -694,11 +694,7 @@
   dependencies:
     telegraf "^4.16.3"
 
-"@nodeknit/app-workflow-admin@file:./local_modules/app-workflow-admin":
-  version "0.1.0"
-  resolved "file:local_modules/app-workflow-admin"
-
-"@nodeknit/app-workflow@*", "@nodeknit/app-workflow@file:./local_modules/app-workflow":
+"@nodeknit/app-workflow@file:./local_modules/app-workflow":
   version "0.1.0"
   resolved "file:local_modules/app-workflow"
 
