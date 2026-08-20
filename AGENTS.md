@@ -202,6 +202,24 @@
   while the machine is idle. That write is a compare-and-swap plus an atomic replace, and it must
   persist a **rotated** refresh token or the CLI is logged out (`AGENTIZ_CLAUDE_TOKEN_REFRESH=0`
   disables it).
+- The admin assistant's dialogs live in a table, `AgentAssistantConversation`
+  (`agentiz_assistant_conversations`, keyed by `agentId` + `userId`), not in the service: a deploy
+  used to end every conversation and drop the model's context mid-dialog. Adminizer reads the
+  dialog list through a **synchronous** contract (its `AbstractAiConversationHistoryService` —
+  `list`/`getActive`/`create`/`select`/`remove`/`saveActive` all return values, not promises), which
+  a table cannot answer, so `lib/ai/assistantConversationHistory.ts` is a cache in front of it:
+  `AppAgentiz.mount()` awaits `loadConversations()` **before** the model is registered (a read from
+  a cold cache would answer "no history" and open a second dialog beside the stored one), reads are
+  served from memory and writes go through one serialized queue behind them. The table is the
+  source of truth — `getSession` fills a fresh openharness `Session` from the active dialog, so the
+  history comes back even on the pinned adminizer build.7, whose panel has no conversation
+  endpoints at all and never calls any of that contract. Two rules keep the queue from becoming a
+  write amplifier: a dialog with no messages is never inserted (opening the panel must not leave a
+  row per visit), and a save whose payload hashes to what was last stored is skipped — adminizer
+  re-saves the active dialog on every poll and once more after each turn. Inlined images are stored
+  as a placeholder text part instead of their base64: whole messages are never dropped to save
+  space, because that can separate a tool call from its result and the provider then rejects the
+  restored dialog.
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).

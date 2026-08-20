@@ -22,3 +22,4 @@ export { AgentActivity } from './AgentActivity';
 export { AgentActivitySeen } from './AgentActivitySeen';
 export { AgentWorkerHarness } from './AgentWorkerHarness';
 export { AgentHarnessUsageSample } from './AgentHarnessUsageSample';
+export { AgentAssistantConversation } from './AgentAssistantConversation';

@@ -70,6 +70,10 @@ import { up as upRunTokenUsage, down as downRunTokenUsage } from './umzug/178800
 import { up as upSubscriptionAlignReset, down as downSubscriptionAlignReset } from './umzug/1788000200000_subscription_align_reset';
 import { up as upAgentActivities, down as downAgentActivities } from './umzug/1788000300000_agent_activities';
 import { up as upProposalStash, down as downProposalStash } from './umzug/1788000400000_proposal_stash';
+import {
+  up as upAssistantConversations,
+  down as downAssistantConversations,
+} from './umzug/1788000500000_assistant_conversations';
 
 export const umzugExports: Migration[] = [
   {
@@ -228,5 +232,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000400000,
     up: upProposalStash,
     down: downProposalStash,
+  },
+  {
+    name: 'assistant_conversations',
+    timestamp: 1788000500000,
+    up: upAssistantConversations,
+    down: downAssistantConversations,
   },
 ];

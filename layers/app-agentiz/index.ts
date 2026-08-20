@@ -30,6 +30,7 @@ import { AgentWorkerHarness } from './models/AgentWorkerHarness';
 import { AgentHarnessUsageSample } from './models/AgentHarnessUsageSample';
 import { AgentActivity } from './models/AgentActivity';
 import { AgentActivitySeen } from './models/AgentActivitySeen';
+import { AgentAssistantConversation } from './models/AgentAssistantConversation';
 import { AgentCapacityService } from './services/AgentCapacityService';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
@@ -107,6 +108,7 @@ export class AppAgentiz extends AbstractApp {
         AgentHarnessUsageSample,
         AgentActivity,
         AgentActivitySeen,
+        AgentAssistantConversation,
     ];
 
     @Collection
@@ -405,10 +407,11 @@ export class AppAgentiz extends AbstractApp {
                     console.warn(`[AppAgentiz] agent skill "${skill.id}" is already provided by adminizer, keeping the built-in one`);
                 }
             }
-            adminizerApp.adminizer.aiAssistantHandler.registerModel(
-                new AgentizAssistantService(mcpApp, this.appManager),
-                this.appId,
-            );
+            const assistant = new AgentizAssistantService(mcpApp, this.appManager);
+            // The panel asks for the dialog list synchronously, so the stored conversations are
+            // read into memory before the model can be reached — see lib/ai/assistantConversationHistory.ts.
+            await assistant.loadConversations();
+            adminizerApp.adminizer.aiAssistantHandler.registerModel(assistant, this.appId);
             console.log('[AppAgentiz] Agentiz Assistant registered with the Adminizer AI panel');
         } else {
             console.warn('[AppAgentiz] app-adminizer or app-mcp instance not found; Agentiz Assistant not registered');

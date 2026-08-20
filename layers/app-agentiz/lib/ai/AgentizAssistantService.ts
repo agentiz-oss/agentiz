@@ -5,6 +5,7 @@ import {
 } from '@nodeknit/app-adminizer';
 import type { AppManager } from '@nodeknit/app-manager';
 import type { AppMCP } from '@nodeknit/app-mcp';
+import { AssistantConversationHistory } from './assistantConversationHistory';
 
 /**
  * The assistant contract adminizer 5.0.0-build.12 exports as types. `local_modules/app-adminizer`
@@ -126,12 +127,36 @@ function summarizeToolResult(toolName: string, result: unknown): Record<string, 
 export class AgentizAssistantService extends AbstractAiModelService {
     private readonly sessions = new Map<number, any>();
 
+    /**
+     * Dialogs live in `agentiz_assistant_conversations`, not in this process. The session map
+     * above is still per-process — it holds the live openharness `Session` — but everything it
+     * would lose on a restart is read back from the table by `getSession`.
+     */
+    private readonly conversations: AssistantConversationHistory;
+
     constructor(private readonly mcpApp: AppMCP, private readonly appManager: AppManager) {
         super({
             id: 'agentiz-assistant',
             name: 'Agentiz Assistant',
             description: 'Answers questions about Agentiz projects, tasks and pipeline runs using the registered MCP tools.',
         });
+        this.conversations = new AssistantConversationHistory(this.id);
+        // Adminizer (>= build.12) drives its dialog list through this property — its own
+        // `AbstractAiConversationHistoryService`, defaulted to an in-memory one by the base
+        // constructor — and calls `initialize()` on it when the model is registered. Assigning it
+        // is the entire wiring; the cast is the same one the type declarations at the top of this
+        // file exist for, since the pinned build.7 base class has no such member. On that build
+        // nothing reads the property and the dialog is persisted anyway, from `streamReply` below.
+        (this as any).conversationHistory = this.conversations;
+    }
+
+    /**
+     * Reads the stored dialogs into memory. Awaited by `AppAgentiz.mount()` before the model is
+     * registered: adminizer asks for the conversation list synchronously, so a cold cache would
+     * answer "no history" and open a second dialog beside the stored one.
+     */
+    async loadConversations(): Promise<void> {
+        await this.conversations.hydrate();
     }
 
     isEnabled(): boolean {
@@ -175,8 +200,16 @@ export class AgentizAssistantService extends AbstractAiModelService {
             throw new Error('Agentiz Assistant is not connected: set OPENHARNESS_API_KEY.');
         }
         const session = await this.getSession(user);
-        for await (const event of session.send(input, { signal })) {
-            onEvent(event as StreamEvent);
+        try {
+            for await (const event of session.send(input, { signal })) {
+                onEvent(event as StreamEvent);
+            }
+        } finally {
+            // Saved here rather than only where adminizer saves it (after `streamReply` returns):
+            // an aborted or failed turn has already added messages to the session, and a stored
+            // dialog that disagrees with the live one is worse than one turn too many. Identical
+            // content is not rewritten, so adminizer's own save right after this one is free.
+            this.conversations.saveActive(user, session.messages ?? []);
         }
     }
 
@@ -193,12 +226,28 @@ export class AgentizAssistantService extends AbstractAiModelService {
         };
     }
 
+    /**
+     * The **live** session's messages, deliberately not the stored dialog: adminizer reads this
+     * first and takes an empty answer as "restore the stored conversation into the agent", which
+     * is how a session comes back after a restart (`restoreSessionHistory` below). Answering with
+     * the stored messages here would satisfy the panel and leave the agent without its context.
+     */
     getSessionHistory(user: User): any[] {
         return this.sessions.get(user.id)?.messages ?? [];
     }
 
+    /** Loads a stored dialog into the agent — the panel switching conversations, or a cold start. */
+    async restoreSessionHistory(user: User, messages: Array<Record<string, unknown>>): Promise<void> {
+        const session = await this.getSession(user);
+        session.messages = Array.isArray(messages) ? [...messages] : [];
+    }
+
     resetSession(user: User): boolean {
-        return this.sessions.delete(user.id);
+        const dropped = this.sessions.delete(user.id);
+        // Emptying the stored dialog is part of the reset now: dropping only the session would be
+        // undone by the next one, which reads its messages back from the table.
+        this.conversations.clearActive(user);
+        return dropped;
     }
 
     async compactSession(user: User): Promise<Record<string, unknown>> {
@@ -217,6 +266,9 @@ export class AgentizAssistantService extends AbstractAiModelService {
                 done = true;
             }
         }
+        // Compaction rewrites the session's messages; the stored dialog has to follow, or the next
+        // restart would restore the pre-compaction history the user just paid to shrink.
+        this.conversations.saveActive(user, session.messages ?? []);
         return { compacted: done, tokensBefore, tokensAfter, messagesRemoved };
     }
 
@@ -241,6 +293,11 @@ export class AgentizAssistantService extends AbstractAiModelService {
     private async getSession(user: User): Promise<any> {
         const existing = this.sessions.get(user.id);
         if (existing) return existing;
+
+        // Last chance to get the stored dialogs in: if the read at mount failed (a database that
+        // was not up yet), this is the first `await` on the path to a new session, and it is
+        // single-flight, so an already-loaded cache costs one resolved promise.
+        if (!this.conversations.isHydrated) await this.conversations.hydrate();
 
         // @openharness/core only publishes its types behind an "exports" map, which the
         // project's classic moduleResolution can't see — go through Function() so this one
@@ -359,6 +416,11 @@ export class AgentizAssistantService extends AbstractAiModelService {
             tools: { ...skillTools, ...(mcpAvailable ? { list_mcp_tools: listMcpTools, call_mcp_tool: callMcpTool } : {}) },
         });
         const session = new Session({ agent, contextWindow: Number(process.env.OPENHARNESS_CONTEXT_WINDOW) || 128_000 });
+        // The dialog this user was in continues where it stopped, across a restart and on an
+        // adminizer build whose panel never asks for a restore. `Session.messages` is documented as
+        // directly replaceable, so this is an assignment rather than a replay of the turns.
+        const stored = this.conversations.getActive(user).messages;
+        if (stored.length) session.messages = [...stored];
         this.sessions.set(user.id, session);
         return session;
     }
