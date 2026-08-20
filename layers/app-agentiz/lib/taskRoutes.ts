@@ -1,10 +1,21 @@
+import fs from 'fs';
 import type { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
 import { AgentProject } from '../models/AgentProject';
+import { AgentTask } from '../models/AgentTask';
+import { AgentTaskAttachment } from '../models/AgentTaskAttachment';
 import { AgentTaskSource } from '../models/AgentTaskSource';
 import { AgentPipelineService } from '../services/AgentPipelineService';
 import { AgentTaskService, TaskServiceError } from '../services/AgentTaskService';
 import { TaskSourceSyncService } from '../services/TaskSourceSyncService';
 import { describeTaskManagers, getTaskManagerAdapter } from '../lib/taskManager';
+import {
+  AttachmentError,
+  attachmentDiskPath,
+  deleteAttachment,
+  describeAttachment,
+  readBodyWithLimit,
+  storeAttachment,
+} from './taskAttachments';
 import { maskTaskSourceForUI, restoreMaskedTaskSourceSecrets } from './secrets';
 
 /** Whoever is driving the admin panel — recorded as the author of manual changes. */
@@ -17,10 +28,29 @@ function actorOf(req: any): { id: number | null; name: string } {
 }
 
 function errorResponse(res: any, error: unknown) {
-  if (error instanceof TaskServiceError) {
+  if (error instanceof TaskServiceError || error instanceof AttachmentError) {
     return res.status(error.status).json({ message: error.message });
   }
   return res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
+}
+
+/** True for content a browser may render inline off our origin. Everything else downloads. */
+function isInlineSafe(mimeType: string | null): boolean {
+  return !!mimeType && (/^image\/(png|jpeg|gif|webp|avif|bmp)$/.test(mimeType) || mimeType === 'application/pdf');
+}
+
+/**
+ * The attachment endpoints check the panel session themselves: the `adminizerMiddlewares`
+ * dispatcher runs before Adminizer's auth policies, which for JSON endpoints means "no check at
+ * all". That is the standing posture of every route in this file — tolerable for reads and
+ * tracker writes, but an endpoint that writes files to the server's disk (and one that serves
+ * them back) must not be open. Skipped when the panel itself runs with auth disabled.
+ */
+function requirePanelUser(req: any, res: any): boolean {
+  if (req.adminizer?.config?.auth?.enable === false) return true;
+  if (req.session?.UserAP?.id || typeof req.user?.id === 'number') return true;
+  res.status(401).json({ message: 'Sign in to the admin panel first' });
+  return false;
 }
 
 function str(value: unknown): string {
@@ -57,6 +87,55 @@ function splitByAdapterFields(
  * `_method`, matching the convention the rest of the Agentiz admin pages already use.
  */
 export const taskRoutes: AdminizerRouteMiddleware[] = [
+  /**
+   * Attachment upload. Its own route, listed before the generic `/agentiz-tasks` handlers because
+   * the dispatcher runs every prefix match in registration order and this one must win.
+   *
+   * The file arrives as the raw request body (`application/octet-stream`, name/task in the query),
+   * not as multipart: the panel's global body parsers only touch JSON and urlencoded, so the
+   * stream reaches this handler untouched and no multipart dependency is needed. One file per
+   * request — the UI loops, which also gives it per-file progress for free.
+   */
+  {
+    route: '/agentiz-tasks/attachments',
+    method: 'post',
+    handler: async (req, res) => {
+      try {
+        if (!requirePanelUser(req, res)) return undefined;
+        const taskId = str(req.query?.taskId);
+        const fileName = str(req.query?.fileName);
+        if (!taskId) return res.status(400).json({ message: 'taskId query parameter is required' });
+        if (!fileName) return res.status(400).json({ message: 'fileName query parameter is required' });
+        const task = await AgentTask.findByPk(taskId);
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        const contentType = str(req.headers?.['content-type']).split(';')[0].trim().toLowerCase();
+        const content = await readBodyWithLimit(req);
+        const actor = actorOf(req);
+        const attachment = await storeAttachment({
+          taskId,
+          fileName,
+          // The browser sends the file's own type; a generic octet-stream means "unknown".
+          mimeType: contentType && contentType !== 'application/octet-stream' ? contentType : null,
+          content,
+          uploadedById: actor.id,
+          uploadedByName: actor.name,
+        });
+        // The thread records the upload the same way it records every manual change — and through
+        // the conversation snapshot this line is also how a run learns a file appeared mid-thread.
+        await AgentTaskService.addComment(taskId, {
+          authorKind: 'system',
+          authorName: actor.name,
+          authorId: actor.id,
+          body: `Прикреплён файл «${attachment.fileName}» (${attachment.sizeBytes} байт)`,
+          meta: { kind: 'attachment.added', attachmentId: attachment.id },
+        });
+        return res.json({ data: describeAttachment(attachment) });
+      } catch (error) {
+        return errorResponse(res, error);
+      }
+    },
+  },
   {
     route: '/agentiz-tasks',
     method: 'get',
@@ -97,6 +176,27 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
 
         if (method === 'getTaskManagers') {
           return res.json({ data: describeTaskManagers() });
+        }
+
+        if (method === 'downloadAttachment') {
+          if (!requirePanelUser(req, res)) return undefined;
+          const attachmentId = str(req.query.attachmentId);
+          if (!attachmentId) return res.status(400).json({ message: 'attachmentId is required' });
+          const attachment = await AgentTaskAttachment.findByPk(attachmentId);
+          if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+          const diskPath = attachmentDiskPath(attachment);
+          if (!fs.existsSync(diskPath)) return res.status(404).json({ message: 'Attachment file is missing on disk' });
+          // `inline=1` is how the UI shows thumbnails; anything not image/pdf still downloads.
+          const inline = str(req.query.inline) === '1' && isInlineSafe(attachment.mimeType);
+          res.setHeader('Content-Type', inline ? attachment.mimeType! : 'application/octet-stream');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Content-Length', String(attachment.sizeBytes));
+          res.setHeader(
+            'Content-Disposition',
+            `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
+          );
+          fs.createReadStream(diskPath).pipe(res);
+          return undefined;
         }
 
         if (method === 'getSources') {
@@ -179,6 +279,25 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
               body: str(req.body?.body),
             }),
           });
+        }
+
+        if (method === 'deleteAttachment') {
+          if (!requirePanelUser(req, res)) return undefined;
+          const attachmentId = str(req.body?.attachmentId);
+          if (!attachmentId) return res.status(400).json({ message: 'attachmentId is required' });
+          const attachment = await AgentTaskAttachment.findByPk(attachmentId);
+          if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+          const taskId = attachment.taskId;
+          const fileName = attachment.fileName;
+          await deleteAttachment(attachment);
+          await AgentTaskService.addComment(taskId, {
+            authorKind: 'system',
+            authorName: actor.name,
+            authorId: actor.id,
+            body: `Удалён файл «${fileName}»`,
+            meta: { kind: 'attachment.deleted', attachmentId },
+          });
+          return res.json({ data: { deleted: true } });
         }
 
         if (method === 'publishComment') {

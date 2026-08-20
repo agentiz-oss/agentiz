@@ -11,6 +11,7 @@ export { AgentRunResultDedup } from './AgentRunResultDedup';
 export { AgentWorker } from './AgentWorker';
 export { AgentTaskSource } from './AgentTaskSource';
 export { AgentTaskComment } from './AgentTaskComment';
+export { AgentTaskAttachment } from './AgentTaskAttachment';
 export { AgentGitConnection } from './AgentGitConnection';
 export { AgentRepository } from './AgentRepository';
 export { AgentProjectRepository } from './AgentProjectRepository';

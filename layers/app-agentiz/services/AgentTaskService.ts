@@ -4,6 +4,7 @@ import { AgentRun } from '../models/AgentRun';
 import { listRunLogs } from '../lib/runLogs';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
+import { AgentTaskAttachment } from '../models/AgentTaskAttachment';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentTaskSource } from '../models/AgentTaskSource';
 import { AgentWorker } from '../models/AgentWorker';
@@ -18,6 +19,7 @@ import {
 } from '../lib/taskManager';
 import type { CommentResult, NormalizedExternalComment } from '../lib/taskManager';
 import { createGitProviderForTask } from '../lib/git';
+import { describeAttachment, listTaskAttachments } from '../lib/taskAttachments';
 import { TaskSourceSyncService } from './TaskSourceSyncService';
 import { AgentPipelineService } from './AgentPipelineService';
 import type { AgentTaskCommentAuthorKind, AgentTaskPriority, AgentTaskStatus } from '../types/agentiz';
@@ -134,7 +136,10 @@ export class AgentTaskService {
       ? rows.filter((task) => (task.tags ?? []).includes(filters.tag as string))
       : rows;
 
-    const commentCounts = await this.commentCounts(filtered.map((t) => t.id));
+    const [commentCounts, attachmentCounts] = await Promise.all([
+      this.commentCounts(filtered.map((t) => t.id)),
+      this.attachmentCounts(filtered.map((t) => t.id)),
+    ]);
 
     return {
       items: filtered.map((task) => ({
@@ -145,6 +150,7 @@ export class AgentTaskService {
         // the number the remote system actually uses.
         remoteExternalId: TaskSourceSyncService.remoteExternalId(task),
         commentCount: commentCounts.get(task.id) ?? 0,
+        attachmentCount: attachmentCounts.get(task.id) ?? 0,
       })),
       total: filters.tag ? filtered.length : count,
     };
@@ -154,6 +160,17 @@ export class AgentTaskService {
     if (taskIds.length === 0) return new Map();
     const rows = (await AgentTaskComment.findAll({
       attributes: ['taskId', [AgentTaskComment.sequelize!.fn('COUNT', '*'), 'count']],
+      where: { taskId: { [Op.in]: taskIds } },
+      group: ['taskId'],
+      raw: true,
+    })) as unknown as Array<{ taskId: string; count: number | string }>;
+    return new Map(rows.map((row) => [row.taskId, Number(row.count)]));
+  }
+
+  private static async attachmentCounts(taskIds: string[]): Promise<Map<string, number>> {
+    if (taskIds.length === 0) return new Map();
+    const rows = (await AgentTaskAttachment.findAll({
+      attributes: ['taskId', [AgentTaskAttachment.sequelize!.fn('COUNT', '*'), 'count']],
       where: { taskId: { [Op.in]: taskIds } },
       group: ['taskId'],
       raw: true,
@@ -171,13 +188,14 @@ export class AgentTaskService {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new TaskServiceError(404, 'Task not found');
 
-    const [project, runs, comments, source, spec, workers] = await Promise.all([
+    const [project, runs, comments, source, spec, workers, attachments] = await Promise.all([
       AgentProject.findByPk(task.projectId),
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 50 }),
       AgentTaskComment.findAll({ where: { taskId } }),
       task.sourceId ? AgentTaskSource.findByPk(task.sourceId) : Promise.resolve(null),
       resolveSpecForTask(task),
       AgentWorker.findAll({ where: { status: 'active' } }),
+      listTaskAttachments(taskId),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -226,6 +244,7 @@ export class AgentTaskService {
       comments: [...comments]
         .sort((a, b) => this.commentTime(a) - this.commentTime(b))
         .map((comment) => comment.toJSON()),
+      attachments: attachments.map(describeAttachment),
     };
   }
 

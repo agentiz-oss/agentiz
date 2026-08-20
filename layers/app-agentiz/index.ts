@@ -19,6 +19,7 @@ import { AgentRunResultDedup } from './models/AgentRunResultDedup';
 import { AgentWorker } from './models/AgentWorker';
 import { AgentTaskSource } from './models/AgentTaskSource';
 import { AgentTaskComment } from './models/AgentTaskComment';
+import { AgentTaskAttachment } from './models/AgentTaskAttachment';
 import { AgentGitConnection } from './models/AgentGitConnection';
 import { AgentRepository } from './models/AgentRepository';
 import { AgentProjectRepository } from './models/AgentProjectRepository';
@@ -97,6 +98,7 @@ export class AppAgentiz extends AbstractApp {
         AgentWorker,
         AgentTaskSource,
         AgentTaskComment,
+        AgentTaskAttachment,
         AgentGitConnection,
         AgentRepository,
         AgentProjectRepository,
@@ -321,6 +323,7 @@ export class AppAgentiz extends AbstractApp {
             generateAdminizerModelConfig(AgentWorker),
             generateAdminizerModelConfig(AgentTaskSource),
             generateAdminizerModelConfig(AgentTaskComment),
+            generateAdminizerModelConfig(AgentTaskAttachment),
             generateAdminizerModelConfig(AgentGitConnection),
             generateAdminizerModelConfig(AgentRepository),
             generateAdminizerModelConfig(AgentProjectRepository),

@@ -1,9 +1,51 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { formatTokens } from "./lib/tokenUsage";
 
 const API_URL = `${(window as any).routePrefix ?? "/dashboard"}/agentiz-tasks`;
+
+interface TaskAttachment {
+  id: string;
+  fileName: string;
+  mimeType?: string | null;
+  sizeBytes: number;
+  uploadedByName?: string | null;
+  createdAt?: string;
+}
+
+/** Download/preview URL of one attachment; `inline` renders images/PDF in place of downloading. */
+const attachmentUrl = (id: string, inline = false) =>
+  `${API_URL}?_method=downloadAttachment&attachmentId=${encodeURIComponent(id)}${inline ? "&inline=1" : ""}`;
+
+const isImage = (attachment: TaskAttachment) => (attachment.mimeType ?? "").startsWith("image/");
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+};
+
+/** Emoji stand-in for a thumbnail when the file is not an image. */
+const fileGlyph = (attachment: TaskAttachment): string => {
+  const mime = attachment.mimeType ?? "";
+  const name = attachment.fileName.toLowerCase();
+  if (mime === "application/pdf" || name.endsWith(".pdf")) return "📕";
+  if (mime.startsWith("video/")) return "🎬";
+  if (mime.startsWith("audio/")) return "🎵";
+  if (/\.(zip|gz|tar|rar|7z)$/.test(name)) return "🗜️";
+  if (mime.startsWith("text/") || /\.(md|txt|csv|json|ya?ml|xml|log)$/.test(name)) return "📝";
+  return "📄";
+};
+
+/** Uploads one file as a raw body; the name and the task travel in the query string. */
+async function uploadAttachment(taskId: string, file: File): Promise<void> {
+  await axios.post(
+    `${API_URL}/attachments?taskId=${encodeURIComponent(taskId)}&fileName=${encodeURIComponent(file.name)}`,
+    file,
+    { headers: { "Content-Type": file.type || "application/octet-stream" } },
+  );
+}
 
 interface TaskListItem {
   id: string;
@@ -23,6 +65,7 @@ interface TaskListItem {
   sourceName?: string | null;
   sourceAvailable?: boolean;
   commentCount?: number;
+  attachmentCount?: number;
   updatedAt?: string;
 }
 
@@ -51,6 +94,7 @@ interface TaskDetails {
     logs: Array<{ id: string; level: string; message: string; createdAt?: string }>;
   } | null;
   comments: TaskComment[];
+  attachments: TaskAttachment[];
   manualExecutorOptions: Array<{ workerId: string; executorKey: string; title: string; workerName: string }>;
 }
 
@@ -153,6 +197,14 @@ const AgentizTasks: React.FC = () => {
   const [selectedExecutor, setSelectedExecutor] = useState<{ workerId: string; executorKey: string } | null>(null);
   const [showSources, setShowSources] = useState(false);
   const [showNewTask, setShowNewTask] = useState(false);
+  // --- attachments ---------------------------------------------------------------------------
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState<TaskAttachment | null>(null);
+  const [newTaskFiles, setNewTaskFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const newTaskFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [query, setQuery] = useState(() => ({
     projectId: new URLSearchParams(window.location.search).get("projectId") ?? "",
@@ -274,6 +326,54 @@ const AgentizTasks: React.FC = () => {
     [post, loadTasks, loadDetails],
   );
 
+  /** Uploads files one by one so a single oversized file fails alone, with progress on the way. */
+  const uploadFiles = useCallback(
+    async (taskId: string, files: File[] | FileList): Promise<boolean> => {
+      const list = Array.from(files);
+      if (!list.length) return true;
+      setError(null);
+      setNotice(null);
+      let allOk = true;
+      for (const [index, file] of list.entries()) {
+        setUploadProgress(`Загрузка ${index + 1} из ${list.length}: ${file.name}`);
+        try {
+          await uploadAttachment(taskId, file);
+        } catch (e: any) {
+          allOk = false;
+          fail(e, `Не удалось загрузить «${file.name}»`);
+          break;
+        }
+      }
+      setUploadProgress(null);
+      if (allOk) setNotice(list.length === 1 ? `Файл «${list[0].name}» прикреплён` : `Прикреплено файлов: ${list.length}`);
+      return allOk;
+    },
+    [],
+  );
+
+  const attachToSelected = useCallback(
+    async (files: File[] | FileList) => {
+      if (!selectedId || !files.length) return;
+      await uploadFiles(selectedId, files);
+      await loadDetails(selectedId);
+      await loadTasks();
+    },
+    [selectedId, uploadFiles, loadDetails, loadTasks],
+  );
+
+  const removeAttachment = useCallback(
+    async (attachment: TaskAttachment) => {
+      if (!window.confirm(`Удалить файл «${attachment.fileName}»?`)) return;
+      const result = await post({ _method: "deleteAttachment", attachmentId: attachment.id });
+      if (result && selectedId) {
+        setPreviewAttachment((current) => (current?.id === attachment.id ? null : current));
+        await loadDetails(selectedId);
+        await loadTasks();
+      }
+    },
+    [post, selectedId, loadDetails, loadTasks],
+  );
+
   const submitComment = useCallback(async () => {
     if (!selectedId || !commentDraft.trim()) return;
     const result = await post({ _method: "addComment", taskId: selectedId, body: commentDraft });
@@ -350,12 +450,15 @@ const AgentizTasks: React.FC = () => {
     }
     const result = await post({ _method: "createTask", ...newTask }, "Задача создана");
     if (result) {
+      // Files picked in the form are attached right after the task exists to receive them.
+      if (newTaskFiles.length) await uploadFiles(result.id, newTaskFiles);
       setNewTask({ projectId: newTask.projectId, title: "", description: "", priority: "normal" });
+      setNewTaskFiles([]);
       setShowNewTask(false);
       await loadTasks();
       setSelectedId(result.id);
     }
-  }, [newTask, post, loadTasks]);
+  }, [newTask, newTaskFiles, uploadFiles, post, loadTasks]);
 
   return (
     <div className="space-y-4 p-6">
@@ -438,12 +541,50 @@ const AgentizTasks: React.FC = () => {
             rows={3}
             className="mt-2 w-full rounded border px-2 py-1.5 text-sm"
           />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              ref={newTaskFileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                // Snapshot before clearing `value`: the FileList is live and empties with it.
+                const picked = Array.from(e.target.files ?? []);
+                if (picked.length) setNewTaskFiles((current) => [...current, ...picked]);
+                e.target.value = "";
+              }}
+            />
+            <button
+              onClick={() => newTaskFileInputRef.current?.click()}
+              className="rounded border px-2 py-1 text-xs font-medium"
+            >
+              📎 Прикрепить файлы
+            </button>
+            {newTaskFiles.map((file, index) => (
+              <span
+                key={`${file.name}-${index}`}
+                className="flex items-center gap-1 rounded px-2 py-0.5 text-xs"
+                style={{ backgroundColor: "#f1f5f9", color: "#334155" }}
+              >
+                {file.type.startsWith("image/") ? "🖼️" : "📄"} {file.name}
+                <span className="text-muted-foreground">({formatBytes(file.size)})</span>
+                <button
+                  onClick={() => setNewTaskFiles((current) => current.filter((_, i) => i !== index))}
+                  title="Убрать"
+                  style={{ color: "#b91c1c" }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
           <button
             onClick={createTask}
             disabled={busy}
             className="mt-2 rounded border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
           >
-            Создать
+            Создать{newTaskFiles.length > 0 ? ` (+${newTaskFiles.length} файл.)` : ""}
           </button>
         </div>
       )}
@@ -712,6 +853,7 @@ const AgentizTasks: React.FC = () => {
                   {task.sourceType !== "local" && <span>#{task.remoteExternalId ?? task.externalId}</span>}
                   {task.externalStatus && <span>· трекер: {task.externalStatus}</span>}
                   {(task.commentCount ?? 0) > 0 && <span>· 💬 {task.commentCount}</span>}
+                  {(task.attachmentCount ?? 0) > 0 && <span>· 📎 {task.attachmentCount}</span>}
                   {(task.tags ?? []).map((tag) => (
                     <span key={tag} className="rounded px-1.5 py-0.5" style={{ backgroundColor: "#f1f5f9", color: "#475569" }}>
                       {tag}
@@ -811,6 +953,133 @@ const AgentizTasks: React.FC = () => {
               {details.task.description && (
                 <pre className="whitespace-pre-wrap rounded p-3 text-xs" style={{ backgroundColor: "#f8fafc" }}>{details.task.description}</pre>
               )}
+
+              {/* ---- attachments -------------------------------------------------------- */}
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  if (e.dataTransfer?.files?.length) void attachToSelected(e.dataTransfer.files);
+                }}
+                className="rounded-lg border border-dashed p-3"
+                style={dragOver ? { borderColor: "#38bdf8", backgroundColor: "#f0f9ff" } : undefined}
+              >
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold">
+                    Файлы{details.attachments.length > 0 ? ` (${details.attachments.length})` : ""}
+                  </h3>
+                  <div className="flex gap-2">
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        if (e.target.files?.length) void attachToSelected(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        if (e.target.files?.length) void attachToSelected(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      onClick={() => photoInputRef.current?.click()}
+                      disabled={busy || uploadProgress !== null}
+                      className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                    >
+                      🖼️ Добавить фото
+                    </button>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={busy || uploadProgress !== null}
+                      className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                    >
+                      📎 Прикрепить файлы
+                    </button>
+                  </div>
+                </div>
+
+                {uploadProgress && (
+                  <div className="mb-2 rounded p-2 text-xs" style={{ backgroundColor: "#fef3c7", color: "#92400e" }}>
+                    ⏳ {uploadProgress}
+                  </div>
+                )}
+
+                {details.attachments.length === 0 && !uploadProgress && (
+                  <p className="text-xs text-muted-foreground">
+                    Файлов пока нет. Перетащите их сюда или выберите кнопками выше — агент получит их при запуске.
+                  </p>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  {details.attachments.map((attachment) => (
+                    <div
+                      key={attachment.id}
+                      className="rounded border"
+                      style={{ width: 132, overflow: "hidden", backgroundColor: "#ffffff" }}
+                    >
+                      {isImage(attachment) ? (
+                        <img
+                          src={attachmentUrl(attachment.id, true)}
+                          alt={attachment.fileName}
+                          title={`${attachment.fileName} — открыть`}
+                          onClick={() => setPreviewAttachment(attachment)}
+                          style={{ width: 132, height: 96, objectFit: "cover", cursor: "zoom-in", display: "block" }}
+                        />
+                      ) : (
+                        <a
+                          href={attachmentUrl(attachment.id)}
+                          title={`Скачать ${attachment.fileName}`}
+                          className="flex items-center justify-center"
+                          style={{ width: 132, height: 96, fontSize: 40, backgroundColor: "#f8fafc", textDecoration: "none" }}
+                        >
+                          {fileGlyph(attachment)}
+                        </a>
+                      )}
+                      <div className="p-1.5">
+                        <div
+                          className="text-xs font-medium"
+                          title={attachment.fileName}
+                          style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                        >
+                          {attachment.fileName}
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                          <span>{formatBytes(attachment.sizeBytes)}</span>
+                          <span className="flex gap-1.5">
+                            <a href={attachmentUrl(attachment.id)} title="Скачать" className="underline">
+                              ⬇
+                            </a>
+                            <button
+                              onClick={() => removeAttachment(attachment)}
+                              disabled={busy}
+                              title="Удалить"
+                              style={{ color: "#b91c1c" }}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               <div>
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -948,6 +1217,52 @@ const AgentizTasks: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Fullscreen preview of an image attachment; click anywhere outside the card to close. */}
+      {previewAttachment && (
+        <div
+          onClick={() => setPreviewAttachment(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 60,
+            backgroundColor: "rgba(15, 23, 42, 0.8)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="rounded-lg"
+            style={{ backgroundColor: "#ffffff", maxWidth: "90vw", maxHeight: "90vh", overflow: "hidden" }}
+          >
+            <div className="flex items-center justify-between gap-3 p-2 text-sm">
+              <span className="font-medium" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {previewAttachment.fileName}
+              </span>
+              <span className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">{formatBytes(previewAttachment.sizeBytes)}</span>
+                <a href={attachmentUrl(previewAttachment.id)} className="rounded border px-2 py-0.5 font-medium">
+                  Скачать
+                </a>
+                <button
+                  onClick={() => setPreviewAttachment(null)}
+                  className="rounded border px-2 py-0.5 font-medium"
+                >
+                  Закрыть
+                </button>
+              </span>
+            </div>
+            <img
+              src={attachmentUrl(previewAttachment.id, true)}
+              alt={previewAttachment.fileName}
+              style={{ display: "block", maxWidth: "90vw", maxHeight: "calc(90vh - 44px)", objectFit: "contain" }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

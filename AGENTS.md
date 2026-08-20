@@ -54,6 +54,37 @@
   `layers/app-agentiz/lib/hookEnv.ts` and is the single source read by the server (builds the
   values), the worker (exports them) and the admin editor (completion and lint); adding a variable
   anywhere else silently splits those three apart.
+- The prompt a stage's agent actually receives is assembled on the **worker**,
+  `worker/src/agentiz_worker/prompt.py`, out of the job snapshot's `conversation` — the thread the
+  server froze at queue time in `AgentPipelineService.conversationForRun` (`primaryPrompt` = the
+  comment the run was started from, `messages` = the discussion up to it, `priorRuns` = earlier
+  runs' summaries and stage outputs). The trigger comment goes **last** and is named as the current
+  instruction, with the task title/description left above it as background: a run started from a
+  comment has to continue the task, not redo it. With no `conversation` in the job the text is
+  byte-identical to `systemPrompt` + title + description, so old snapshots and role prompts written
+  against that shape are unaffected. This was broken from the day the human-comment trigger landed
+  until 2026-08-20 — the server wrote the thread into every snapshot and the worker read none of
+  it, and the only consumer was the in-process `StubAgentExecutor`, which prod never runs
+  (`localWorkerEnabled: false`). Data being present in the snapshot is not evidence that anyone
+  reads it, and the worker is a **separate deploy** (`worker-release.yml`, tags `worker`/`worker-v*`).
+- Task attachments (files/photos on a task): metadata in `AgentTaskAttachment`, bytes on disk under
+  `data/task-attachments` (the volume prod already mounts; `AGENTIZ_ATTACHMENTS_DIR` overrides) —
+  all disk access goes through `layers/app-agentiz/lib/taskAttachments.ts`, and the on-disk path is
+  built from ids, never from the uploaded name. Upload from the panel is a **raw body** POST to
+  `/dashboard/agentiz-tasks/attachments` (query carries `taskId`/`fileName`, one file per request —
+  the panel's global parsers only touch JSON/urlencoded, so no multipart dependency), and that
+  route must stay **first** in `taskRoutes`: the middleware dispatcher runs every prefix match in
+  registration order. The attachment endpoints check the panel session themselves
+  (`requirePanelUser`) because the `adminizerMiddlewares` dispatcher runs **before** Adminizer's
+  auth policies — the rest of that surface is JSON reads/tracker writes and predates this. To the
+  run they travel as metadata only: `buildSnapshot` freezes `task.attachments` (like the
+  conversation — a file uploaded later belongs to the next run), the worker downloads bytes through
+  the leased `POST /jobs/:jobId/attachments/:attachmentId` (404 = deleted meanwhile ⇒ skip with a
+  warning; sha256 mismatch ⇒ fail), lays them out in `<workspace>/<jobId>/task-files/` — **outside**
+  the working tree, or they would land in the run's diff and break the next clean-tree preflight —
+  and names the directory to hooks as `AGENTIZ_TASK_FILES_DIR` and to the agent as an
+  `# Attached files` prompt block (`attachments_block` in `prompt.py`). Docker stages don't get the
+  paths: the container has its own tree, and a host path in the prompt would be a lie there.
 - A stage's `model` (`spec.stages[].model`) overrides the model of the `AgentRole` it names, for
   that stage only — absent falls back to `AgentRole.model`, unchanged from before this field
   existed. It flows through `AgentPipelineService.buildSnapshot` into the job snapshot's

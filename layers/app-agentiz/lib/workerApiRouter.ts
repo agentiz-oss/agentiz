@@ -1,3 +1,4 @@
+import fs from 'fs';
 import express, { type Router } from 'express';
 import { AgentWorkerApiService, WorkerApiError } from '../services/AgentWorkerApiService';
 import { AgentWorkerRegistryService, WorkerRegistryError } from '../services/AgentWorkerRegistryService';
@@ -99,6 +100,30 @@ export function createWorkerApiRouter(): Router {
   router.post('/jobs/:jobId/secrets', async (req, res) => {
     try {
       res.json(await AgentWorkerApiService.issueSecrets(req.params.jobId, req.body, req.header('authorization') ?? '', req.ip ?? null));
+    } catch (error) {
+      workerErrorResponse(res, error);
+    }
+  });
+
+  // Bytes of one task attachment, for the job this worker holds. A POST because the lease proof
+  // travels in the body like on every other job endpoint; the response is the raw file.
+  router.post('/jobs/:jobId/attachments/:attachmentId', async (req, res) => {
+    try {
+      const file = await AgentWorkerApiService.issueAttachment(
+        req.params.jobId,
+        req.params.attachmentId,
+        req.body,
+        req.header('authorization') ?? '',
+        req.ip ?? null,
+      );
+      if (!fs.existsSync(file.diskPath)) {
+        res.status(404).json({ message: 'Attachment file is missing on disk' });
+        return;
+      }
+      res.setHeader('Content-Type', file.mimeType ?? 'application/octet-stream');
+      res.setHeader('Content-Length', String(file.sizeBytes));
+      res.setHeader('X-Attachment-Filename', encodeURIComponent(file.fileName));
+      fs.createReadStream(file.diskPath).pipe(res);
     } catch (error) {
       workerErrorResponse(res, error);
     }

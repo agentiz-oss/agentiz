@@ -29,11 +29,13 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from .attachments import download_attachments
 from .changes import collect_changes
 from .harness_usage import USAGE_REPORT_INTERVAL_SEC, UsageReporter
 from .hooks import run_hook
 from .interactions import HumanInteractionBroker, install_acp_human_input
 from .live_events import LiveEventStream, SequenceCounter
+from .prompt import build_prompt
 from .redaction import Redactor
 from .repository import prepare_checkout
 from .workspace_git import finalize_action, guard_workspace, preflight as workspace_git_preflight, record_tree, run_action
@@ -281,6 +283,28 @@ class Client:
         AgentWorkerApiService.issueSecrets for why."""
         return self.post(f"/jobs/{job['jobId']}/secrets", job, {})
 
+    def download_attachment(self, job: dict[str, Any], attachment_id: str, dest: Path) -> bool:
+        """Streams one task attachment to ``dest``. False = the server no longer has it (404);
+        anything else raises. A POST like every job endpoint, because the lease proof is a body."""
+        request = Request(
+            f"{self.settings.api_url}/jobs/{job['jobId']}/attachments/{attachment_id}",
+            data=json.dumps({"schemaVersion": SCHEMA_VERSION, "attempt": job["attempt"],
+                             "leaseToken": job["leaseToken"]}).encode(),
+            method="POST",
+            headers={"Authorization": f"Bearer {self.settings.token}", "Content-Type": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=300) as response, open(dest, "wb") as sink:
+                shutil.copyfileobj(response, sink)
+            return True
+        except HTTPError as error:
+            if error.code == 404:
+                return False
+            raise WorkerError(
+                f"POST /jobs/{job['jobId']}/attachments/{attachment_id}: HTTP {error.code}: "
+                f"{error.read().decode(errors='replace')}"
+            ) from error
+
 
 def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None, str | None]:
     runtime = stage.get("runtime")
@@ -298,11 +322,6 @@ def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None
     if collaboration_mode is not None and collaboration_mode not in ("default", "plan"):
         raise WorkerError("stage agent config collaborationMode must be default or plan")
     return mode, str(kind), pin_acp_command(command), (str(model) if model else None), collaboration_mode
-
-
-def prompt(stage: dict[str, Any], job: dict[str, Any]) -> str:
-    task = job.get("task", {})
-    return "\n\n".join(part for part in [stage.get("systemPrompt") or "", f"Task: {task.get('title', '')}", task.get("description") or ""] if part)
 
 
 MAX_AGENT_MESSAGE_CHARS = 4_000
@@ -651,6 +670,26 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 emit("workspace.git.ready", None,
                      f"Git proposal {proposal.get('id')} revision {proposal.get('revision')} at {workspace_marker['baseSha'][:12]}")
 
+        # The task's attached files, laid out before hooks and stages so both can read them. They
+        # live under the job's private root — outside the checkout and outside a pinned workspace,
+        # or they would surface in the run's diff and fail the next clean-tree preflight.
+        task_files: list[dict[str, Any]] = []
+        task_files_dir: Path | None = None
+        attachment_entries = (job.get("task") or {}).get("attachments") or []
+        if isinstance(attachment_entries, list) and attachment_entries:
+            if job_root is None:
+                # A pinned-workspace job has no checkout root; the files still need a private one.
+                job_root = settings.workspace / str(job["jobId"])
+                job_root.mkdir(parents=True, exist_ok=True)
+            task_files_dir = job_root / "task-files"
+            task_files = download_attachments(
+                client, job, attachment_entries, task_files_dir,
+                warn=lambda message: emit("task.files", None, message, level="warn"),
+            )
+            if task_files:
+                emit("task.files", None,
+                     f"Файлы задачи готовы: {len(task_files)} шт. в {task_files_dir}")
+
         hooks = job.get("hooks") if isinstance(job.get("hooks"), dict) else None
         hook_records: list[dict[str, Any]] = []
 
@@ -670,6 +709,8 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 "AGENTIZ_WORKDIR": str(workdir),
                 "AGENTIZ_JOB_ID": str(job["jobId"]),
             }
+            if task_files:
+                env["AGENTIZ_TASK_FILES_DIR"] = str(task_files_dir)
             if run_status:
                 env["AGENTIZ_RUN_STATUS"] = run_status
             record = run_hook(position, spec, workdir, env, log=lambda message: emit("hook.progress", None, message))
@@ -708,6 +749,11 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if repository and mode == "docker":
                     raise WorkerError("stage runtime.mode 'docker' cannot see the repository checkout yet; configure the stage as 'host'")
                 emit("stage.started", stage_id, f"{kind} stage started in {mode} workspace")
+                # A docker stage runs in the container's own tree; host paths would be lies there.
+                stage_files = task_files if mode == "host" else []
+                if task_files and not stage_files:
+                    emit("task.files", stage_id,
+                         "Файлы задачи лежат на хосте и недоступны docker-стадии", level="warn")
                 # Filled by run_openhands from its finally block, so a stage that raised still
                 # reports what it spent — the failed entry below is how those tokens reach the run.
                 stage_usage: list[dict[str, Any]] = []
@@ -718,7 +764,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                         source = "codex" if any("codex-acp" in part or "codex_acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
                         interaction_broker = HumanInteractionBroker(client, job, str(stage_id), source, redact)
                         status, agent_response = run_openhands(
-                            mode, command, model, prompt(stage, job), settings, workdir,
+                            mode, command, model, build_prompt(stage, job, stage_files), settings, workdir,
                             lambda text: emit("stage.event", stage_id, text),
                             interaction_broker, collaboration_mode,
                             on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),

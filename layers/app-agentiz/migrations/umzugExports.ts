@@ -74,6 +74,10 @@ import {
   up as upAssistantConversations,
   down as downAssistantConversations,
 } from './umzug/1788000500000_assistant_conversations';
+import {
+  up as upTaskAttachments,
+  down as downTaskAttachments,
+} from './umzug/1788000600000_task_attachments';
 
 export const umzugExports: Migration[] = [
   {
@@ -238,5 +242,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000500000,
     up: upAssistantConversations,
     down: downAssistantConversations,
+  },
+  {
+    name: 'task_attachments',
+    timestamp: 1788000600000,
+    up: upTaskAttachments,
+    down: downTaskAttachments,
   },
 ];

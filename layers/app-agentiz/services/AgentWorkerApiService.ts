@@ -7,11 +7,13 @@ import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentRunResultDedup } from '../models/AgentRunResultDedup';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
+import { AgentTaskAttachment } from '../models/AgentTaskAttachment';
 import { AgentGitConnection } from '../models/AgentGitConnection';
 import { AgentRepository } from '../models/AgentRepository';
 import type { AgentRunLogLevel, AgentTaskStatus } from '../types/agentiz';
 import type { FileChange, FileOp } from '../lib/git';
 import { normalizeFileChanges, requireGitConnectionAuthority } from '../lib/git';
+import { attachmentDiskPath } from '../lib/taskAttachments';
 import { alignState } from '../lib/harnessAlign';
 import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
@@ -719,6 +721,41 @@ export class AgentWorkerApiService {
         password: token,
         expiresAt: connection.expiresAt?.toISOString() ?? null,
       },
+    };
+  }
+
+  /**
+   * One task attachment's bytes for the job the caller currently holds.
+   *
+   * Same lease gate as `issueSecrets`; the extra check is that the attachment belongs to the
+   * job's own task — a lease on one job must not read another task's files. Returns the disk
+   * path and lets the router stream it: the service stays transport-free and the file never
+   * loads into memory whole.
+   */
+  static async issueAttachment(
+    jobId: string,
+    attachmentId: string,
+    body: unknown,
+    authHeader: string,
+    ip?: string | null,
+  ): Promise<{ diskPath: string; fileName: string; mimeType: string | null; sizeBytes: number }> {
+    const worker = await this.authorize(authHeader, ip);
+    const payload = objectBody(body);
+    const job = await this.requireLeasedJob(jobId, payload, worker);
+
+    const run = await AgentRun.findByPk(job.runId);
+    if (!run) throw new WorkerApiError(404, 'Run not found');
+    const attachment = await AgentTaskAttachment.findByPk(attachmentId);
+    if (!attachment || attachment.taskId !== run.taskId) {
+      // A deleted attachment answers the same as a foreign one on purpose: the worker treats 404
+      // as "skip this file with a warning", and there is nothing else it could do about either.
+      throw new WorkerApiError(404, 'Attachment not found for this job');
+    }
+    return {
+      diskPath: attachmentDiskPath(attachment),
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
     };
   }
 

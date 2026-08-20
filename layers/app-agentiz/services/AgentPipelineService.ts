@@ -18,6 +18,7 @@ import { ActivityService } from './ActivityService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
+import { listTaskAttachments } from '../lib/taskAttachments';
 import { harnessColumnValue, harnessKeysForStages } from '../lib/harness';
 import { nextScheduleOpen } from '../lib/activeHours';
 import { hasUpstreamThread } from '../lib/taskManager';
@@ -857,6 +858,16 @@ export class AgentWorkerJobBuilder {
         description: task.description ?? '',
         tags: task.tags ?? [],
         externalUrl: task.externalUrl,
+        // Metadata only — the worker downloads the bytes through its leased attachments endpoint
+        // and lays them out beside the working tree. Frozen here like the conversation: a file
+        // uploaded after the job was queued belongs to the next run.
+        attachments: (await listTaskAttachments(task.id)).map((attachment) => ({
+          id: attachment.id,
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          sha256: attachment.sha256,
+        })),
       },
       conversation,
       stages,

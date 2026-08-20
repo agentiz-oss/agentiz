@@ -68,6 +68,7 @@ export const HOOK_VARIABLES: HookVariableDef[] = [
   { name: 'AGENTIZ_TASK_TAGS', scope: 'always', description: 'Task tags, comma separated', example: 'bug,urgent' },
   { name: 'AGENTIZ_TASK_URL', scope: 'always', description: 'Link to the task in its tracker, empty when it has none', example: 'https://gitlab.com/…/issues/5' },
   { name: 'AGENTIZ_TASK_BRANCH', scope: 'always', description: 'Branch requested by the task itself, empty when it requested none', example: 'feature/login' },
+  { name: 'AGENTIZ_TASK_FILES_DIR', scope: 'always', description: 'Directory with the task\'s attached files, laid out by the worker; empty when the task has none', example: '/home/worker/.local/share/agentiz-worker/workspace/<jobId>/task-files' },
 
   { name: 'AGENTIZ_REPO_PROVIDER', scope: 'repository', description: 'github or gitlab', example: 'gitlab' },
   { name: 'AGENTIZ_REPO_OWNER', scope: 'repository', description: 'Owner or namespace of the repository', example: 'group/sub' },
@@ -97,6 +98,8 @@ export const WORKER_PROVIDED_VARIABLES: ReadonlySet<string> = new Set([
   'AGENTIZ_WORKDIR',
   'AGENTIZ_RUN_STATUS',
   'AGENTIZ_JOB_ID',
+  // Where the worker laid out the task's attached files; only it knows the directory.
+  'AGENTIZ_TASK_FILES_DIR',
 ]);
 
 export interface HookEnvInputs {
