@@ -27,15 +27,27 @@ import { MobileInteractionService } from './MobileInteractionService';
  * dashboard uses, so both surfaces produce identical rows.
  */
 export class MobileTaskService {
-  /** Resolves a task the caller is allowed to see, or throws 404. */
-  private static async ownedTask(taskId: string, ownerId: number | string): Promise<AgentTask> {
+  /**
+   * Resolves a task the caller is allowed to see together with the project that granted the
+   * access, or throws 404. The project has to be read to answer "is this yours" at all, so a
+   * caller that also wants to *name* it costs nothing extra.
+   */
+  private static async ownedTaskWithProject(
+    taskId: string,
+    ownerId: number | string,
+  ): Promise<{ task: AgentTask; project: AgentProject }> {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new MobileAuthError(404, 'Task not found');
     const project = await AgentProject.findByPk(task.projectId);
     if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
       throw new MobileAuthError(404, 'Task not found');
     }
-    return task;
+    return { task, project };
+  }
+
+  /** Resolves a task the caller is allowed to see, or throws 404. */
+  private static async ownedTask(taskId: string, ownerId: number | string): Promise<AgentTask> {
+    return (await this.ownedTaskWithProject(taskId, ownerId)).task;
   }
 
   private static async ownedProject(projectId: string, ownerId: number | string): Promise<AgentProject> {
@@ -244,12 +256,25 @@ export class MobileTaskService {
     return runs.map((run) => this.runRow(run));
   }
 
-  /** One attempt including stage results and its process trace. */
+  /**
+   * One attempt including stage results and its process trace.
+   *
+   * Unlike the copy embedded in a task's detail, this one names the task and project it belongs
+   * to: a run opened from the board, the activity feed or a notification arrives with nothing but
+   * two ids, and the screen has to be able to say *whose* run this is and offer the way into it.
+   * Both rows are already loaded to authorise the call, so the context is free.
+   */
   static async runDetailForTask(taskId: string, runId: string, ownerId: number | string, logQuery: RunLogQuery = {}) {
-    await this.ownedTask(taskId, ownerId);
+    const { task, project } = await this.ownedTaskWithProject(taskId, ownerId);
     const run = await AgentRun.findOne({ where: { id: runId, taskId } });
     if (!run) throw new MobileAuthError(404, 'Run not found');
-    return this.runDetail(run, true, logQuery);
+    return {
+      ...(await this.runDetail(run, true, logQuery)),
+      taskId: task.id,
+      taskTitle: task.title,
+      projectId: project.id,
+      projectName: project.name,
+    };
   }
 
   /** Cancellation is scoped through the task, so a known run id cannot cross project boundaries. */
