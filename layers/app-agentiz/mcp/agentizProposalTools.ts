@@ -51,6 +51,10 @@ function proposalTeaser(proposal: AgentWorkspaceProposal, diff: AgentRunDiff | n
     decisionActor: proposal.decisionActor, decisionAt: proposal.decisionAt,
     pushedCommitSha: proposal.pushedCommitSha, pushedAt: proposal.pushedAt, rejectedAt: proposal.rejectedAt,
     lastError: proposal.lastError,
+    // The receipt for a reject: where the work went. Null together only when the directory
+    // had nothing to keep — otherwise one of the two is how a person gets it back, and this
+    // listing is the only place a caller outside the panel can read it.
+    stashSha: proposal.stashSha, abandonedRef: proposal.abandonedRef,
     reviewedChanges: diff
       ? { diffId: diff.id, revision: diff.revision, operations: diff.ops?.length ?? 0, stats: diff.stats, truncated: diff.truncated }
       : null,
