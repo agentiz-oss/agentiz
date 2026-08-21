@@ -86,12 +86,16 @@ COPY . .
 COPY --from=builder /app/dist ./dist
 COPY --from=focus_production /app/node_modules ./node_modules
 
-# Fail the build, not the dashboard, if that ever happens again.
+# Fail the build, not the dashboard, if that ever happens again. The entry name is
+# content-hashed, so it is read from the manifest the panel itself reads — never spelled
+# out here, or a rename silently turns this guard into an ENOENT.
 RUN node -e "const fs=require('fs'),p='/app/node_modules/adminizer/assets';\
-const app=fs.readFileSync(p+'/app.js','utf8');\
+const entry=JSON.parse(fs.readFileSync(p+'/manifest.json','utf8'))['src/assets/js/app.tsx'];\
+if(!entry||!entry.file){console.error('adminizer assets: no app entry in manifest.json');process.exit(1);}\
+const app=fs.readFileSync(p+'/'+entry.file,'utf8');\
 const missing=[...new Set(app.match(/\.\/[A-Za-z0-9_-]+\.js/g)||[])].map(m=>m.slice(2)).filter(f=>!fs.existsSync(p+'/'+f));\
-if(missing.length){console.error('adminizer assets/app.js references missing chunks: '+missing.join(', '));process.exit(1);}\
-console.log('adminizer assets: '+'app.js chunks resolved');"
+if(missing.length){console.error('adminizer '+entry.file+' references missing chunks: '+missing.join(', '));process.exit(1);}\
+console.log('adminizer assets: '+entry.file+' chunks resolved');"
 
 RUN chmod +x /app/bootstrap.sh
 
