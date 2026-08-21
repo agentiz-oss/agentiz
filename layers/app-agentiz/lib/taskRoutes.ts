@@ -17,6 +17,8 @@ import {
   storeAttachment,
 } from './taskAttachments';
 import { maskTaskSourceForUI, restoreMaskedTaskSourceSecrets } from './secrets';
+import { describeRunOverride, normalizeRunOverride } from './harnessCatalog';
+import type { AgentRunExecutorOverride } from '../types/agentiz';
 
 /** Whoever is driving the admin panel — recorded as the author of manual changes. */
 function actorOf(req: any): { id: number | null; name: string } {
@@ -315,21 +317,20 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'runTask') {
           const taskId = str(req.body?.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
-          const workerId = str(req.body?.workerId).trim();
-          const executorKey = str(req.body?.executorKey).trim();
-          if ((workerId && !executorKey) || (!workerId && executorKey)) {
-            return res.status(400).json({ message: 'workerId and executorKey must be provided together' });
+          let override: AgentRunExecutorOverride | null;
+          try {
+            override = normalizeRunOverride(req.body);
+          } catch (error) {
+            return res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
           }
-          const run = await AgentPipelineService.runTask(taskId, 'manual', {
-            executorOverride: workerId ? { workerId, executorKey } : null,
-          });
+          const run = await AgentPipelineService.runTask(taskId, 'manual', { executorOverride: override });
           await AgentTaskService.addComment(taskId, {
             authorKind: 'system',
             authorName: actor.name,
             authorId: actor.id,
             runId: run.id,
-            body: `Запущен пайплайн${executorKey ? ` (${executorKey})` : ''}, run ${run.id}`,
-            meta: { kind: 'run.started', runId: run.id, executorKey: executorKey || null },
+            body: `Запущен пайплайн${describeRunOverride(override)}, run ${run.id}`,
+            meta: { kind: 'run.started', runId: run.id, executorKey: override?.executorKey ?? null, override },
           });
           return res.json({ data: run.toJSON() });
         }

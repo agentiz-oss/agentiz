@@ -23,6 +23,7 @@ import { harnessColumnValue, harnessKeysForStages } from '../lib/harness';
 import { nextScheduleOpen } from '../lib/activeHours';
 import { hasUpstreamThread } from '../lib/taskManager';
 import { generateWorkspaceBranch } from '../lib/workspaceBranch';
+import { assertWorkspaceOwnership } from '../lib/workspaceOwnership';
 import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
@@ -667,7 +668,9 @@ export class AgentWorkerJobBuilder {
     // the job itself and enforced by every claim query rather than checked after the fact.
     const workspace = snapshot.workspace as RunWorkspaceRef | null;
     const requiredWorkerId = run.executorOverride?.workerId ?? workspace?.workerId ?? null;
-    if (workspace && run.executorOverride && workspace.workerId !== run.executorOverride.workerId) {
+    // Only an executor choice pins a worker: a model or a thinking level travels with the job and
+    // any worker may run it.
+    if (workspace && run.executorOverride?.workerId && workspace.workerId !== run.executorOverride.workerId) {
       throw new Error('Selected executor belongs to a different worker than the pipeline workspace');
     }
     // Mirrored out of the snapshot for the same reason: the claim query has to filter on it in SQL.
@@ -727,7 +730,9 @@ export class AgentWorkerJobBuilder {
     if (!task || !project) throw new Error(`AgentRun ${run.id}: task or project is missing`);
 
     const conversation = await this.conversationForRun(run);
-    const override = run.executorOverride ? await this.resolveExecutorOverride(run.executorOverride, project.id) : null;
+    const override = run.executorOverride?.executorKey
+      ? await this.resolveExecutorOverride(run.executorOverride, project.id)
+      : null;
     const stages = await Promise.all(orderedStages(run.pipelineSnapshot).map(async (stage, index) => {
       const role = await AgentRole.findOne({ where: { projectId: project.id, key: stage.agentRoleKey } });
       const execution = await AgentStageExecution.findOne({ where: { runId: run.id, stageIndex: index } });
@@ -742,9 +747,13 @@ export class AgentWorkerJobBuilder {
         systemPrompt: role?.systemPrompt ?? null,
         agent: {
           kind: override ? 'openhands-acp' : String((role?.config as any)?.executor ?? 'stub'),
-          // The spec's own per-stage override wins over the role's model, so one role can run under
-          // different models across stages/pipelines without cloning it.
-          model: stage.model ?? role?.model ?? null,
+          // Most specific first: what a person picked for this launch, then the spec's own
+          // per-stage override, then the role — so one role can run under different models across
+          // stages/pipelines without cloning it, and a manual launch can still overrule both.
+          model: run.executorOverride?.model ?? stage.model ?? role?.model ?? null,
+          // Nothing but a manual launch sets this today; absent leaves the CLI's own default, which
+          // is what every run did before the field existed.
+          reasoningLevel: run.executorOverride?.reasoningLevel ?? null,
           allowedTools: role?.allowedTools ?? [],
           config: override ? { ...(role?.config ?? {}), acpCommand: override.acpCommand } : role?.config ?? {},
         },
@@ -753,7 +762,7 @@ export class AgentWorkerJobBuilder {
 
     const source = run.pipelineSnapshot.source;
     const workspace = isWorkspaceSource(source)
-      ? await this.resolveWorkspace(source!.workspace as PipelineWorkerWorkspaceDef)
+      ? await this.resolveWorkspace(source!.workspace as PipelineWorkerWorkspaceDef, task.projectId)
       : null;
     if (workspace) {
       // A reservation belongs to the *directory*, not to the name a spec happened to use for it:
@@ -881,6 +890,9 @@ export class AgentWorkerJobBuilder {
   }
 
   private static async resolveExecutorOverride(override: AgentRunExecutorOverride, projectId: string): Promise<{ acpCommand: string[]; worker: AgentWorker }> {
+    if (!override.workerId || !override.executorKey) {
+      throw new Error('Executor choice requires both workerId and executorKey');
+    }
     const worker = await AgentWorker.findByPk(override.workerId);
     if (!worker || worker.status !== 'active') throw new Error('Selected executor worker is not active');
     if (worker.allowedProjectIds?.length && !worker.allowedProjectIds.includes(projectId)) {
@@ -987,8 +999,12 @@ export class AgentWorkerJobBuilder {
    *
    * Either way the Git grant comes from the worker record, never from the spec: a declared
    * workspace's own `git` block, or one of the worker's `gitPushRoots` covering the path.
+   *
+   * `specProjectId` is checked against the directory's owner when the operator bound one — the same
+   * check the spec editor runs, repeated here because a binding can be added or narrowed long after
+   * a spec was saved. Pass null only where no project is in play.
    */
-  static async resolveWorkspace(ref: PipelineWorkerWorkspaceDef): Promise<RunWorkspaceRef> {
+  static async resolveWorkspace(ref: PipelineWorkerWorkspaceDef, specProjectId?: string | null): Promise<RunWorkspaceRef> {
     const worker = await AgentWorker.findByPk(ref.workerId);
     if (!worker) {
       throw new Error(`Pipeline runs in a worker directory, but worker ${ref.workerId} no longer exists`);
@@ -998,6 +1014,12 @@ export class AgentWorkerJobBuilder {
     }
     if (ref.path) {
       const directory = ref.path.trim();
+      if (specProjectId) {
+        assertWorkspaceOwnership({
+          workerName: worker.name, workspaces: worker.workspaces, specProjectId,
+          named: `"${directory}"`, ref: { path: directory },
+        });
+      }
       return {
         workerId: worker.id,
         workerName: worker.name,
@@ -1020,6 +1042,12 @@ export class AgentWorkerJobBuilder {
       throw new Error(`Directory "${ref.workspaceKey}" on worker "${worker.name}" has an empty path`);
     }
     const directory = declared.path.trim();
+    if (specProjectId) {
+      assertWorkspaceOwnership({
+        workerName: worker.name, workspaces: worker.workspaces, specProjectId,
+        named: `"${declared.key}" (${directory})`, ref: { declared, path: directory },
+      });
+    }
     return {
       workerId: worker.id,
       workerName: worker.name,

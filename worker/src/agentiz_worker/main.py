@@ -12,6 +12,7 @@ machine — that job is only ever handed to this worker, and the directory must 
 from __future__ import annotations
 
 import argparse
+import contextlib
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import os
@@ -25,7 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -306,7 +307,7 @@ class Client:
             ) from error
 
 
-def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None, str | None]:
+def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None, str | None, str | None]:
     runtime = stage.get("runtime")
     mode = runtime.get("mode") if isinstance(runtime, dict) else None
     agent = stage.get("agent", {})
@@ -321,7 +322,67 @@ def stage_config(stage: dict[str, Any]) -> tuple[str, str, list[str], str | None
     collaboration_mode = config.get("collaborationMode") if isinstance(config, dict) else None
     if collaboration_mode is not None and collaboration_mode not in ("default", "plan"):
         raise WorkerError("stage agent config collaborationMode must be default or plan")
-    return mode, str(kind), pin_acp_command(command), (str(model) if model else None), collaboration_mode
+    reasoning_level = agent.get("reasoningLevel")
+    if reasoning_level is not None and reasoning_level not in REASONING_LEVELS:
+        raise WorkerError(f"stage agent reasoningLevel must be one of {', '.join(REASONING_LEVELS)}")
+    return (mode, str(kind), pin_acp_command(command), (str(model) if model else None), collaboration_mode,
+            (str(reasoning_level) if reasoning_level else None))
+
+
+#: How hard the agent is asked to think, in the server's one vocabulary (types/agentiz.ts).
+REASONING_LEVELS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh")
+
+#: Claude Code has no reasoning-effort config option; what it does have is a thinking budget read
+#: from MAX_THINKING_TOKENS by the CLI the ACP server drives. The numbers are the budgets its own
+#: "think"/"think hard"/"ultrathink" phrasings map to, so a level here means the same thing a
+#: person typing those words would get.
+CLAUDE_THINKING_TOKENS: Final[dict[str, int]] = {
+    "low": 4_000, "medium": 10_000, "high": 31_999, "xhigh": 63_999,
+}
+
+
+@contextlib.contextmanager
+def reasoning_settings(harness: str, model: str | None, level: str | None, note: Any):
+    """Apply one stage's thinking level, yielding the ``acp_model`` to start the session with.
+
+    Each harness takes it somewhere else, and neither place is a field of the ACP protocol:
+
+    * **codex** exposes ``reasoning_effort`` as a session config option, and openhands-sdk sets it
+      when the model id carries the effort as a suffix (``gpt-5.5/high``) — so the level travels
+      *inside* the model id and needs one, which is why a level with no model only warns.
+    * **claude** reads a thinking budget from the environment of the CLI subprocess, which the SDK
+      inherits from this process. Set for the stage and restored after it, because stages of one
+      job run in this same process one after another.
+
+    Anything else gets a warning rather than a silent no-op: a person asked for something and has
+    to learn it did not happen.
+    """
+    if not level:
+        yield model
+        return
+    if harness == "codex":
+        if not model:
+            note(f"Уровень рассуждений «{level}» пропущен: для codex он задаётся вместе с моделью, а модель не выбрана")
+            yield model
+        else:
+            note(f"Уровень рассуждений: {level} (модель {model}/{level})")
+            yield f"{model}/{level}"
+        return
+    if harness == "claude":
+        budget = CLAUDE_THINKING_TOKENS[level]
+        previous = os.environ.get("MAX_THINKING_TOKENS")
+        os.environ["MAX_THINKING_TOKENS"] = str(budget)
+        note(f"Уровень рассуждений: {level} (MAX_THINKING_TOKENS={budget})")
+        try:
+            yield model
+        finally:
+            if previous is None:
+                os.environ.pop("MAX_THINKING_TOKENS", None)
+            else:
+                os.environ["MAX_THINKING_TOKENS"] = previous
+        return
+    note(f"Уровень рассуждений «{level}» пропущен: обвязка {harness} его не поддерживает")
+    yield model
 
 
 MAX_AGENT_MESSAGE_CHARS = 4_000
@@ -735,7 +796,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                 if heartbeat_failure:
                     raise heartbeat_failure[0]
                 stage_id = stage.get("executionId")
-                mode, kind, command, model, collaboration_mode = stage_config(stage)
+                mode, kind, command, model, collaboration_mode, reasoning_level = stage_config(stage)
                 # A container gets its own filesystem, so it would not contain the prepared
                 # directory this pipeline exists for. The server rejects the combination too; this
                 # is the guard on the side that actually owns the path.
@@ -763,13 +824,18 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                     else:
                         source = "codex" if any("codex-acp" in part or "codex_acp" in part for part in command) else "claude" if any("claude-agent-acp" in part for part in command) else "acp"
                         interaction_broker = HumanInteractionBroker(client, job, str(stage_id), source, redact)
-                        status, agent_response = run_openhands(
-                            mode, command, model, build_prompt(stage, job, stage_files), settings, workdir,
-                            lambda text: emit("stage.event", stage_id, text),
-                            interaction_broker, collaboration_mode,
-                            on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),
-                            on_usage=stage_usage.append,
-                        )
+                        # The level is applied around the whole stage, not inside run_openhands: for
+                        # claude it is an environment variable the CLI subprocess inherits, so it has
+                        # to be set before the session starts and restored before the next stage.
+                        with reasoning_settings(source, model, reasoning_level,
+                                                lambda text, stage_id=stage_id: emit("stage.model", stage_id, text)) as acp_model:
+                            status, agent_response = run_openhands(
+                                mode, command, acp_model, build_prompt(stage, job, stage_files), settings, workdir,
+                                lambda text: emit("stage.event", stage_id, text),
+                                interaction_broker, collaboration_mode,
+                                on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),
+                                on_usage=stage_usage.append,
+                            )
                 except Exception:
                     if stage_usage:
                         outputs.append({"executionId": stage_id, "status": "failed",

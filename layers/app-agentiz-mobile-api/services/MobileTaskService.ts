@@ -11,6 +11,8 @@ import { AgentTaskAttachment } from '../../app-agentiz/models/AgentTaskAttachmen
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
 import { AgentPipelineService } from '../../app-agentiz/services/AgentPipelineService';
 import { AgentTaskService } from '../../app-agentiz/services/AgentTaskService';
+import { normalizeRunOverride } from '../../app-agentiz/lib/harnessCatalog';
+import { buildRunOptions } from '../../app-agentiz/lib/runOptions';
 import {
   attachmentDiskPath,
   deleteAttachment,
@@ -252,10 +254,27 @@ export class MobileTaskService {
    * whichever worker is active (the in-process one by default) drains it — so the app polls the
    * detail endpoint rather than waiting on this call.
    */
-  static async run(taskId: string, ownerId: number | string) {
+  static async run(taskId: string, ownerId: number | string, choice?: unknown) {
     await this.ownedTask(taskId, ownerId);
-    const run = await AgentPipelineService.runTask(taskId, 'manual');
+    let override;
+    try {
+      override = normalizeRunOverride(choice as Record<string, unknown> | null | undefined);
+    } catch (error) {
+      // A bad pick is the caller's mistake, not a server fault: without this it would surface as a
+      // 500 with the same text.
+      throw new MobileAuthError(400, error instanceof Error ? error.message : String(error));
+    }
+    const run = await AgentPipelineService.runTask(taskId, 'manual', { executorOverride: override });
     return { id: run.id, status: run.status };
+  }
+
+  /**
+   * What this task's launch dialog may offer. Scoped through the task like every other mobile
+   * endpoint, so a foreign id answers 404 rather than leaking a project's workers.
+   */
+  static async runOptions(taskId: string, ownerId: number | string) {
+    const task = await this.ownedTask(taskId, ownerId);
+    return buildRunOptions(task);
   }
 
   /** All attempts for a task. Results stay small enough to render as a phone-friendly history. */

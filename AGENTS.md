@@ -1,6 +1,12 @@
 # Agentiz development notes
 
 - Documentation index: [`docs/README.md`](docs/README.md).
+- Work journal: after finishing a piece of work, write what was done into a file in
+  [`docs/journal/`](docs/journal/) (one file per piece of work, name it `YYYY-MM-DD-<slug>.md`):
+  what was asked, what was actually changed and where, what was checked and what was left out.
+  The directory itself is tracked (via `.gitkeep`), its contents are **git-ignored** — the journal
+  is local working memory, not repository documentation. Anything that has to survive for other
+  people belongs in `docs/` or in these notes instead.
 - Run the server with `npm run dev` (TSX).
 - Run `npm run build` after TypeScript changes.
 - Local application layers: `layers/app-agentiz` (core), `layers/app-agentiz-gitlab-integration`,
@@ -18,6 +24,19 @@
 - `adminizerMiddlewares` routes are always prefixed with Adminizer's `routePrefix` (`/dashboard`).
   A machine-facing API must be mounted on `this.appManager.app` in `mount()` instead — that is why
   the Worker API lives in `layers/app-agentiz/lib/workerApiRouter.ts`.
+- A `PipelineSpec` is an entity of **its** project and never moves: `projectId` is refused on update
+  (`@BeforeSave` on the model — the only place all four write paths pass through: MCP `agentiz.manage`,
+  Adminizer CRUD, the panel editor, the assistant's `create_model_record`). Its stages already resolve
+  `agentRoleKey` among that project's roles only, and `resolveSpecForTask` never looks outside
+  `task.projectId`. The half that used to leak was the **directory**: a worker's declared workspace can
+  now carry `projectId` (`setWorkspaces`), and then only that project's specs may name it — by
+  `workspaceKey` *or* by its path, since a spec rewritten to the bare path would otherwise walk around
+  the binding. Checked twice, in `lib/workspaceOwnership.ts`: when the spec is saved, and again in
+  `AgentPipelineService.resolveWorkspace` at queue time, because an operator can bind a directory long
+  after a spec was written. A declaration without `projectId` stays shared — that is the pre-existing
+  behaviour, not an oversight. The reason it matters is the reservation: a workspace proposal is keyed
+  by worker+path and knows nothing about projects, so one project's `waiting_review` used to block
+  every run of the other project pointed at the same directory.
 - Two separate collections own the two halves of "external system": `gitProviders` (where code
   lives) and `taskManagers` (where tasks come from). A project can mix them freely.
 - Shared mutable registries must live on a `Symbol.for` global: under tsx a module can be
@@ -89,6 +108,24 @@
   `/tasks/:id/attachments` in `mobileApiRouter.ts`), also as a raw body — so a photo from a phone
   and a file from the panel are one thing to the snapshot and to the worker. Scope there is the
   task, like every mobile run endpoint: a foreign attachment id answers 404, never 403.
+- A manual launch may overrule the pipeline in three ways, and all three live in one place —
+  `AgentRun.executorOverride` (`AgentRunExecutorOverride`), normalized by `normalizeRunOverride` in
+  `layers/app-agentiz/lib/harnessCatalog.ts` for every entry point (panel `runTask`, mobile
+  `POST /tasks/:id/run`, MCP `agentiz.runTask`): the **runner** (`workerId` + `executorKey`, which
+  is also a worker pin — only that machine has that executor installed), the **model**, and the
+  **reasoning level** (`low|medium|high|xhigh`, Codex's `reasoning_effort` vocabulary). Model and
+  level pin nothing and apply to every stage of the run; a per-stage model still belongs in
+  `spec.stages[].model`. Precedence is resolved once, in `buildSnapshot`: launch → stage → role.
+  What the dialog offers and what it gets untouched comes from `lib/runOptions.ts`
+  (`buildRunOptions`), read by both the panel task detail and mobile `GET /tasks/:id/run-options` —
+  the model/level catalogue in `harnessCatalog.ts` is **advisory UI vocabulary**, never a whitelist,
+  because the ACP server decides what it accepts and a new model id must not need a server release.
+  The level is applied on the **worker** (`reasoning_settings` in `worker/src/agentiz_worker/main.py`),
+  differently per harness because it is not an ACP field: codex takes it inside the model id
+  (`gpt-5.5/high`, split by openhands-sdk into `reasoning_effort`) and therefore needs a model,
+  claude has no such option and gets `MAX_THINKING_TOKENS` in the CLI subprocess's environment —
+  set around the stage and restored after it, since stages share the worker process. Anything else
+  warns into the run log instead of silently ignoring what a person asked for.
 - A stage's `model` (`spec.stages[].model`) overrides the model of the `AgentRole` it names, for
   that stage only — absent falls back to `AgentRole.model`, unchanged from before this field
   existed. It flows through `AgentPipelineService.buildSnapshot` into the job snapshot's

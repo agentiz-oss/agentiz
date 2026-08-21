@@ -240,6 +240,10 @@ export const manageWorkerTool: IMcpTool = {
             key: { type: 'string', description: 'Stable identifier a pipeline spec stores. Unique within the worker, and must not start with "/".' },
             path: { type: 'string', description: 'Absolute path on the worker machine, e.g. /prj/lyapka-rf.' },
             label: { type: 'string' }, description: { type: 'string' },
+            projectId: {
+              type: ['string', 'null'],
+              description: 'The project this directory belongs to. Set it and only that project\'s pipeline specs may run here — a spec of another project is refused when saved and when a run is queued. Omit/null keeps the directory shared, as before this field existed. Bind it whenever the directory is a project checkout: a workspace proposal reserves the directory, and an unbound one blocks the other project\'s runs.',
+            },
             git: {
               type: 'object', required: ['pushEnabled'],
               description: 'Per-directory push grant, equivalent to a covering gitPushRoots prefix and the only way to push to a remote other than "origin".',

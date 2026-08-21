@@ -170,10 +170,30 @@ export interface AgentWorkerExecutor {
   acpCommand: string[];
 }
 
-/** An explicit manual choice is also a worker pin: another machine may not have that runner installed. */
+/**
+ * How hard the agent is asked to think for this run, in one vocabulary for every harness.
+ *
+ * The spelling is Codex's (`reasoning_effort`), because that one is a protocol value rather than
+ * a wording: codex-acp takes exactly these four. Every other harness maps them in the worker —
+ * Claude Code has no such config option and gets a thinking budget instead.
+ */
+export type AgentReasoningLevel = 'low' | 'medium' | 'high' | 'xhigh';
+
+/**
+ * What a person chose for one manual launch, over what the pipeline spec and the role say.
+ *
+ * Every field is optional and independent: picking a model must not force a worker pin, and
+ * picking a runner must not force a model. `workerId`/`executorKey` still travel together —
+ * an executor is named on exactly one worker, so choosing one *is* a worker pin: another machine
+ * may not have that runner installed. `model`/`reasoningLevel` apply to every stage of the run;
+ * a per-stage choice belongs in the spec (`spec.stages[].model`), not in a launch dialog.
+ */
 export interface AgentRunExecutorOverride {
-  workerId: string;
-  executorKey: string;
+  workerId?: string;
+  executorKey?: string;
+  /** Overrides `spec.stages[].model` and the role's model for this run only. */
+  model?: string;
+  reasoningLevel?: AgentReasoningLevel;
 }
 
 /**
@@ -189,6 +209,12 @@ export interface AgentWorkerWorkspace {
   path: string;
   label?: string;
   description?: string;
+  /**
+   * The project this directory belongs to. Absent = shared, the behaviour before this field
+   * existed; set, and only that project's pipeline specs may run here — see
+   * `lib/workspaceOwnership.ts`.
+   */
+  projectId?: string | null;
   /** Git operations are an explicit operator grant, never implied by merely exposing a path. */
   git?: {
     pushEnabled: boolean;

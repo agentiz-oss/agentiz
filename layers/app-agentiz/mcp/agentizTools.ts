@@ -8,6 +8,7 @@ import { AgentRun } from '../models/AgentRun';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { listRunLogs } from '../lib/runLogs';
 import { runUsage } from '../lib/runUsage';
+import { normalizeRunOverride, REASONING_LEVELS } from '../lib/harnessCatalog';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
 import { AgentPipelineService } from '../services/AgentPipelineService';
@@ -410,12 +411,17 @@ const pipelineSpecSchemaTool: IMcpTool = {
     ]);
     // A workspace is only reachable if the worker may claim this project's jobs and still exists.
     const usable = workers.filter((worker) => worker.status !== 'revoked' && worker.canClaimProject(projectId));
-    const workspaces = usable.flatMap((worker) => (worker.workspaces ?? []).map((workspace) => ({
-      workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
-      workerContactState: worker.contactState(), workspaceKey: workspace.key,
-      path: workspace.path, label: workspace.label ?? null,
-      git: worker.gitPushGrant(workspace.path, workspace),
-    })));
+    const workspaces = usable.flatMap((worker) => (worker.workspaces ?? [])
+      // A directory bound to another project is not offered at all: a spec naming it is refused on
+      // save, so listing it here would only produce a rejection the caller cannot act on.
+      .filter((workspace) => !workspace.projectId || workspace.projectId === projectId)
+      .map((workspace) => ({
+        workerId: worker.id, workerName: worker.name, workerStatus: worker.status,
+        workerContactState: worker.contactState(), workspaceKey: workspace.key,
+        path: workspace.path, label: workspace.label ?? null,
+        projectId: workspace.projectId ?? null,
+        git: worker.gitPushGrant(workspace.path, workspace),
+      })));
     // Where a spec may point a `path` workspace and still be able to commit from it.
     const gitPushRoots = usable
       .filter((worker) => worker.gitPushRoots?.length)
@@ -498,16 +504,25 @@ const syncTool: IMcpTool = {
 const runTaskTool: IMcpTool = {
   name: 'agentiz.runTask', group: 'agentiz-actions',
   shortDescription: 'Queues the pipeline for one task.',
-  description: 'Creates a pipeline run for taskId and queues a worker job. Optionally provide workerId and executorKey together to select an administrator-configured worker executor (for example Codex); that pins the job to that worker. Completion may create commits, pull requests or tracker comments according to the selected pipeline specification.',
-  mode: 'protected', inputSchema: { type: 'object', required: ['taskId'], properties: { taskId: { type: 'string' }, workerId: { type: 'string' }, executorKey: { type: 'string' } } },
+  description: 'Creates a pipeline run for taskId and queues a worker job. Optionally provide workerId and executorKey together to select an administrator-configured worker executor (for example Codex); that pins the job to that worker. model overrides the model of every stage for this run only, and reasoningLevel (low|medium|high|xhigh) sets how hard the agent thinks; both leave the pipeline untouched when omitted. Completion may create commits, pull requests or tracker comments according to the selected pipeline specification.',
+  mode: 'protected',
+  inputSchema: {
+    type: 'object',
+    required: ['taskId'],
+    properties: {
+      taskId: { type: 'string' },
+      workerId: { type: 'string' },
+      executorKey: { type: 'string' },
+      model: { type: 'string' },
+      reasoningLevel: { type: 'string', enum: REASONING_LEVELS },
+    },
+  },
   async handler(params) {
     const payload = objectParams(params);
     const taskId = stringParam(payload, 'taskId');
     if (!taskId) throw new Error('taskId:string is required');
-    const workerId = stringParam(payload, 'workerId');
-    const executorKey = stringParam(payload, 'executorKey');
-    if (!!workerId !== !!executorKey) throw new Error('workerId and executorKey must be provided together');
-    return runTeaser(await AgentPipelineService.runTask(taskId, 'manual', { executorOverride: workerId ? { workerId, executorKey: executorKey! } : null }));
+    const executorOverride = normalizeRunOverride(payload);
+    return runTeaser(await AgentPipelineService.runTask(taskId, 'manual', { executorOverride }));
   },
 };
 

@@ -95,7 +95,26 @@ interface TaskDetails {
   } | null;
   comments: TaskComment[];
   attachments: TaskAttachment[];
-  manualExecutorOptions: Array<{ workerId: string; executorKey: string; title: string; workerName: string }>;
+  manualExecutorOptions: Array<{ workerId: string; executorKey: string; title: string; workerName: string; harnessKey?: string | null }>;
+  /** Everything a manual launch may choose, built by lib/runOptions.ts. */
+  runOptions?: RunOptions;
+}
+
+/** What runs when the dialog is left alone, and the three things it may change about that. */
+interface RunOptions {
+  defaults: { harnessKey: string | null; harnessTitle: string | null; model: string | null };
+  stages: Array<{ order: number; role: string; harnessKey: string | null; harnessTitle: string | null; model: string | null }>;
+  executors: Array<{ workerId: string; executorKey: string; title: string; workerName: string; harnessKey: string | null }>;
+  harnesses: Array<{ key: string; title: string; models: Array<{ id: string; title: string }>; reasoningLevels: string[] }>;
+  reasoningLevels: Array<{ value: string; title: string }>;
+}
+
+/** Null everywhere = run the pipeline exactly as configured, which is what the button did before. */
+interface RunChoice {
+  workerId?: string;
+  executorKey?: string;
+  model?: string;
+  reasoningLevel?: string;
 }
 
 interface TaskSource {
@@ -194,7 +213,7 @@ const AgentizTasks: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
-  const [selectedExecutor, setSelectedExecutor] = useState<{ workerId: string; executorKey: string } | null>(null);
+  const [runChoice, setRunChoice] = useState<RunChoice>({});
   const [showSources, setShowSources] = useState(false);
   const [showNewTask, setShowNewTask] = useState(false);
   // --- attachments ---------------------------------------------------------------------------
@@ -225,6 +244,32 @@ const AgentizTasks: React.FC = () => {
     () => managers.find((m) => m.type === newSource.type) ?? null,
     [managers, newSource.type],
   );
+
+  // --- what the next manual launch will use --------------------------------------------------
+  // The choice is dropped when another task is opened, but the details of the one open arrive a
+  // request later, so everything below is validated against them: a runner the project cannot use
+  // and a model belonging to another harness are both dropped rather than sent.
+  const activeExecutor = useMemo(
+    () => (details?.manualExecutorOptions ?? []).find(
+      (item) => item.workerId === runChoice.workerId && item.executorKey === runChoice.executorKey,
+    ) ?? null,
+    [details, runChoice.workerId, runChoice.executorKey],
+  );
+  /** A chosen runner decides the model list; with none chosen that is the pipeline's own harness. */
+  const activeHarness = useMemo(() => {
+    const key = activeExecutor?.harnessKey ?? details?.runOptions?.defaults.harnessKey ?? null;
+    return (details?.runOptions?.harnesses ?? []).find((item) => item.key === key) ?? null;
+  }, [details, activeExecutor]);
+  const sanitizedRunChoice = useMemo<RunChoice>(() => ({
+    workerId: activeExecutor?.workerId,
+    executorKey: activeExecutor?.executorKey,
+    // A model left over from another harness would be sent to a CLI that does not know it.
+    model: !runChoice.model || (activeHarness && activeHarness.models.length
+      && !activeHarness.models.some((option) => option.id === runChoice.model))
+      ? undefined
+      : runChoice.model,
+    reasoningLevel: runChoice.reasoningLevel,
+  }), [activeExecutor, activeHarness, runChoice.model, runChoice.reasoningLevel]);
 
   // --- new task form -------------------------------------------------------------------------
   const [newTask, setNewTask] = useState({ projectId: "", title: "", description: "", priority: "normal" });
@@ -292,7 +337,7 @@ const AgentizTasks: React.FC = () => {
   }, [loadTasks]);
 
   useEffect(() => {
-    setSelectedExecutor(null);
+    setRunChoice({});
     loadDetails(selectedId);
   }, [selectedId, loadDetails]);
 
@@ -401,8 +446,8 @@ const AgentizTasks: React.FC = () => {
   );
 
   const runPipeline = useCallback(
-    async (taskId: string, executor?: { workerId: string; executorKey: string }) => {
-      const result = await post({ _method: "runTask", taskId, ...executor }, "Пайплайн запущен");
+    async (taskId: string, choice?: RunChoice) => {
+      const result = await post({ _method: "runTask", taskId, ...choice }, "Пайплайн запущен");
       if (result) {
         await loadTasks();
         await loadDetails(taskId);
@@ -918,12 +963,7 @@ const AgentizTasks: React.FC = () => {
                   ))}
                 </select>
                 <button
-                  onClick={() => runPipeline(
-                    details.task.id,
-                    selectedExecutor && details.manualExecutorOptions.some((item) => item.workerId === selectedExecutor.workerId && item.executorKey === selectedExecutor.executorKey)
-                      ? selectedExecutor
-                      : undefined,
-                  )}
+                  onClick={() => runPipeline(details.task.id, sanitizedRunChoice)}
                   disabled={busy}
                   className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
                 >
@@ -931,11 +971,18 @@ const AgentizTasks: React.FC = () => {
                 </button>
                 {(details.manualExecutorOptions ?? []).length > 0 && (
                   <select
-                    value={selectedExecutor ? `${selectedExecutor.workerId}:${selectedExecutor.executorKey}` : ""}
+                    value={runChoice.workerId ? `${runChoice.workerId}:${runChoice.executorKey}` : ""}
                     disabled={busy}
                     onChange={(e) => {
-                      const choice = details.manualExecutorOptions.find((item) => `${item.workerId}:${item.executorKey}` === e.target.value);
-                      setSelectedExecutor(choice ? { workerId: choice.workerId, executorKey: choice.executorKey } : null);
+                      const picked = details.manualExecutorOptions.find((item) => `${item.workerId}:${item.executorKey}` === e.target.value);
+                      // Switching runners drops a model picked for the previous one: model ids are
+                      // harness vocabulary, and "gpt-5.5" sent to Claude is a failed run.
+                      setRunChoice((current) => ({
+                        ...current,
+                        workerId: picked?.workerId,
+                        executorKey: picked?.executorKey,
+                        model: (picked?.harnessKey ?? details.runOptions?.defaults.harnessKey) === activeHarness?.key ? current.model : undefined,
+                      }));
                     }}
                     className="rounded border px-2 py-1 text-xs"
                     title="Необязательное переопределение исполнителя из настроек воркера"
@@ -948,6 +995,47 @@ const AgentizTasks: React.FC = () => {
                     ))}
                   </select>
                 )}
+                {/* Suggestions, not a whitelist — see lib/harnessCatalog.ts. A model the picker does
+                    not list is still legal and can be set over MCP. */}
+                {(activeHarness?.models ?? []).length > 0 && (
+                  <select
+                    value={runChoice.model ?? ""}
+                    disabled={busy}
+                    onChange={(e) => setRunChoice((current) => ({ ...current, model: e.target.value || undefined }))}
+                    className="rounded border px-2 py-1 text-xs"
+                    title="Переопределяет модель всех этапов этого запуска"
+                  >
+                    <option value="">
+                      модель: по пайплайну{details.runOptions?.defaults.model ? ` (${details.runOptions.defaults.model})` : ""}
+                    </option>
+                    {(activeHarness?.models ?? []).map((option) => (
+                      <option key={option.id} value={option.id}>модель: {option.title}</option>
+                    ))}
+                  </select>
+                )}
+                {(details.runOptions?.reasoningLevels ?? []).length > 0 && (
+                  <select
+                    value={runChoice.reasoningLevel ?? ""}
+                    disabled={busy}
+                    onChange={(e) => setRunChoice((current) => ({ ...current, reasoningLevel: e.target.value || undefined }))}
+                    className="rounded border px-2 py-1 text-xs"
+                    title="Насколько долго агент думает. Пусто = как решает сам CLI"
+                  >
+                    <option value="">уровень: по умолчанию</option>
+                    {(details.runOptions?.reasoningLevels ?? [])
+                      .filter((level) => !activeHarness || !activeHarness.reasoningLevels.length || activeHarness.reasoningLevels.includes(level.value))
+                      .map((level) => (
+                        <option key={level.value} value={level.value}>уровень: {level.title.toLowerCase()}</option>
+                      ))}
+                  </select>
+                )}
+              </div>
+              <div className="text-xs" style={{ color: "#64748b" }}>
+                Запустится: {[
+                  activeExecutor?.title ?? details.runOptions?.defaults.harnessTitle ?? "обвязка по пайплайну",
+                  runChoice.model ?? details.runOptions?.defaults.model ?? "модель по умолчанию",
+                  `уровень: ${details.runOptions?.reasoningLevels.find((level) => level.value === runChoice.reasoningLevel)?.title.toLowerCase() ?? "как у CLI"}`,
+                ].join(" · ")}
               </div>
 
               {details.task.description && (

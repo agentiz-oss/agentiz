@@ -198,9 +198,24 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
     }
   });
 
+  /**
+   * What a launch of this task may choose and what it gets untouched — the app shows the defaults
+   * as a line and opens the pickers from it. Separate from the task detail on purpose: the detail
+   * is polled every two seconds while a run is live, and this changes only when an operator edits
+   * the pipeline or a worker's runners.
+   */
+  router.get('/tasks/:id/run-options', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.runOptions(idOf(req), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
   router.post('/tasks/:id/run', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      res.status(202).json({ data: await MobileTaskService.run(idOf(req), ownerOf(req)) });
+      // An empty body is the whole point of the old call and still means "as the pipeline says".
+      res.status(202).json({ data: await MobileTaskService.run(idOf(req), ownerOf(req), req.body) });
     } catch (error) {
       errorResponse(res, error);
     }

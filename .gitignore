@@ -81,3 +81,7 @@ Thumbs.db
 *.swp
 *~
 .playwright-cli
+
+# ── Журнал работ (папка в git, содержимое — локальное) ───────────────
+docs/journal/*
+!docs/journal/.gitkeep

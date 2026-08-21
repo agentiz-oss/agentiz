@@ -3,31 +3,15 @@ import {
     AbstractAiModelService,
     User,
 } from '@nodeknit/app-adminizer';
+import type {
+    AiAgentConnectionStatus,
+    AiAgentSessionMeta,
+    AiAgentStreamEvent,
+    AiAgentUiHints,
+} from '@nodeknit/app-adminizer';
 import type { AppManager } from '@nodeknit/app-manager';
 import type { AppMCP } from '@nodeknit/app-mcp';
 import { AssistantConversationHistory } from './assistantConversationHistory';
-
-/**
- * The assistant contract adminizer 5.0.0-build.12 exports as types. `local_modules/app-adminizer`
- * pins build.7, whose `AbstractAiModelService` is `getMetadata` and nothing else, so these are
- * declared here rather than imported: structural shapes wide enough for what this file returns,
- * which is all a consumer of the newer build needs them to be. Delete them in favour of the imports
- * once the submodule moves.
- */
-type AiAgentConnectionStatus = { state: string; provider?: string; baseUrl?: string; lastError?: string };
-type AiAgentUiHints = Record<string, unknown>;
-type AiAgentSessionMeta = Record<string, unknown>;
-type AiAgentStreamEvent = { type: string; [key: string]: unknown };
-
-/**
- * The data skills the newer build provides on the base class. Absent on build.7, and calling them
- * blind is what turned "the assistant has no data tools here" into a TypeError the first time
- * anyone opened the chat.
- */
-type AgentSkillHost = {
-    getAgentSkills?: (user: User) => Array<{ id: string; description: string; inputSchema: any }>;
-    executeAgentSkill?: (id: string, input: Record<string, unknown>, user: User) => Promise<unknown>;
-};
 
 type StreamEvent = AiAgentStreamEvent;
 
@@ -376,14 +360,13 @@ export class AgentizAssistantService extends AbstractAiModelService {
         // update_model_record, create_model_record, ...): every call re-checks this user's model
         // permissions server-side. Available to every user, not just administrators.
         const skillTools: Record<string, any> = {};
-        const skillHost = this as AgentSkillHost;
-        for (const skill of skillHost.getAgentSkills?.(user) ?? []) {
+        for (const skill of this.getAgentSkills?.(user) ?? []) {
             skillTools[skill.id] = tool({
                 description: skill.description,
                 inputSchema: jsonSchema(skill.inputSchema),
                 execute: async (input: Record<string, unknown>) => {
                     try {
-                        const result = await skillHost.executeAgentSkill!(skill.id, input ?? {}, user);
+                        const result = await this.executeAgentSkill(skill.id, input ?? {}, user);
                         return summarizeToolResult(skill.id, result);
                     } catch (error: any) {
                         return { error: error?.message || `Skill "${skill.id}" failed.` };

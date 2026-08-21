@@ -1,10 +1,12 @@
-import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default, BeforeValidate } from 'sequelize-typescript';
+import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default, BeforeValidate, BeforeSave } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentProject } from './AgentProject';
 import type { PipelineSpecDef } from '../types/agentiz';
-import { assertValidSpec, coerceSpec, PIPELINE_SPEC_SCHEMA_TOOL } from '../services/PipelineSpecValidation';
+import { assertValidSpec, coerceSpec, isWorkspaceSource, PipelineSpecError, PIPELINE_SPEC_SCHEMA_TOOL } from '../services/PipelineSpecValidation';
+import { AgentWorker } from './AgentWorker';
+import { assertWorkspaceOwnership } from '../lib/workspaceOwnership';
 
 /**
  * The rule specification the user asked for: "если это не дефолтное для всей системы поведение,
@@ -32,6 +34,44 @@ export class PipelineSpec extends Model<InferAttributes<PipelineSpec>, InferCrea
     // columns as strings, so normalise before validating — the column must hold a document.
     instance.spec = coerceSpec(instance.spec) as PipelineSpecDef;
     assertValidSpec(instance.spec);
+  }
+
+  /**
+   * A spec is its project's own entity: it is never reused from another project, and the directory
+   * it runs in has to belong to the same project.
+   *
+   * Both halves are enforced here rather than in each write path, because there are four of them —
+   * the MCP `agentiz.manage` tool, Adminizer's generic CRUD, the panel's pipeline editor and the
+   * assistant's create_model_record skill — and a check missing from one of them is the whole rule
+   * missing. Moving a spec between projects is refused instead of silently rewiring which roles and
+   * which worker directory it resolves to; pointing it at another project's prepared directory is
+   * refused because a reservation there blocks that project's runs (see lib/workspaceOwnership.ts).
+   */
+  @BeforeSave
+  static async enforceProjectOwnership(instance: PipelineSpec): Promise<void> {
+    if (!instance.isNewRecord && instance.changed('projectId')) {
+      const previous = instance.previous('projectId');
+      throw new PipelineSpecError(
+        `Pipeline spec ${instance.id} belongs to project ${previous} and cannot be moved to ${instance.projectId}.`
+        + ' A pipeline spec is an entity of its project: create one in the target project instead'
+        + ' (its stages resolve agentRoleKey among that project\'s roles).',
+      );
+    }
+    const source = instance.spec?.source;
+    if (!isWorkspaceSource(source)) return;
+    const ref = source!.workspace;
+    const worker = await AgentWorker.findByPk(ref.workerId);
+    // A worker that does not exist (yet) is the queue's error to report, with the run in hand.
+    if (!worker) return;
+    const declared = ref.workspaceKey ? worker.workspace(ref.workspaceKey) : null;
+    const path = (declared?.path ?? ref.path ?? '').trim();
+    assertWorkspaceOwnership({
+      workerName: worker.name,
+      workspaces: worker.workspaces,
+      specProjectId: instance.projectId,
+      named: ref.workspaceKey ? `"${ref.workspaceKey}"${path ? ` (${path})` : ''}` : `"${path}"`,
+      ref: { declared, path },
+    });
   }
 
   @Default(() => randomUUID())

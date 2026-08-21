@@ -12,7 +12,8 @@ const LAUNCH_TTL_MS = 60_000;
 type AdminizerRuntime = {
   jwtSecret: string;
   accessRightsHelper: {
-    hasPermission(token: string, user: any): boolean;
+    // build.19 widened this to a promise for some backends; both shapes are accepted here.
+    hasPermission(token: string, user: any): boolean | Promise<boolean>;
   };
 };
 
@@ -37,8 +38,8 @@ function mobileError(res: Response, error: unknown) {
   return res.status(500).json({ message: error instanceof Error ? error.message : String(error) });
 }
 
-function hasAssistantAccess(adminizer: AdminizerRuntime, user: Model): boolean {
-  return adminizer.accessRightsHelper.hasPermission(`ai-assistant-${ASSISTANT_MODEL_ID}`, user);
+async function hasAssistantAccess(adminizer: AdminizerRuntime, user: Model): Promise<boolean> {
+  return await adminizer.accessRightsHelper.hasPermission(`ai-assistant-${ASSISTANT_MODEL_ID}`, user);
 }
 
 async function mobileUserFromBearer(req: Request, sequelize: Sequelize): Promise<Model> {
@@ -85,7 +86,7 @@ export function createMobileAssistantWebviewRouter(sequelize: Sequelize, adminiz
   router.post('/webview-session', async (req, res) => {
     try {
       const user = await mobileUserFromBearer(req, sequelize);
-      if (!hasAssistantAccess(adminizer, user)) throw new MobileAuthError(403, 'You do not have access to the Agentiz Assistant');
+      if (!(await hasAssistantAccess(adminizer, user))) throw new MobileAuthError(403, 'You do not have access to the Agentiz Assistant');
 
       const store = launches();
       const now = Date.now();
@@ -106,7 +107,7 @@ export function createMobileAssistantWebviewRouter(sequelize: Sequelize, adminiz
       if (code) launches().delete(code);
       if (!launch || launch.expiresAt <= Date.now()) throw new MobileAuthError(401, 'WebView launch link is invalid or expired');
       const user = await MobileAuthService.requireUser(sequelize, launch.userId);
-      if (!hasAssistantAccess(adminizer, user)) throw new MobileAuthError(403, 'You do not have access to the Agentiz Assistant');
+      if (!(await hasAssistantAccess(adminizer, user))) throw new MobileAuthError(403, 'You do not have access to the Agentiz Assistant');
       issueAdminizerCookie(res, user, adminizer);
       res.redirect(303, `${routePrefix}/mobile-assistant`);
     } catch (error) {

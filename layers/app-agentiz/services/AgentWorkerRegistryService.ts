@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { Op } from 'sequelize';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
+import { AgentProject } from '../models/AgentProject';
 import type {
   AgentWorkerCapabilities,
   AgentWorkerExecutor,
@@ -276,6 +277,11 @@ export class AgentWorkerRegistryService {
    * `source.workspace.workspaceKey` ambiguous or unresolvable at queue time. Paths are checked for
    * being absolute only — this server does not have the worker's filesystem, so existence is the
    * worker's own check.
+   *
+   * `projectId` is the operator's statement that this directory is one project's workspace: specs
+   * of any other project are then refused, at save time and at queue time (`lib/workspaceOwnership.ts`).
+   * It is validated against an existing project here — a typo would otherwise lock the directory
+   * out of every project at once, and only at the next run.
    */
   static async setWorkspaces(workerId: string, workspaces: AgentWorkerWorkspace[] | null): Promise<AgentWorker> {
     const worker = await this.require(workerId);
@@ -297,6 +303,10 @@ export class AgentWorkerRegistryService {
       }
       const label = String(item?.label ?? '').trim();
       const description = String(item?.description ?? '').trim();
+      const projectId = String(item?.projectId ?? '').trim();
+      if (projectId && !(await AgentProject.findByPk(projectId))) {
+        throw new WorkerRegistryError(400, `Workspace "${key}": project ${projectId} does not exist`, 'invalid_workspace');
+      }
       let git: AgentWorkerWorkspace['git'];
       if (item?.git !== undefined) {
         if (!item.git || typeof item.git !== 'object' || item.git.pushEnabled !== true) {
@@ -308,7 +318,13 @@ export class AgentWorkerRegistryService {
         }
         git = { pushEnabled: true, remote };
       }
-      cleaned.push({ key, path, ...(label ? { label } : {}), ...(description ? { description } : {}), ...(git ? { git } : {}) });
+      cleaned.push({
+        key, path,
+        ...(label ? { label } : {}),
+        ...(description ? { description } : {}),
+        ...(projectId ? { projectId } : {}),
+        ...(git ? { git } : {}),
+      });
     }
     await worker.update({ workspaces: cleaned.length ? cleaned : null });
     return worker;
