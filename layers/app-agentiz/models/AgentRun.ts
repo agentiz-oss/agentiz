@@ -243,4 +243,29 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
       },
     });
   }
+
+  /**
+   * Continues a workflow parked on `agentiz.pipeline` for this run (`run:<id>`).
+   *
+   * A second hook rather than a branch inside the one above: that one's job is the activity feed
+   * and it awaits `ActivityService.record()`, which fans out to push and the bell — a workflow
+   * must not wait behind that, and neither may fail because the other did. Same instance-update
+   * constraint applies: a bulk status write bypasses both.
+   */
+  @AfterUpdate
+  static async continueWaitingWorkflow(instance: AgentRun): Promise<void> {
+    if (!instance.changed('status')) return;
+    const terminal = ['succeeded', 'failed', 'cancelled'];
+    const previous = instance.previous('status');
+    if (!terminal.includes(instance.status) || previous === undefined || terminal.includes(String(previous))) return;
+    // Dynamic import for the same reason as above: the bridge pulls in the engine package.
+    const { completePipelineWait } = await import('../lib/workflow/engineBridge');
+    await completePipelineWait(instance.id, {
+      status: instance.status,
+      summary: instance.resultSummary,
+      error: instance.errorMessage,
+      taskId: instance.taskId,
+      projectId: instance.projectId,
+    });
+  }
 }

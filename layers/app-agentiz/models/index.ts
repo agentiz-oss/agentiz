@@ -24,3 +24,5 @@ export { AgentActivitySeen } from './AgentActivitySeen';
 export { AgentWorkerHarness } from './AgentWorkerHarness';
 export { AgentHarnessUsageSample } from './AgentHarnessUsageSample';
 export { AgentAssistantConversation } from './AgentAssistantConversation';
+export { AgentWorkflowSpec } from './AgentWorkflowSpec';
+export { AgentWorkflowRun } from './AgentWorkflowRun';

@@ -22,6 +22,7 @@ import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementToo
 import { agentizProposalMcpTools } from './agentizProposalTools';
 import { agentizCapacityActionTools } from './agentizCapacityTools';
 import { notificationPolicyMcpTools } from './notificationPolicyTools';
+import { agentizWorkflowMcpTools } from './agentizWorkflowTools';
 
 type Params = Record<string, unknown>;
 
@@ -547,4 +548,5 @@ export const agentizMcpTools: IMcpTool[] = [
   ...agentizProposalMcpTools,
   ...agentizCapacityActionTools,
   ...notificationPolicyMcpTools,
+  ...agentizWorkflowMcpTools,
 ];

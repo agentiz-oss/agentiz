@@ -292,6 +292,32 @@
   as a placeholder text part instead of their base64: whole messages are never dropped to save
   space, because that can separate a tool call from its result and the provider then rejects the
   restored dialog.
+- A workflow reacts to Agentiz through **one** seam: `layers/app-agentiz/lib/workflow/`. Task facts
+  reach the engine as app-manager emitter events (`agentiz.task.created` / `agentiz.task.updated`),
+  emitted from `@AfterCreate`/`@AfterUpdate` hooks on `AgentTask` rather than from the four places
+  that create tasks — and `task.updated` watches `title`/`description`/`tags` only, because a run
+  moves `status` constantly and a flow that starts pipelines would otherwise feed itself. Declaring
+  the event class (`@Collection events`) is what puts it in the canvas dropdown; emitting is
+  separate from declaring. The three node types (`agentiz.task.trigger` / `.match` / `.run`) go out
+  through the `workflowNodes` collection with **type-only** imports of `@nodeknit/app-workflow`, so
+  the engine being absent or disabled costs app-agentiz nothing. Graphs are stored by this layer
+  (`AgentWorkflowSpec`) and so is run state (`AgentWorkflowRun`, `workflowStores`) — the second is
+  not optional once a node waits: `agentiz.pipeline` parks a flow in `waiting_external` for the
+  whole length of a pipeline, and the engine's in-memory default would lose it on the next deploy.
+  Waiting and not waiting are **two node types** (`agentiz.pipeline` vs `agentiz.task.run`), because
+  the engine dispatches on a node's `kind` and a kind cannot depend on config. The continuation is
+  an `@AfterUpdate` hook on `AgentRun` → `completePipelineWait` (`lib/workflow/engineBridge.ts`,
+  ref `run:<id>`), separate from the activity hook next to it so a workflow never waits behind push
+  fan-out; a failed pipeline takes the node's `failed` port rather than failing the flow. That
+  bridge and the MCP tools (`agentiz.workflows` / `workflowDetails` / `workflowSchema` /
+  `manageWorkflow` / `fireWorkflowTrigger` / `cancelWorkflowRun`, all thin wrappers over the same
+  `WorkflowAdminApi` the canvas uses) are the only two places that reach *into* the engine at
+  runtime; everything else is data through collections. There is deliberately no "run this
+  workflow" verb — a flow runs because a trigger fired, and the manual gesture names one trigger
+  node. Two things a list-shaped node config must respect: the canvas drops the whole config to a
+  JSON textarea if any schema property is an array (hence comma-separated strings), and a trigger
+  binder must be idempotent per `listenerKey` — the engine can rebind twice concurrently on
+  startup, which would otherwise run the flow twice for one task.
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
@@ -477,9 +503,10 @@ checks, publishes no branch image), `gh workflow run container.yml --ref <branch
 - `GET /mcp` returns the compact tool catalogue (groups + tool list). Without a valid key it only
   shows the public `general` group (just `health`). With a valid key it also shows `agentiz`
   (read-only: overview, projects, tasks, runs, runDetails, configuration, pipelineSpecSchema,
-  workers, workerDetails, jobs, proposals) and `agentiz-actions` (state-changing: sync, runTask,
-  cancelRun, manage, manageWorker, manageProposal), plus more `general` tools (adminizer.user,
-  system.listApps, system.toggleApp).
+  workers, workerDetails, jobs, proposals, workflows, workflowDetails, workflowSchema) and
+  `agentiz-actions` (state-changing: sync, runTask, cancelRun, manage, manageWorker,
+  manageProposal, manageWorkflow, fireWorkflowTrigger, cancelWorkflowRun), plus more `general`
+  tools (adminizer.user, system.listApps, system.toggleApp).
 - `PipelineSpec.spec` is validated against `layers/app-agentiz/schemas/pipeline-spec.schema.json`.
   Anything writing a spec — the MCP `agentiz.manage` tool, Adminizer's generic CRUD, the admin
   assistant's `create_model_record` skill — reads that shape through `agentiz.pipelineSpecSchema`,

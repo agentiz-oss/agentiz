@@ -1,4 +1,4 @@
-import { Table, Column, Model, DataType, BelongsTo, HasMany, ForeignKey, Default } from 'sequelize-typescript';
+import { Table, Column, Model, DataType, BelongsTo, HasMany, ForeignKey, Default, AfterCreate, AfterUpdate } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
@@ -7,6 +7,19 @@ import { PipelineSpec } from './PipelineSpec';
 import { AgentRun } from './AgentRun';
 import { AgentTaskComment } from './AgentTaskComment';
 import type { AgentTaskPriority, AgentTaskStatus } from '../types/agentiz';
+import {
+  AGENTIZ_TASK_CREATED,
+  AGENTIZ_TASK_UPDATED,
+  emitAgentizEvent,
+  taskEventPayload,
+} from '../lib/workflow/events';
+
+/**
+ * Fields whose change is worth waking a workflow for. Status is deliberately absent: a run moves
+ * it constantly, so listening to it would make every pipeline start an event, and a flow that
+ * starts pipelines would feed itself.
+ */
+const WORKFLOW_WATCHED_FIELDS = ['title', 'description', 'tags'];
 
 /**
  * A task pulled from the external tracker (GitHub/GitLab issue) and mirrored locally so we can
@@ -158,4 +171,26 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
 
   @HasMany(() => AgentTaskComment, 'taskId')
   declare comments: AgentTaskComment[];
+
+  /**
+   * "A task arrived" as an event on the app-manager emitter — the entry point of every workflow
+   * that reacts to tasks (see lib/workflow/events.ts).
+   *
+   * On the model rather than at the call sites because there are four of them (tracker sync,
+   * generic task-source sync, the panel/MCP `AgentTaskService.create`, the mobile API) and a fifth
+   * would silently not fire. The same caveat as the `run.succeeded` hook applies: a bulk
+   * `AgentTask.bulkCreate` / `AgentTask.update({...}, { where })` bypasses instance hooks, so
+   * anything writing tasks that way has to emit for itself.
+   */
+  @AfterCreate
+  static emitWorkflowCreated(task: AgentTask): void {
+    emitAgentizEvent(AGENTIZ_TASK_CREATED, taskEventPayload(task));
+  }
+
+  @AfterUpdate
+  static emitWorkflowUpdated(task: AgentTask): void {
+    const changed = (task.changed() || []).filter((field) => WORKFLOW_WATCHED_FIELDS.includes(String(field)));
+    if (changed.length === 0) return;
+    emitAgentizEvent(AGENTIZ_TASK_UPDATED, { ...taskEventPayload(task), changed: changed.map(String) });
+  }
 }

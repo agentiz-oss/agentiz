@@ -32,6 +32,8 @@ import { AgentHarnessUsageSample } from './models/AgentHarnessUsageSample';
 import { AgentActivity } from './models/AgentActivity';
 import { AgentActivitySeen } from './models/AgentActivitySeen';
 import { AgentAssistantConversation } from './models/AgentAssistantConversation';
+import { AgentWorkflowSpec } from './models/AgentWorkflowSpec';
+import { AgentWorkflowRun } from './models/AgentWorkflowRun';
 import { AgentCapacityService } from './services/AgentCapacityService';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
@@ -57,6 +59,12 @@ import { forgetAdminizerNotifications, useAdminizerNotifications } from './lib/n
 import { forgetNotifySettingStorage, notifyPolicySettingSlots, useNotifySettingStorage } from './lib/notifications/policySettings';
 import { NotificationPolicyService } from './services/NotificationPolicyService';
 import { notificationRoutes } from './lib/notificationRoutes';
+import { agentizWorkflowEvents, forgetWorkflowEvents, useWorkflowEvents } from './lib/workflow/events';
+import { agentizWorkflowNodes } from './lib/workflow/nodes';
+import { AgentizWorkflowSpecProvider } from './lib/workflow/specProvider';
+import { AgentizWorkflowRunStore } from './lib/workflow/runStore';
+import { AgentizWorkflowHost } from './lib/workflow/host';
+import type { NodeTypeDefinition, WorkflowHost, WorkflowSpecProvider } from '@nodeknit/app-workflow';
 import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTaskManager';
 import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerCollection';
 import type { TaskManagerAdapter } from './lib/taskManager';
@@ -111,10 +119,45 @@ export class AppAgentiz extends AbstractApp {
         AgentActivity,
         AgentActivitySeen,
         AgentAssistantConversation,
+        AgentWorkflowSpec,
+        AgentWorkflowRun,
     ];
 
     @Collection
     mcpTools: IMcpTool[] = agentizMcpTools;
+
+    /**
+     * Facts about tasks, declared so they show up in `emitter.getAllEvents()` — the catalogue the
+     * workflow canvas offers when a trigger names an event. The emitting itself is a model hook
+     * (see models/AgentTask.ts); declaring and emitting are separate on purpose in app-manager.
+     */
+    @Collection
+    events: any[] = agentizWorkflowEvents;
+
+    /**
+     * The workflow palette: "задача пришла" as a trigger, the check that decides whether it is
+     * worth a run, and the run itself (lib/workflow/nodes.ts). Contributed as data through
+     * `@nodeknit/app-workflow`'s collection, and imported as types only — with the engine absent
+     * or disabled nothing here is read and app-agentiz mounts exactly as before.
+     */
+    @Collection
+    workflowNodes: NodeTypeDefinition[] = agentizWorkflowNodes;
+
+    /** Where those graphs are stored — the engine keeps no tables of its own. */
+    @Collection
+    workflowSpecProviders: WorkflowSpecProvider[] = [new AgentizWorkflowSpecProvider()];
+
+    /**
+     * Durable run state. The engine's in-memory default would be enough for a graph that finishes
+     * in one pass, but `agentiz.pipeline` parks a flow for as long as a pipeline runs — long
+     * enough to meet a deploy.
+     */
+    @Collection
+    workflowStores: Array<{ runStore: unknown }> = [{ runStore: new AgentizWorkflowRunStore() }];
+
+    /** Permissions/secrets/notifications seam; without it the engine falls back to a deny-all host. */
+    @Collection
+    workflowHost: WorkflowHost[] = [new AgentizWorkflowHost()];
 
     /**
      * Git hosting adapters. app-agentiz owns the collection and the abstraction, every concrete
@@ -385,6 +428,11 @@ export class AppAgentiz extends AbstractApp {
         useNotifySettingStorage(this.appManager);
         NotificationPolicyService.use(this.appManager);
 
+        // Task events reach the workflow engine through the app-manager emitter. Installed here,
+        // before any request can write a task; until it is, emitting is a no-op rather than a
+        // crash, which is what keeps the model hook safe in unit tests.
+        useWorkflowEvents(this.appManager);
+
         if (adminizerApp) {
             // Second delivery channel for feed events: the panel's own bell. Registered here rather
             // than through the `activityNotifiers` collection because the notifier needs the
@@ -432,6 +480,7 @@ export class AppAgentiz extends AbstractApp {
         forgetAdminizerNotifications();
         forgetNotifySettingStorage();
         NotificationPolicyService.forget();
+        forgetWorkflowEvents();
         AgentWorkerQueueService.stop();
         AgentJobReaperService.stop();
         AgentCapacityService.stop();

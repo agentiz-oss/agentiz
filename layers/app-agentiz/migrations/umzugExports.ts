@@ -78,6 +78,14 @@ import {
   up as upTaskAttachments,
   down as downTaskAttachments,
 } from './umzug/1788000600000_task_attachments';
+import {
+  up as upWorkflowSpecs,
+  down as downWorkflowSpecs,
+} from './umzug/1788000700000_workflow_specs';
+import {
+  up as upWorkflowRuns,
+  down as downWorkflowRuns,
+} from './umzug/1788000800000_workflow_runs';
 
 export const umzugExports: Migration[] = [
   {
@@ -248,5 +256,17 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000600000,
     up: upTaskAttachments,
     down: downTaskAttachments,
+  },
+  {
+    name: 'workflow_specs',
+    timestamp: 1788000700000,
+    up: upWorkflowSpecs,
+    down: downWorkflowSpecs,
+  },
+  {
+    name: 'workflow_runs',
+    timestamp: 1788000800000,
+    up: upWorkflowRuns,
+    down: downWorkflowRuns,
   },
 ];
