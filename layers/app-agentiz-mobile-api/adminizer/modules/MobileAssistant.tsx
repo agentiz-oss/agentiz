@@ -10,7 +10,10 @@ export default function MobileAssistant() {
   useEffect(() => {
     let alive = true;
     const routePrefix = (window as any).routePrefix ?? '/dashboard';
-    void import(/* @vite-ignore */ `${routePrefix}/assets/ai-assistant/agent.es.js`)
+    // agent.es.js keeps a stable name; the adminizer version (exposed by
+    // bindInertia) busts the browser cache on each adminizer release.
+    const assetVersion = (window as any).adminizerVersion ?? '';
+    void import(/* @vite-ignore */ `${routePrefix}/assets/ai-assistant/agent.es.js?v=${assetVersion}`)
       .then((module) => { if (alive) setAgent(() => module.default); })
       .catch((cause) => {
         console.error('Unable to load the Adminizer assistant UI', cause);

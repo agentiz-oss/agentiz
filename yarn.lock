@@ -702,7 +702,7 @@
   version "1.0.0"
   resolved "file:local_modules/app-adminizer"
   dependencies:
-    adminizer "5.0.0-build.7"
+    adminizer "5.0.0-build.19"
     ajv "^8.17.1"
     express "^4.21.2"
     password-hash "^1.2.2"
@@ -1826,10 +1826,10 @@ adminizer@4.3.0-build.89:
     waterline "^0.15.2"
     winston "^3.17.0"
 
-adminizer@5.0.0-build.19:
-  version "5.0.0-build.19"
-  resolved "https://registry.npmjs.org/adminizer/-/adminizer-5.0.0-build.19.tgz"
-  integrity sha512-z84A7bOWPz2n7BFNp7IxdunFJQuFoyv8defDRvtIOZxHF4SzDt51IifAZOBNdAP8IseXPwAgL+pu4PDaAnifKA==
+adminizer@5.0.0-build.20:
+  version "5.0.0-build.20"
+  resolved "https://registry.npmjs.org/adminizer/-/adminizer-5.0.0-build.20.tgz"
+  integrity sha512-LwVk6UJDSFsG5jzfj6JMuQ/76N0+TRXkRR+4Us0HE2ehfUZA0Z9diYGzfhjYyx1FB0LJJG27Sc9DYKke6LB6hw==
   dependencies:
     body-parser "^2.2.2"
     chalk "^5.4.1"
