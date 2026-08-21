@@ -7,9 +7,16 @@ import { runUsage } from '../../app-agentiz/lib/runUsage';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
+import { AgentTaskAttachment } from '../../app-agentiz/models/AgentTaskAttachment';
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
 import { AgentPipelineService } from '../../app-agentiz/services/AgentPipelineService';
 import { AgentTaskService } from '../../app-agentiz/services/AgentTaskService';
+import {
+  attachmentDiskPath,
+  deleteAttachment,
+  listTaskAttachments,
+  storeAttachment,
+} from '../../app-agentiz/lib/taskAttachments';
 import { MobileAuthError } from './MobileAuthService';
 import { MobileInteractionService } from './MobileInteractionService';
 
@@ -200,10 +207,11 @@ export class MobileTaskService {
   static async detail(taskId: string, ownerId: number | string) {
     const task = await this.ownedTask(taskId, ownerId);
 
-    const [runs, comments, pendingInteractions] = await Promise.all([
+    const [runs, comments, pendingInteractions, attachments] = await Promise.all([
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 20 }),
       AgentTaskComment.findAll({ where: { taskId } }),
       MobileInteractionService.pendingForTask(taskId),
+      listTaskAttachments(taskId),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -230,6 +238,7 @@ export class MobileTaskService {
           runId: comment.runId,
           createdAt: comment.externalCreatedAt ?? comment.createdAt,
         })),
+      attachments: attachments.map((attachment) => this.attachmentRow(attachment)),
     };
   }
 
@@ -284,6 +293,92 @@ export class MobileTaskService {
     if (!run) throw new MobileAuthError(404, 'Run not found');
     await AgentPipelineService.cancelRun(run.id, 'Cancelled from mobile app');
     return this.runDetailForTask(taskId, runId, ownerId);
+  }
+
+  /** The wire shape of one attachment; the app builds its download URL from the id. */
+  private static attachmentRow(attachment: AgentTaskAttachment) {
+    return {
+      id: attachment.id,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      uploadedByName: attachment.uploadedByName,
+      createdAt: attachment.createdAt,
+    };
+  }
+
+  static async listAttachments(taskId: string, ownerId: number | string) {
+    await this.ownedTask(taskId, ownerId);
+    return (await listTaskAttachments(taskId)).map((attachment) => this.attachmentRow(attachment));
+  }
+
+  /**
+   * Stores an uploaded file on the task. The same storage helper the admin panel writes through,
+   * so an attachment is one thing wherever it came from — the run snapshot and the worker download
+   * cannot tell (and must not care) which surface added it.
+   */
+  static async addAttachment(
+    taskId: string,
+    ownerId: number | string,
+    input: { fileName: string; mimeType: string | null; content: Buffer },
+    actor: { id: number | null; name: string },
+  ) {
+    await this.ownedTask(taskId, ownerId);
+    const attachment = await storeAttachment({
+      taskId,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      content: input.content,
+      uploadedById: actor.id,
+      uploadedByName: actor.name,
+    });
+    // The thread records the upload exactly like the dashboard does — and through the frozen
+    // conversation this line is also how a later run learns a file appeared mid-thread.
+    await AgentTaskService.addComment(taskId, {
+      authorKind: 'system',
+      authorName: actor.name,
+      authorId: actor.id,
+      body: `Прикреплён файл «${attachment.fileName}» (${attachment.sizeBytes} байт)`,
+      meta: { kind: 'attachment.added', attachmentId: attachment.id, via: 'mobile' },
+    });
+    return this.attachmentRow(attachment);
+  }
+
+  /**
+   * One attachment's bytes, scoped through the task like every run endpoint — a known attachment
+   * id must not cross project boundaries, and a foreign one reads as 404, never 403.
+   */
+  static async attachmentFile(taskId: string, attachmentId: string, ownerId: number | string) {
+    await this.ownedTask(taskId, ownerId);
+    const attachment = await AgentTaskAttachment.findOne({ where: { id: attachmentId, taskId } });
+    if (!attachment) throw new MobileAuthError(404, 'Attachment not found');
+    return {
+      diskPath: attachmentDiskPath(attachment),
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+    };
+  }
+
+  static async removeAttachment(
+    taskId: string,
+    attachmentId: string,
+    ownerId: number | string,
+    actor: { id: number | null; name: string },
+  ) {
+    await this.ownedTask(taskId, ownerId);
+    const attachment = await AgentTaskAttachment.findOne({ where: { id: attachmentId, taskId } });
+    if (!attachment) throw new MobileAuthError(404, 'Attachment not found');
+    const fileName = attachment.fileName;
+    await deleteAttachment(attachment);
+    await AgentTaskService.addComment(taskId, {
+      authorKind: 'system',
+      authorName: actor.name,
+      authorId: actor.id,
+      body: `Удалён файл «${fileName}»`,
+      meta: { kind: 'attachment.deleted', attachmentId, via: 'mobile' },
+    });
+    return { deleted: true };
   }
 
   static async addComment(

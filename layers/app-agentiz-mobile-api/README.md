@@ -30,6 +30,10 @@ session cookies.
 | GET    | `/interactions`  | Bearer JWT  | Questions agents are waiting on, across all owned projects. |
 | GET    | `/interactions/:id` | Bearer JWT | One question by id — what a tapped notification opens. |
 | POST   | `/interactions/:id/answer` | Bearer JWT | `{ action, content }` — answers one question.   |
+| GET    | `/tasks/:id/attachments` | Bearer JWT | Files attached to a task (metadata only).       |
+| POST   | `/tasks/:id/attachments?fileName=` | Bearer JWT | Uploads one file as a **raw body**.   |
+| GET    | `/tasks/:id/attachments/:attachmentId` | Bearer JWT | The bytes, streamed.          |
+| DELETE | `/tasks/:id/attachments/:attachmentId` | Bearer JWT | Removes row and bytes.        |
 | POST   | `/devices`       | Bearer JWT  | Registers this install's push token (idempotent).   |
 | DELETE | `/devices[/:token]` | Bearer JWT | Forgets a push token — what signing out calls.    |
 | POST   | `/assistant/webview-session` | Bearer JWT | Creates a one-use URL for the embedded Assistant WebView. |
@@ -37,6 +41,33 @@ session cookies.
 `login` accepts whatever identifier the UserAP model stores (`login`, `email`, or `username`).
 Project scope mirrors the admin panel's `userAccessRelation: 'owner'`: a user sees only the projects
 whose `ownerId` is theirs. A project with no owner set is visible to nobody through this API.
+
+## Task attachments
+
+A photo from the camera roll, a log, a spec — whatever the agent has to look at. Uploads are a
+**raw body** POST, one file per request, with the name in the query string:
+
+```
+POST /tasks/<id>/attachments?fileName=%D1%84%D0%BE%D1%82%D0%BE.png
+Content-Type: image/png
+<bytes>
+```
+
+Not multipart on purpose: the router's `express.json` only engages on a JSON content type, so the
+stream arrives untouched and neither side needs a multipart parser. One file per request is also
+what gives the app per-file progress and a per-file failure — on a phone connection the common case
+is one photo of five timing out, not all five.
+
+Everything is scoped through the task, like the run endpoints: an attachment id that belongs to
+another project's task answers **404**, never 403. The bytes and the row live where the admin panel
+puts them (`app-agentiz/lib/taskAttachments.ts`, `data/task-attachments`), so a file attached from
+the phone and one attached from the dashboard are the same thing — including how they reach a run:
+`buildSnapshot` freezes the list into the job, and the worker downloads them into
+`<workspace>/<jobId>/task-files/` before the first stage. A file uploaded after a run was queued
+belongs to the next run, by design.
+
+Limits are the storage helper's, not this layer's: 25 MB per file (`AGENTIZ_ATTACHMENT_MAX_BYTES`)
+and 100 attachments per task. Both answer 413/400 with a message the app shows verbatim.
 
 ## Human input (agent questions)
 

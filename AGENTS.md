@@ -84,7 +84,11 @@
   the working tree, or they would land in the run's diff and break the next clean-tree preflight —
   and names the directory to hooks as `AGENTIZ_TASK_FILES_DIR` and to the agent as an
   `# Attached files` prompt block (`attachments_block` in `prompt.py`). Docker stages don't get the
-  paths: the container has its own tree, and a host path in the prompt would be a lie there.
+  paths: the container has its own tree, and a host path in the prompt would be a lie there. The
+  mobile app writes through the **same** helper (`MobileTaskService.addAttachment`, routes under
+  `/tasks/:id/attachments` in `mobileApiRouter.ts`), also as a raw body — so a photo from a phone
+  and a file from the panel are one thing to the snapshot and to the worker. Scope there is the
+  task, like every mobile run endpoint: a foreign attachment id answers 404, never 403.
 - A stage's `model` (`spec.stages[].model`) overrides the model of the `AgentRole` it names, for
   that stage only — absent falls back to `AgentRole.model`, unchanged from before this field
   existed. It flows through `AgentPipelineService.buildSnapshot` into the job snapshot's

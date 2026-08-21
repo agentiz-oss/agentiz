@@ -1,6 +1,8 @@
+import fs from 'fs';
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import cors from 'cors';
 import type { Model, Sequelize } from 'sequelize';
+import { readBodyWithLimit } from '../../app-agentiz/lib/taskAttachments';
 import { bearerToken, verifyMobileToken } from './mobileAuth';
 import { MobileActivityService } from '../services/MobileActivityService';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
@@ -429,6 +431,76 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
         projects: req.body?.projects,
         pipelines: req.body?.pipelines,
       }) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Task attachments — the phone's camera roll reaching the agent.
+   *
+   * Upload is a **raw body** POST (`application/octet-stream`, name in the query), one file per
+   * request, exactly like the panel's: `express.json` above only engages on a JSON content type,
+   * so the stream arrives untouched and neither surface needs a multipart parser. One file per
+   * request also gives the app per-file progress and a per-file failure for free, which matters
+   * on a phone connection far more than it does in a browser.
+   */
+  router.get('/tasks/:id/attachments', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.listAttachments(idOf(req), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/tasks/:id/attachments', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const fileName = String(req.query?.fileName ?? '');
+      if (!fileName) return res.status(400).json({ message: 'fileName query parameter is required' });
+      const contentType = String(req.header('content-type') ?? '').split(';')[0].trim().toLowerCase();
+      const content = await readBodyWithLimit(req);
+      const data = await MobileTaskService.addAttachment(
+        idOf(req),
+        ownerOf(req),
+        {
+          fileName,
+          // A generic octet-stream means "the client did not say"; storing it would make every
+          // such file un-previewable in the panel for no reason.
+          mimeType: contentType && contentType !== 'application/octet-stream' ? contentType : null,
+          content,
+        },
+        actorOf(req),
+      );
+      return res.status(201).json({ data });
+    } catch (error) {
+      return errorResponse(res, error);
+    }
+  });
+
+  // The bytes. Streamed rather than buffered — a photo is the one thing this API returns that is
+  // measured in megabytes, and the client renders it straight into an image view.
+  router.get('/tasks/:id/attachments/:attachmentId', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const file = await MobileTaskService.attachmentFile(idOf(req), idOf(req, 'attachmentId'), ownerOf(req));
+      if (!fs.existsSync(file.diskPath)) {
+        return res.status(404).json({ message: 'Attachment file is missing on disk' });
+      }
+      res.setHeader('Content-Type', file.mimeType ?? 'application/octet-stream');
+      res.setHeader('Content-Length', String(file.sizeBytes));
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
+      fs.createReadStream(file.diskPath).pipe(res);
+      return undefined;
+    } catch (error) {
+      return errorResponse(res, error);
+    }
+  });
+
+  router.delete('/tasks/:id/attachments/:attachmentId', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.removeAttachment(
+        idOf(req), idOf(req, 'attachmentId'), ownerOf(req), actorOf(req),
+      ) });
     } catch (error) {
       errorResponse(res, error);
     }
