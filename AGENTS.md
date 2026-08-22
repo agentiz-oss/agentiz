@@ -375,6 +375,15 @@
   the same silent staleness. When prod runs code that does not match the submodule, check the
   installed package version (`window.adminizerVersion` on any panel page) before reading anything
   else.
+- A panel module that lives in a **package** (`vite.config.ts` builds
+  `node_modules/@nodeknit/app-workflow/adminizer/modules/*` next to the layers' own) is built from a
+  different place than a layer's module, and a stylesheet a dependency ships is where that bites:
+  Vite's `?inline` returns an **empty string** for a css file resolved out of `node_modules`, while
+  from the symlinked local checkout it inlines correctly — so the local `dist/modules` looks right
+  and the image ships the same module with no css and no error anywhere. Import a dependency's css
+  as `?raw` (`adminizer/modules/lib/injectStyles.ts` in app-workflow). What it looks like when it is
+  missing: React Flow's canvas with a black minimap, a control bar stretched across the top and
+  nodes placed by the document flow instead of by the pane transform.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

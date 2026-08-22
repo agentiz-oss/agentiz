@@ -113,11 +113,20 @@ const workflowDetailsTool: IMcpTool = {
 
 const workflowSchemaTool: IMcpTool = {
   name: 'agentiz.workflowSchema', group: 'agentiz',
-  shortDescription: 'Self-description for writing workflow graphs: node palette, config schemas, events.',
-  description: 'Read-only. Everything needed to write a valid graph for agentiz.manageWorkflow: the spec shape, every registered node type with its ports and config JSON schema, and the event catalogue a trigger node can name. The counterpart of agentiz.pipelineSpecSchema for workflows.',
+  shortDescription: 'Self-description for writing workflow graphs: node palette, per-node docs, config schemas, events.',
+  description: 'Read-only. Everything needed to write a valid graph for agentiz.manageWorkflow: the spec shape, every registered node type with its ports, config JSON schema and its own configuration guide (`docs`, written by the module that registered the node), the event catalogue a trigger node can name, and a worked example. The counterpart of agentiz.pipelineSpecSchema for workflows.',
   mode: 'public',
-  inputSchema: { type: 'object', properties: {} },
-  async handler() {
+  inputSchema: {
+    type: 'object',
+    properties: {
+      withDocs: {
+        type: 'boolean',
+        description: 'include each node type\'s configuration guide (default true; false returns only ids and schemas)',
+      },
+    },
+  },
+  async handler(params) {
+    const withDocs = objectParams(params).withDocs !== false;
     const describe = await workflowAdminApi().describe();
     return {
       spec: {
@@ -128,6 +137,7 @@ const workflowSchemaTool: IMcpTool = {
           version: 'number — bumped on every save, do not set by hand',
           nodes: '[{ id, type, name?, config?, ui?: {x, y} }]',
           edges: '[{ from, fromPort?, to }]',
+          entity: '{ model: "AgentProject", id } — which project the workflow belongs to. Descriptive: it drives the project section and the list filter, not which events reach a trigger. Set it with projectId on agentiz.manageWorkflow create; omitting it on save keeps the stored binding, null clears it.',
         },
         rules: [
           'Ports are named: `fromPort` must be one of the source type\'s outputs; omitted means its first one.',
@@ -137,8 +147,37 @@ const workflowSchemaTool: IMcpTool = {
           'Saving is deploying: the triggers of an active workflow are rearmed immediately, running instances keep their version.',
         ],
       },
-      nodeTypes: describe.nodeTypes,
+      nodeTypes: withDocs
+        ? describe.nodeTypes
+        : describe.nodeTypes.map(({ docs: _docs, ...rest }) => rest),
       events: describe.events,
+      documentation: {
+        perNode: 'Each node type carries its own guide: `docs` above, and the same text as an article `docsId` in the panel documentation (/dashboard/docs/<docsId>). A module that adds a node type ships its documentation with it.',
+        overview: 'Panel article "Воркфлоу: как собрать" — app-agentiz.workflows.',
+      },
+      // A whole valid graph, not a fragment: the shape above says what is allowed, this says what a
+      // working flow looks like — including the port name, which is the field most often guessed.
+      example: {
+        description: 'Задача со словом «выполни» или тегом todo уходит в пайплайн; ветка «мимо» никуда не ведёт.',
+        create: { action: 'create', name: 'Задача → «выполни»/todo → пайплайн', projectId: '<projectId>' },
+        save: {
+          action: 'save',
+          spec: {
+            id: '<id from create>',
+            name: 'Задача → «выполни»/todo → пайплайн',
+            active: true,
+            nodes: [
+              { id: 'arrived', type: 'agentiz.task.trigger', config: { event: 'agentiz.task.created', projectId: '<projectId>' } },
+              { id: 'worth', type: 'agentiz.task.match', config: { keywords: 'выполни', tags: 'todo', fields: 'both', require: 'any' } },
+              { id: 'run', type: 'agentiz.pipeline', config: { trigger: 'sync' } },
+            ],
+            edges: [
+              { from: 'arrived', to: 'worth' },
+              { from: 'worth', fromPort: 'match', to: 'run' },
+            ],
+          },
+        },
+      },
     };
   },
 };

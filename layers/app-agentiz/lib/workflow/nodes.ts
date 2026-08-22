@@ -15,6 +15,7 @@ import {
   type AgentizTaskEventPayload,
 } from './events';
 import { pipelineRunRef } from './engineBridge';
+import { pipelineDocs, taskMatchDocs, taskRunDocs, taskTriggerDocs } from './nodeDocs';
 
 /**
  * The node types app-agentiz contributes to the workflow palette — the smallest set that
@@ -71,6 +72,7 @@ export const taskEventTriggerNode: NodeTypeDefinition = {
   type: 'agentiz.task.trigger',
   name: 'Задача Agentiz',
   description: 'Срабатывает, когда в Agentiz появилась (или изменилась) задача',
+  docs: taskTriggerDocs,
   category: 'Agentiz',
   kind: 'trigger',
   ports: { inputs: 0, outputs: ['out'] },
@@ -121,6 +123,7 @@ export const taskMatchNode: NodeTypeDefinition = {
   type: 'agentiz.task.match',
   name: 'Проверка задачи',
   description: 'Ищет слова в названии/описании и теги задачи; два выхода — подходит и нет',
+  docs: taskMatchDocs,
   category: 'Agentiz',
   kind: 'server',
   ports: { inputs: 1, outputs: ['match', 'no'] },
@@ -206,6 +209,7 @@ export const taskRunNode: NodeTypeDefinition = {
   type: 'agentiz.task.run',
   name: 'Запустить пайплайн (без ожидания)',
   description: 'Ставит задачу в пайплайн и идёт дальше, не дожидаясь результата',
+  docs: taskRunDocs,
   category: 'Agentiz',
   kind: 'server',
   ports: { inputs: 1, outputs: ['out'] },
@@ -260,6 +264,7 @@ export const pipelineNode: NodeTypeDefinition = {
   type: 'agentiz.pipeline',
   name: 'Пайплайн (с ожиданием)',
   description: 'Запускает пайплайн и продолжает флоу, когда запуск завершился: выходы «успех» и «ошибка»',
+  docs: pipelineDocs,
   category: 'Agentiz',
   kind: 'external',
   ports: { inputs: 1, outputs: ['succeeded', 'failed'] },

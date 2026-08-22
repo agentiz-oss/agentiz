@@ -7,6 +7,7 @@ vi.mock('@nodeknit/app-adminizer', () => ({
 import { Sequelize } from 'sequelize-typescript';
 import {
   InMemoryDataStore,
+  NodeTypeDocumentation,
   WorkflowEngine,
   nodeRegistry,
   workflowEngineHolder,
@@ -333,6 +334,59 @@ describe('agentiz workflow nodes', () => {
 
       expect(run.trigger).toBe('arrived');
       expect(started).toEqual([task.id]);
+    });
+  });
+  describe('документация нод', () => {
+    /**
+     * The seam the panel and MCP both read: a node ships its own guide, and `AppWorkflow` turns
+     * the palette into documentation articles. Asserted from the agentiz side because that is
+     * where the only nodes with docs live.
+     */
+    const docs = () => new NodeTypeDocumentation(nodeRegistry, { section: 'Воркфлоу', defaultLocale: 'ru' });
+
+    it('каждая нода Agentiz приносит свою статью, плюс индекс палитры', async () => {
+      const metas = await docs().list('ru');
+      const ids = metas.map((meta) => meta.id);
+
+      expect(ids).toContain('nodes');
+      for (const node of agentizWorkflowNodes) expect(ids).toContain(node.type);
+      // Section comes from the source, not from the article: it is a decision of the module.
+      expect(metas.every((meta) => meta.section === 'Воркфлоу')).toBe(true);
+      // Bound to the canvas screens, so the page's contextual table of contents finds them.
+      expect(metas[0].urls).toContain('/dashboard/workflow');
+    });
+
+    it('статья ноды = сгенерированный каркас + текст модуля', async () => {
+      const article = await docs().get('agentiz.task.match', 'ru');
+      expect(article).toBeDefined();
+      // Generated from the definition: ports and the config fields the form is built from.
+      expect(article!.markdown).toContain('`agentiz.task.match`');
+      expect(article!.markdown).toContain('`match`');
+      expect(article!.markdown).toContain('- `keywords`');
+      // The module's own prose, the part a schema cannot express.
+      expect(article!.markdown).toContain('Пустое условие не подходит');
+      expect(article!.locale).toBe('ru');
+    });
+
+    it('находится поиском и по ключевому слову', async () => {
+      const found = await docs().search({ query: 'ожиданием' }, 'ru');
+      expect(found.map((item) => item.meta.id)).toContain('agentiz.pipeline');
+      expect(found.find((item) => item.meta.id === 'agentiz.pipeline')!.snippets.length).toBeGreaterThan(0);
+
+      const byKeyword = await docs().search({ keywords: ['теги'] }, 'ru');
+      expect(byKeyword.map((item) => item.meta.id)).toEqual(['agentiz.task.match']);
+    });
+
+    it('тот же текст приезжает агенту в agentiz.workflowSchema', async () => {
+      const schema = await callTool('agentiz.workflowSchema');
+      const match = schema.nodeTypes.find((node: any) => node.type === 'agentiz.task.match');
+      expect(match.docs).toContain('Пустое условие не подходит');
+      expect(match.docsId).toBe('workflow.agentiz.task.match');
+      // The example is a whole valid graph — the thing an agent copies instead of guessing ports.
+      expect(schema.example.save.spec.edges).toContainEqual({ from: 'worth', fromPort: 'match', to: 'run' });
+
+      const trimmed = await callTool('agentiz.workflowSchema', { withDocs: false });
+      expect(trimmed.nodeTypes.every((node: any) => node.docs === undefined)).toBe(true);
     });
   });
 });

@@ -3,6 +3,32 @@ import react from '@vitejs/plugin-react';
 import { viteExternalsPlugin } from 'vite-plugin-externals';
 import path from 'path';
 
+/**
+ * The workflow canvas carries React Flow's stylesheet inside its own bundle (the panel loads one
+ * `.js` per module and nothing else), and a missing stylesheet is invisible: React Flow still
+ * mounts, the nodes are still in the DOM, and nothing is logged — the canvas just stops being a
+ * canvas, because `.react-flow__node { position: absolute }` is what places a node and lets it be
+ * dragged. That has already shipped once, so the build asserts it instead of trusting the import:
+ * `?inline` silently yields an empty string for a css file resolved out of `node_modules`, which is
+ * exactly the layout the Docker image builds in and the local checkout never does.
+ */
+function assertCanvasStylesBundled() {
+  return {
+    name: 'agentiz:assert-canvas-styles',
+    generateBundle(_options: unknown, bundle: Record<string, any>) {
+      const chunk = bundle['WorkflowEditor.js'];
+      if (!chunk || chunk.type !== 'chunk') return;
+      if (!/\.react-flow__node\s*\{/.test(chunk.code)) {
+        throw new Error(
+          'WorkflowEditor.js contains no React Flow stylesheet — the canvas would render unusable. ' +
+            'Check the css import in @nodeknit/app-workflow adminizer/modules/lib/injectStyles.ts ' +
+            '(`?raw`, not `?inline`) and that @xyflow/react is installed.',
+        );
+      }
+    },
+  };
+}
+
 export default defineConfig({
   build: {
     outDir: 'dist/modules', emptyOutDir: true, cssCodeSplit: true,
@@ -32,7 +58,7 @@ export default defineConfig({
     },
     rollupOptions: { external: ['react', 'react-dom', '@inertiajs/react', 'lucide-react'], output: { entryFileNames: '[name].js' } },
   },
-  plugins: [react({ jsxRuntime: 'classic' }), viteExternalsPlugin({
+  plugins: [assertCanvasStylesBundled(), react({ jsxRuntime: 'classic' }), viteExternalsPlugin({
     react: 'React', 'react-dom': 'ReactDOM', '@inertiajs/react': 'InertiajsReact', 'lucide-react': 'LucideReact',
     '@/components/ui/button': 'UIComponents', '@/components/ui/card': 'UIComponents', '@/components/ui/dialog': 'UIComponents',
     '@/components/ui/input': 'UIComponents', '@/components/ui/label': 'UIComponents', '@/components/ui/select': 'UIComponents',
