@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { formatDateTime, remainingSuffix, useViewerTimezone } from "./lib/viewerTime";
+import { DocsButton } from "./components/DocsButton";
 
 /**
  * The worker fleet: registering machines, watching whether they're still checking in, and scoping
@@ -1076,6 +1077,7 @@ const AgentizWorkers: React.FC = () => {
           >
             Новый воркер
           </button>
+          <DocsButton className="rounded border px-2 py-1 text-xs font-medium" />
         </div>
       </div>
 

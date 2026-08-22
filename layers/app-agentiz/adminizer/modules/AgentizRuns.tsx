@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { formatTokens, tokensTooltip, totalTokens, type TokenUsage } from "./lib/tokenUsage";
+import { DocsButton } from "./components/DocsButton";
 
 type StageCard = { stageIndex: number; role: string; status: string };
 type RunCard = {
@@ -180,9 +181,10 @@ const AgentizRuns: React.FC = () => {
             {waiting > 0 && <> {waiting} из них ждут ответа.</>}
           </p>
         </div>
-        <div className="flex gap-3 text-sm">
+        <div className="flex items-center gap-3 text-sm">
           <a href={`${PREFIX}/agentiz-interactions`} className="underline">Нужен ответ</a>
           <a href={`${PREFIX}/agentiz-tasks`} className="underline">Задачи</a>
+          <DocsButton className="underline" />
         </div>
       </div>
 

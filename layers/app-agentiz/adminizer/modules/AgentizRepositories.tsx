@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
+import { DocsButton } from "./components/DocsButton";
 
 /**
  * Repositories of every platform in one place: which accounts are connected, what they can reach,
@@ -215,12 +216,15 @@ const AgentizRepositories: React.FC = () => {
 
   return (
     <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Репозитории</h1>
-        <p className="text-sm text-muted-foreground">
-          Подключённые аккаунты, доступные через них репозитории и привязки к проектам Agentiz —
-          для GitHub и GitLab одновременно.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Репозитории</h1>
+          <p className="text-sm text-muted-foreground">
+            Подключённые аккаунты, доступные через них репозитории и привязки к проектам Agentiz —
+            для GitHub и GitLab одновременно.
+          </p>
+        </div>
+        <DocsButton />
       </div>
 
       {error && <div className="rounded border p-3 text-sm" style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2", color: "#b91c1c" }}>{error}</div>}

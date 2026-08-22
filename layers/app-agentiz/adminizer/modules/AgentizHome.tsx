@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import NotificationPolicySection from "./components/NotificationPolicySection";
+import { DocsButton } from "./components/DocsButton";
 
 /**
  * The project overview: pick a project, see how it's doing at a glance, then go to the screen
@@ -151,11 +152,14 @@ const AgentizHome: React.FC = () => {
 
   return (
     <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Agentiz</h1>
-        <p className="text-sm text-muted-foreground">
-          Проекты и сводка по каждому. Задачи, пайплайны, воркеры и репозитории — на своих страницах.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Agentiz</h1>
+          <p className="text-sm text-muted-foreground">
+            Проекты и сводка по каждому. Задачи, пайплайны, воркеры и репозитории — на своих страницах.
+          </p>
+        </div>
+        <DocsButton />
       </div>
 
       {error && <div className="rounded border p-3 text-sm" style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2", color: "#b91c1c" }}>{error}</div>}
