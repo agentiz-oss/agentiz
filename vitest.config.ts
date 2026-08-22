@@ -12,11 +12,18 @@ export default defineConfig({
     },
   },
   test: {
+    // `adminizer` is ESM with a directory import inside (system/bindDocs → controllers/docs).
+    // tsx resolves that, Node's ESM loader does not — so the package has to go through Vite's
+    // resolver instead of being externalised, or importing it from a test dies on collection.
+    server: { deps: { inline: ['adminizer'] } },
     include: [
       'smoke.test.ts',
       'layers/app-agentiz/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-mobile-api/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-claude-limits/**/*.{test,spec}.{ts,tsx}',
+      // app-adminizer is a package of its own, but it is developed from this checkout and carries
+      // no test runner — run its tests with ours so `npm test` covers the seam the panel uses.
+      'local_modules/app-adminizer/tests/**/*.{test,spec}.ts',
     ],
   },
 });

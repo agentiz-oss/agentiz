@@ -1,6 +1,9 @@
 import { AbstractApp, AppManager, Collection, CollectionHandler } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
 import { AdminizerRouteMiddleware, AppAdminizer, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
+import type { DocumentationSource } from '@nodeknit/app-adminizer';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { AppMCP } from '@nodeknit/app-mcp';
 import { AgentizAssistantService } from './lib/ai/AgentizAssistantService';
 import { buildAgentizAgentSkills } from './lib/ai/agentSkills';
@@ -142,6 +145,24 @@ export class AppAgentiz extends AbstractApp {
      */
     @Collection
     workflowNodes: NodeTypeDefinition[] = agentizWorkflowNodes;
+
+    /**
+     * Operator documentation of the panel: markdown next to the code it describes, contributed to
+     * app-adminizer's `documentation` collection and served by adminizer's own viewer, search and
+     * assistant skills. Articles name the pages and models they belong to (`urls:` / `models:` in
+     * the frontmatter), which is what puts them into the contextual table of contents of a page.
+     */
+    @Collection
+    documentation: DocumentationSource[] = [
+        {
+            dir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'docs/panel'),
+            defaultLocale: 'ru',
+            section: 'Agentiz',
+            // In dev an edited article shows up on the next request; in prod the files cannot
+            // change under a running process, so the watcher would only cost a file descriptor.
+            watch: process.env.NODE_ENV !== 'production',
+        },
+    ];
 
     /** Where those graphs are stored — the engine keeps no tables of its own. */
     @Collection

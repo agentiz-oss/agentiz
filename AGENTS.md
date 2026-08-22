@@ -7,6 +7,20 @@
   The directory itself is tracked (via `.gitkeep`), its contents are **git-ignored** — the journal
   is local working memory, not repository documentation. Anything that has to survive for other
   people belongs in `docs/` or in these notes instead.
+- Guides for junior teammates: [`docs/guides/`](docs/guides/) holds the **explanatory** half of the
+  documentation — one file per subject, written in Russian like the rest of `docs/`, tracked in git
+  (unlike the journal). Write or update one whenever a piece of work establishes or relies on an
+  approach a newcomer could not infer from the code: how a part of the system is put together, why
+  it is built that way, which seam to touch for a given kind of change, and how to tell what broke.
+  Address a developer who knows the stack but not this repository. Two rules keep them useful:
+  describe the **approach**, not the change — a guide is not a diff retold, so no "added X, renamed
+  Y", and it must still be true after the next feature; and name the concrete places (files,
+  collections, tables, endpoints) that the abstract description maps onto, otherwise a reader
+  cannot act on it. A guide that grows into a step-by-step procedure for one deployment belongs in
+  `docs/` next to `deploy-debug-guide.md` instead. Every new file gets a line in
+  [`docs/README.md`](docs/README.md) — that index is the only way anybody finds it. Short bullets
+  about invariants stay **here**, in these notes; `docs/guides/` is for the long form that would
+  drown them.
 - Run the server with `npm run dev` (TSX).
 - Run `npm run build` after TypeScript changes.
 - Local application layers: `layers/app-agentiz` (core), `layers/app-agentiz-gitlab-integration`,
@@ -320,6 +334,38 @@
   startup, which would otherwise run the flow twice for one task.
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
+- The panel's knowledge base (adminizer's `documentation` subsystem) is fed by **one collection**,
+  `documentation`, handled in app-adminizer (`local_modules/app-adminizer/src/docs/`). Adminizer
+  accepts exactly one `AbstractDocumentation` per instance, so what is registered is a
+  `CompositeDocumentation` that fans out over what the installed modules contributed — a markdown
+  directory (`{ dir }`, wrapped in adminizer's own `FileDocumentation`) or a whole implementation
+  (`{ provider }`) for a module that keeps articles in a database. Document ids are namespaced by
+  the contributing `appId` (`app-agentiz.tasks`, separator in `src/docs/types.ts`): they travel
+  through `/dashboard/docs/:id`, the assistant's skills and in-document links, so two modules
+  shipping an `intro.md` must not shadow each other. `search`/`forContext`/`keywords` are
+  delegated to each source rather than recomputed by the base class, or a source with real
+  full-text search would silently lose it. Who may read an article is declared **in the
+  collection**, not in the article: `documents: { <source-local id>: { accessRightsToken } }` on
+  the source (plus a source-wide default), and that wins over the document's own frontmatter —
+  the token belongs next to the `registerToken` call it refers to, and text that is written and
+  translated by people who do not decide permissions must not be able to widen its own audience.
+  Frontmatter still counts where the collection is silent; an entry naming an id no document has
+  is logged instead of quietly never applying. The subsystem has **two** switches and needs both:
+  `documentation.enabled` in `config/adminizer.ts` and a registered implementation — app-adminizer
+  registers the composite when the first source appears and unregisters it when the last one goes
+  away, so a deployment where no module ships articles has no empty knowledge base in its
+  navigation. Per-document access is declarative frontmatter (`accessRightsToken`, `models`), the
+  base token is `read-documentation`, and nothing here creates tokens. Agentiz's own articles live
+  in `layers/app-agentiz/docs/panel/*.ru.md`, bound to pages and models through `urls:`/`models:`.
+  Every agentiz panel page carries a «Документация» button (`adminizer/modules/components/
+  DocsButton.tsx`) that appears only when an article is actually bound to that page: it asks
+  `/docs/api/context` for the current path rather than reading adminizer's shared `docs` prop,
+  because that prop belongs to whichever page was loaded first and the panel navigates
+  client-side. Rights, a disabled subsystem and «nobody wrote about this page» all end as the same
+  thing — the button renders nothing.
+  app-adminizer is a **separate package**: prod installs it from the registry (`local_modules` is
+  excluded from the Docker context), so a change to the seam needs a publish + lock bump, while a
+  change to an article ships with the server image.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

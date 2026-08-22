@@ -30,6 +30,12 @@ export const adminizerConfig: AdminizerConfig = {
         enableGeneral: true,
         initTab: "agentiz",
     },
+    // The knowledge base of the panel. Adminizer needs both switches: this flag and a registered
+    // implementation — app-adminizer registers one as soon as a module contributes articles
+    // through the `documentation` collection (layers/app-agentiz/docs/panel is the first).
+    documentation: {
+        enabled: (process.env.ADMINIZER_DOCUMENTATION ?? "true") === "true",
+    },
     aiAssistant: {
         enabled: (process.env.OPENHARNESS_ENABLED ?? "true") === "true",
         defaultModel: "agentiz-assistant",
