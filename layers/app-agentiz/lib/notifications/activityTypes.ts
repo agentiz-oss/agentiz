@@ -30,6 +30,12 @@ export interface ActivityTypeDef {
   androidChannel: string;
   /** One line for settings UIs; user-facing, hence Russian like the rest of the panel. */
   label: string;
+  /**
+   * The chip an actionable row is marked with, two or three words at most — the inbox card has one
+   * line for it next to the task's name. Lives here rather than in the clients so a phone, the
+   * panel and a future channel spell the same event the same way.
+   */
+  badge: string;
 }
 
 /** Android channels, referenced here and registered by the mobile client. */
@@ -45,6 +51,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_INTERACTIONS,
     label: 'Агент задал вопрос',
+    badge: 'вопрос',
   },
   {
     type: 'proposal.waiting_review',
@@ -52,6 +59,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_ACTIONS,
     label: 'Изменения ждут ревью',
+    badge: 'ревью',
   },
   {
     type: 'proposal.push_failed',
@@ -59,6 +67,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_ACTIONS,
     label: 'Push изменений не удался',
+    badge: 'push не прошёл',
   },
   {
     type: 'proposal.reset_failed',
@@ -66,6 +75,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_ACTIONS,
     label: 'Сброс воркспейса не удался',
+    badge: 'сброс не прошёл',
   },
   {
     type: 'run.held_for_approval',
@@ -73,6 +83,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_ACTIONS,
     label: 'Изменения удержаны до одобрения',
+    badge: 'ждёт одобрения',
   },
   {
     type: 'pr.opened',
@@ -80,6 +91,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_ACTIONS,
     label: 'Открыт pull request',
+    badge: 'pull request',
   },
   {
     type: 'run.failed',
@@ -87,6 +99,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'on', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_FAILURES,
     label: 'Запуск завершился с ошибкой',
+    badge: 'ошибка',
   },
   {
     type: 'run.succeeded',
@@ -94,6 +107,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'silent', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_RESULTS,
     label: 'Запуск завершился успешно',
+    badge: 'готово',
   },
   {
     type: 'proposal.pushed',
@@ -101,6 +115,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'silent', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_RESULTS,
     label: 'Изменения закоммичены и запушены',
+    badge: 'запушено',
   },
   {
     type: 'run.cancelled',
@@ -108,6 +123,7 @@ const DEFS: ActivityTypeDef[] = [
     defaults: { push: 'off', dashboard: 'off' },
     androidChannel: ANDROID_CHANNEL_RESULTS,
     label: 'Запуск отменён',
+    badge: 'отменён',
   },
 ];
 

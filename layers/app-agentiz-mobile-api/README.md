@@ -34,6 +34,12 @@ session cookies.
 | POST   | `/tasks/:id/attachments?fileName=` | Bearer JWT | Uploads one file as a **raw body**.   |
 | GET    | `/tasks/:id/attachments/:attachmentId` | Bearer JWT | The bytes, streamed.          |
 | DELETE | `/tasks/:id/attachments/:attachmentId` | Bearer JWT | Removes row and bytes.        |
+| GET    | `/activities`    | Bearer JWT  | The journal, newest first, paged by an opaque `before` cursor. |
+| POST   | `/activities/seen` | Bearer JWT | Moves the per-user "seen" mark the unseen badge counts against. |
+| GET    | `/activities/summary` | Bearer JWT | Everything waiting on a person (`items`) plus the unseen counter. |
+| GET    | `/proposals`     | Bearer JWT  | Workspace proposals of the caller's projects.        |
+| POST   | `/proposals/:id/approve` | Bearer JWT | Commits and pushes one reviewed revision.     |
+| POST   | `/proposals/:id/reject` | Bearer JWT | Rejects it and resets the workspace.           |
 | POST   | `/devices`       | Bearer JWT  | Registers this install's push token (idempotent).   |
 | DELETE | `/devices[/:token]` | Bearer JWT | Forgets a push token — what signing out calls.    |
 | POST   | `/assistant/webview-session` | Bearer JWT | Creates a one-use URL for the embedded Assistant WebView. |
@@ -94,6 +100,60 @@ appear inline: `GET /tasks/:id` returns `pendingInteractions`, and a run returns
 Sensitive fields are rejected when the question is *created*, not when it is answered: the core
 service refuses schemas asking for passwords, API keys or card numbers, so nothing of that kind can
 reach the app.
+
+## The inbox: one shape for everything waiting on a person
+
+`GET /activities/summary` answers two different questions in one payload. `unseen` counts the
+journal rows newer than the caller's seen mark — the badge on the feed. `items` is the inbox: every
+live thing that needs a decision, in one shape, already sorted.
+
+```jsonc
+{
+  "id": "proposal:01J…",          // stable, unique across kinds — the client's list key
+  "kind": "review",               // question | review | push_failed | reset_failed | held_diff | pr
+  "activityType": "proposal.waiting_review",
+  "badge": "ревью",               // spelled by app-agentiz/lib/notifications/activityTypes.ts
+  "headline": "Обновить зависимости",
+  "facts": "3 файл(ов) · +48/−12 · ветка main · ревизия 2",
+  "projectId": "…", "projectName": "…", "taskId": "…", "taskTitle": "…", "runId": "…",
+  "proposalId": "…", "revision": 2, "interactionId": null, "url": null,
+  "waitingSince": "2026-08-22T11:02:00.000Z", "expiresAt": null,
+  "priority": 2,
+  "actions": [{ "key": "approve", "label": "Одобрить…", "style": "primary" }, …]
+}
+```
+
+Three rules hold it together, and breaking any of them puts the client back to guessing:
+
+- **The server spells everything a person reads.** `badge` comes from the activity catalogue — the
+  same file the notification policy schema is generated from — and `label` from the item builder
+  (`lib/inboxItems.ts`). A client that invents its own words for "ревью" ends up with a chip that
+  means nothing in particular.
+- **`facts` are facts, never the agent's prose.** Files and line counts, a branch, a revision, the
+  first line of an error. The first sentence of a run's output reads like an explanation and is not
+  one.
+- **`actions` name existing endpoints, not new ones.** `answer` → `POST /interactions/:id/answer`,
+  `approve`/`reject` → `POST /proposals/:id/…`, `open_run`/`open_url` are navigation. The inbox is a
+  projection for reading; nothing is written through it.
+
+Ordering is `priority` then `waitingSince` ascending: a question first (an agent is parked
+mid-turn), then a failed push or reset (a worker's directory is wedged), then reviews, held diffs
+and finally pull requests, and inside a group the oldest — the one ignored longest — on top.
+
+`interactions`, `proposals` and `heldRuns` are the same facts in the shape older builds parse and
+are still filled. `actionableCount` is `items.length`; `MobileActivityService.badgeCount` is that
+list minus whatever the notification policy mutes for push in its project.
+
+A pull request is the one kind whose resolution happens outside Agentiz — nothing here learns that
+it was merged. Its stand-in is the task: an open task keeps the row, a `done`/`cancelled`/`ignored`
+one drops it.
+
+The same projection, scoped to one task, is `actionRequired` in `GET /tasks/:id` — what the task
+screen states above everything else instead of leaving "ждёт ревью" to be deduced from a run's page.
+A run additionally carries `instruction` (`{ source: comment | description, body, authorName,
+createdAt }`): the comment the run was triggered from, resolved through `AgentRun.triggerCommentId`,
+or the task's description. A task named "выполни" says nothing on its own, and the agent's answer is
+unreadable without the question.
 
 ## Push notifications
 

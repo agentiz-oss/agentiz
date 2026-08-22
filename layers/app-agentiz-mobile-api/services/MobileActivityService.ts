@@ -1,5 +1,6 @@
 import { Op } from 'sequelize';
 import { AgentActivity } from '../../app-agentiz/models/AgentActivity';
+import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentActivitySeen } from '../../app-agentiz/models/AgentActivitySeen';
 import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentRun } from '../../app-agentiz/models/AgentRun';
@@ -7,7 +8,16 @@ import { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
 import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteraction';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
+import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentWorkspaceProposalService';
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
+import {
+  heldDiffItem,
+  proposalItem,
+  pullRequestItem,
+  questionItem,
+  sortInboxItems,
+  type InboxItem,
+} from '../lib/inboxItems';
 
 const PAGE_LIMIT_DEFAULT = 50;
 const PAGE_LIMIT_MAX = 200;
@@ -129,10 +139,10 @@ export class MobileActivityService {
   static async summary(ownerId: number | string, userId: number) {
     const projectIds = await this.ownedProjectIds(ownerId);
     if (projectIds.length === 0) {
-      return { interactions: [], proposals: [], heldRuns: [], actionableCount: 0, unseen: 0 };
+      return { items: [], interactions: [], proposals: [], heldRuns: [], actionableCount: 0, unseen: 0 };
     }
 
-    const [interactions, proposals, heldDiffs, unseen] = await Promise.all([
+    const [interactions, proposals, heldDiffs, openedPrs, unseen] = await Promise.all([
       AgentRunInteraction.findAll({
         where: { projectId: { [Op.in]: projectIds }, status: 'pending' },
         order: [['createdAt', 'ASC']],
@@ -144,6 +154,13 @@ export class MobileActivityService {
         limit: 200,
       }),
       this.heldDiffs(projectIds),
+      // `pr.opened` is `action_required` in the catalogue but has no live entity of its own — see
+      // openPullRequests for what makes one of these go away.
+      AgentActivity.findAll({
+        where: { projectId: { [Op.in]: projectIds }, type: 'pr.opened' },
+        order: [['createdAt', 'DESC']],
+        limit: 100,
+      }),
       this.unseenCount(ownerId, userId),
     ]);
 
@@ -151,15 +168,36 @@ export class MobileActivityService {
       ...interactions.map((item) => item.runId),
       ...proposals.map((item) => item.latestRunId),
       ...heldDiffs.map((item) => item.diff.runId),
+      ...openedPrs.map((row) => row.runId).filter(Boolean) as string[],
     ]);
-    const runs = await AgentRun.findAll({ where: { id: { [Op.in]: [...runIds] } } });
+    const [runs, projects, stages, diffs] = await Promise.all([
+      AgentRun.findAll({ where: { id: { [Op.in]: [...runIds] } } }),
+      AgentProject.findAll({ where: { id: { [Op.in]: projectIds } } }),
+      // Only to name the stage a question came from: "этап implement" is what tells a reader which
+      // half of the pipeline is parked.
+      AgentStageExecution.findAll({
+        where: { id: { [Op.in]: [...new Set(interactions.map((item) => item.stageExecutionId).filter(Boolean))] as string[] } },
+      }),
+      AgentRunDiff.findAll({
+        where: { id: { [Op.in]: [...new Set(proposals.map((item) => item.latestDiffId).filter(Boolean))] as string[] } },
+      }),
+    ]);
     const runById = new Map(runs.map((run) => [run.id, run]));
+    const projectById = new Map(projects.map((project) => [project.id, project]));
+    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+    const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
+
     const taskIds = new Set<string>([
       ...proposals.map((item) => item.taskId),
       ...[...runById.values()].map((run) => run.taskId),
+      ...openedPrs.map((row) => row.taskId).filter(Boolean) as string[],
     ]);
     const tasks = await AgentTask.findAll({ where: { id: { [Op.in]: [...taskIds] } } });
     const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const contextOf = (projectId: string, taskId: string | null | undefined) => ({
+      project: projectById.get(projectId) ?? null,
+      task: taskId ? taskById.get(taskId) ?? null : null,
+    });
 
     const interactionRows = interactions.map((item) => ({
       id: item.id,
@@ -194,13 +232,105 @@ export class MobileActivityService {
       finishedAt: run.finishedAt,
     }));
 
+    const items = sortInboxItems([
+      ...interactions.map((item) => questionItem(item, {
+        ...contextOf(item.projectId, runById.get(item.runId)?.taskId),
+        run: runById.get(item.runId) ?? null,
+        stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
+      })),
+      ...proposals.map((item) => {
+        const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
+        return proposalItem(item, {
+          ...contextOf(item.projectId, item.taskId),
+          diff,
+          approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
+        });
+      }),
+      ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId))),
+      ...this.openPullRequests(openedPrs, taskById).map((row) => pullRequestItem({
+        id: row.id,
+        projectId: row.projectId,
+        url: typeof (row.data as any)?.prUrl === 'string' ? (row.data as any).prUrl : row.body,
+        createdAt: row.createdAt,
+        runId: row.runId,
+      }, contextOf(row.projectId, row.taskId))),
+    ]);
+
     return {
+      /**
+       * The one list the inbox renders. The three arrays below it are the same facts in the shape
+       * older builds parse — they stay until those builds are gone, and neither side is derived
+       * from the other by the client.
+       */
+      items,
       interactions: interactionRows,
       proposals: proposalRows,
       heldRuns: heldRunRows,
-      actionableCount: interactionRows.length + proposalRows.length + heldRunRows.length,
+      actionableCount: items.length,
       unseen,
     };
+  }
+
+  /**
+   * PR rows that still deserve a person's attention.
+   *
+   * A pull request is the one actionable event whose resolution happens outside Agentiz — nothing
+   * here learns that it was merged. Its stand-in is the task: closing the task is what a person
+   * does after the PR is dealt with, so an `open` task with an opened PR keeps the row and a
+   * done/cancelled/ignored one drops it. A task that never gets closed keeps a visible PR, which is
+   * the honest reading of "никто на него не посмотрел".
+   */
+  private static openPullRequests(rows: AgentActivity[], taskById: Map<string, AgentTask>): AgentActivity[] {
+    const closed = new Set(['done', 'cancelled', 'ignored']);
+    const seenRuns = new Set<string>();
+    return rows.filter((row) => {
+      const task = row.taskId ? taskById.get(row.taskId) : null;
+      if (!task || closed.has(task.status)) return false;
+      // One row per run: a re-opened PR for the same run is the same thing to look at.
+      const key = row.runId ?? row.id;
+      if (seenRuns.has(key)) return false;
+      seenRuns.add(key);
+      return true;
+    });
+  }
+
+  /** Everything waiting on a person within one task — the "что дальше" strip on the task screen. */
+  static async itemsForTask(task: AgentTask, project: AgentProject | null): Promise<InboxItem[]> {
+    const [interactions, proposals, runs] = await Promise.all([
+      AgentRunInteraction.findAll({ where: { projectId: task.projectId, status: 'pending' }, order: [['createdAt', 'ASC']] }),
+      AgentWorkspaceProposal.findAll({
+        where: { taskId: task.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
+        order: [['updatedAt', 'DESC']],
+      }),
+      AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id'] }),
+    ]);
+    const runIds = new Set(runs.map((run) => run.id));
+    const ownInteractions = interactions.filter((item) => runIds.has(item.runId));
+
+    const [stages, diffs, held] = await Promise.all([
+      AgentStageExecution.findAll({
+        where: { id: { [Op.in]: [...new Set(ownInteractions.map((item) => item.stageExecutionId).filter(Boolean))] as string[] } },
+      }),
+      AgentRunDiff.findAll({
+        where: { id: { [Op.in]: [...new Set(proposals.map((item) => item.latestDiffId).filter(Boolean))] as string[] } },
+      }),
+      this.heldDiffs([task.projectId]),
+    ]);
+    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+    const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
+    const context = { task, project };
+
+    return sortInboxItems([
+      ...ownInteractions.map((item) => questionItem(item, {
+        ...context,
+        stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
+      })),
+      ...proposals.map((item) => {
+        const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
+        return proposalItem(item, { ...context, diff, approvable: AgentWorkspaceProposalService.isApprovableDiff(diff) });
+      }),
+      ...held.filter(({ run }) => run.taskId === task.id).map(({ diff, run }) => heldDiffItem(diff, run, context)),
+    ]);
   }
 
   /**
@@ -211,12 +341,9 @@ export class MobileActivityService {
    */
   static async badgeCount(userId: number): Promise<number> {
     const summary = await this.summary(userId, userId);
-    const allowed = (type: string, projectId: string) => effectiveActivityPolicy(type, projectId).push !== 'off';
-    const proposalType = (status: string) => (status === 'waiting_review' ? 'proposal.waiting_review'
-      : status === 'push_failed' ? 'proposal.push_failed' : 'proposal.reset_failed');
-    return summary.interactions.filter((row) => allowed('interaction.created', row.projectId)).length
-      + summary.proposals.filter((row) => allowed(proposalType(row.status), row.projectId)).length
-      + summary.heldRuns.filter((row) => allowed('run.held_for_approval', row.projectId)).length;
+    // One rule for every kind now that every kind is one shape: the item names its catalogue type,
+    // and a type muted for push in that project must not keep a badge lit either.
+    return summary.items.filter((item) => effectiveActivityPolicy(item.activityType, item.projectId).push !== 'off').length;
   }
 
   /** Diffs `requireApproval` parked in Agentiz: stored, never applied, from a succeeded repository run. */

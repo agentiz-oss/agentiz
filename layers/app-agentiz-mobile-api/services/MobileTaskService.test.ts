@@ -8,6 +8,7 @@ import * as agentizModels from '../../app-agentiz/models';
 import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentRun } from '../../app-agentiz/models/AgentRun';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
+import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
 import { MobileTaskService } from './MobileTaskService';
 
 const OWNER = 21;
@@ -74,6 +75,30 @@ describe('MobileTaskService.runDetailForTask', () => {
     // The context is read from the very rows that authorise the call, so widening the payload must
     // not have widened who may ask for it.
     await expect(MobileTaskService.runDetailForTask(taskId, runId, STRANGER)).rejects.toThrow('Task not found');
+  });
+
+  it('carries the instruction the run was started from, not just the task\'s name', async () => {
+    // The trigger comment is what the worker puts last in the prompt as the current instruction —
+    // a run screen that shows only "Починить пуши на iOS" says nothing about what was asked this
+    // time round.
+    const comment = await AgentTaskComment.create({
+      taskId, authorKind: 'human', authorName: 'Иван', body: 'проверь зависимости и обнови мажоры',
+    } as any);
+    const run = await AgentRun.findByPk(runId);
+    await run!.update({ triggerCommentId: comment.id });
+
+    expect((await MobileTaskService.runDetailForTask(taskId, runId, OWNER)).instruction).toMatchObject({
+      source: 'comment', body: 'проверь зависимости и обнови мажоры', authorName: 'Иван',
+    });
+
+    // With no trigger comment the task's own description is the instruction; with neither, nothing
+    // is invented.
+    await run!.update({ triggerCommentId: null });
+    expect((await MobileTaskService.runDetailForTask(taskId, runId, OWNER)).instruction).toBeNull();
+    await (await AgentTask.findByPk(taskId))!.update({ description: 'Пуши не приходят на iOS 18' });
+    expect((await MobileTaskService.runDetailForTask(taskId, runId, OWNER)).instruction).toMatchObject({
+      source: 'description', body: 'Пуши не приходят на iOS 18',
+    });
   });
 
   it('the copy embedded in a task keeps its context out', async () => {

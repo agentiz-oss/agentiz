@@ -19,6 +19,7 @@ import {
   listTaskAttachments,
   storeAttachment,
 } from '../../app-agentiz/lib/taskAttachments';
+import { MobileActivityService } from './MobileActivityService';
 import { MobileAuthError } from './MobileAuthService';
 import { MobileInteractionService } from './MobileInteractionService';
 
@@ -124,13 +125,46 @@ export class MobileTaskService {
   }
 
   /**
+   * What the run was actually asked to do.
+   *
+   * A run's page used to show only the task's *title*, which for a task started from a one-word
+   * comment ("выполни") says nothing at all — the instruction the agent received lives either in
+   * the comment the run was triggered from (`AgentRun.triggerCommentId`, the same one
+   * `AgentPipelineService.conversationForRun` puts last in the prompt as the current instruction)
+   * or, with no such comment, in the task's description. Resolved here rather than on the client so
+   * both cases arrive as one field with its origin named.
+   */
+  private static async runInstruction(run: AgentRun, task?: AgentTask | null): Promise<{
+    source: 'comment' | 'description';
+    body: string;
+    authorName: string | null;
+    createdAt: Date | null;
+  } | null> {
+    if (run.triggerCommentId) {
+      const comment = await AgentTaskComment.findByPk(run.triggerCommentId);
+      if (comment && comment.body.trim().length > 0) {
+        return {
+          source: 'comment' as const,
+          body: comment.body,
+          authorName: comment.authorName,
+          createdAt: comment.externalCreatedAt ?? comment.createdAt,
+        };
+      }
+    }
+    const owner = task ?? await AgentTask.findByPk(run.taskId);
+    const description = owner?.description?.trim();
+    if (!description) return null;
+    return { source: 'description' as const, body: description, authorName: null, createdAt: owner?.createdAt ?? null };
+  }
+
+  /**
    * [withDiff] is false for the copy of the latest run embedded in a task's detail: only the run
    * screen renders the patch, and it always loads the run through its own endpoint. Sending it
    * with the task instead would put up to AGENTIZ_MAX_PATCH_BYTES (5 MB by default) on the wire —
    * and into the task's cache entry — every time somebody opens a task, to render nothing.
    */
-  private static async runDetail(run: AgentRun, withDiff = true, logQuery: RunLogQuery = {}) {
-    const [stages, logs, job, interactions, diff] = await Promise.all([
+  private static async runDetail(run: AgentRun, withDiff = true, logQuery: RunLogQuery = {}, task?: AgentTask | null) {
+    const [stages, logs, job, interactions, diff, instruction] = await Promise.all([
       AgentStageExecution.findAll({ where: { runId: run.id }, order: [['stageIndex', 'ASC']] }),
       // The tail, not the first page: a run streaming its tool calls outgrows any fixed limit, and
       // the phone screen is opened to see what the agent is doing *now*. `logsCursor` lets a client
@@ -143,6 +177,7 @@ export class MobileTaskService {
       // record is incomplete without them — answered ones stay as the history of what was asked.
       MobileInteractionService.forRun(run.id),
       withDiff ? this.displayedDiff(run) : null,
+      this.runInstruction(run, task),
     ]);
     const stageRoleByExecutionId = new Map(stages.map((stage) => [stage.id, stage.role]));
     return {
@@ -169,6 +204,7 @@ export class MobileTaskService {
       workerResult: job?.result ?? null,
       interactions,
       diff,
+      instruction,
     };
   }
 
@@ -207,13 +243,14 @@ export class MobileTaskService {
    * the per-stage rows let the app show where a failed run stopped.
    */
   static async detail(taskId: string, ownerId: number | string) {
-    const task = await this.ownedTask(taskId, ownerId);
+    const { task, project } = await this.ownedTaskWithProject(taskId, ownerId);
 
-    const [runs, comments, pendingInteractions, attachments] = await Promise.all([
+    const [runs, comments, pendingInteractions, attachments, actionRequired] = await Promise.all([
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 20 }),
       AgentTaskComment.findAll({ where: { taskId } }),
       MobileInteractionService.pendingForTask(taskId),
       listTaskAttachments(taskId),
+      MobileActivityService.itemsForTask(task, project),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -224,7 +261,13 @@ export class MobileTaskService {
         description: task.description,
         runCount: runs.length,
       },
-      latestRun: latestRun ? await this.runDetail(latestRun, false) : null,
+      latestRun: latestRun ? await this.runDetail(latestRun, false, {}, task) : null,
+      /**
+       * What this task is waiting on *from a person*, in the same shape the inbox renders: a
+       * question, a review, a failed push, a held diff. The task screen used to state only its
+       * status, so "ждёт ревью" was something a reader had to deduce from a run's page.
+       */
+      actionRequired,
       // Surfaced at task level too: a question can belong to a run the task screen is not showing
       // in full, and a blocked run must not be something the reader has to go hunting for.
       pendingInteractions,
@@ -297,7 +340,7 @@ export class MobileTaskService {
     const run = await AgentRun.findOne({ where: { id: runId, taskId } });
     if (!run) throw new MobileAuthError(404, 'Run not found');
     return {
-      ...(await this.runDetail(run, true, logQuery)),
+      ...(await this.runDetail(run, true, logQuery, task)),
       taskId: task.id,
       taskTitle: task.title,
       projectId: project.id,
