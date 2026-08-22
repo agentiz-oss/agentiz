@@ -64,9 +64,16 @@ const workflowsTool: IMcpTool = {
   shortDescription: 'Lists workflows (low-code graphs) with their active state.',
   description: 'Read-only list of workflow graphs: id, name, whether its triggers are armed (active), the owning project when there is one, and whether this provider allows editing.',
   mode: 'public',
-  inputSchema: { type: 'object', properties: {} },
-  async handler() {
-    const items = await workflowAdminApi().listSpecs();
+  inputSchema: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: 'only the workflows bound to this project' },
+    },
+  },
+  async handler(params) {
+    const projectId = stringParam(objectParams(params), 'projectId');
+    const all = await workflowAdminApi().listSpecs();
+    const items = projectId ? all.filter((spec) => spec.entity?.id === projectId) : all;
     return { count: items.length, items };
   },
 };
@@ -150,6 +157,10 @@ const manageWorkflowTool: IMcpTool = {
       providerId: { type: 'string', description: `defaults to "${DEFAULT_PROVIDER}"` },
       specId: { type: 'string' },
       name: { type: 'string', description: 'for create' },
+      projectId: {
+        type: 'string',
+        description: 'for create: bind the workflow to this Agentiz project (label + project screen filter)',
+      },
       spec: { type: 'object', description: 'for save: the whole graph' },
     },
   },
@@ -160,7 +171,13 @@ const manageWorkflowTool: IMcpTool = {
     const action = requireString(payload, 'action');
 
     if (action === 'create') {
-      return { spec: await api.createSpec(providerId, { name: stringParam(payload, 'name') ?? 'Новый воркфлоу' }) };
+      const projectId = stringParam(payload, 'projectId');
+      return {
+        spec: await api.createSpec(providerId, {
+          name: stringParam(payload, 'name') ?? 'Новый воркфлоу',
+          entity: projectId ? { model: 'AgentProject', id: projectId } : undefined,
+        }),
+      };
     }
 
     if (action === 'save') {

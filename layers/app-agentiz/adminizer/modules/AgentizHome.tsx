@@ -100,7 +100,12 @@ const AgentizHome: React.FC = () => {
       const res = await axios.get(API_URL, { params: { _method: "getProjects" } });
       const items: AgentProject[] = res.data?.data ?? [];
       setProjects(items);
-      if (items.length > 0) setSelectedProjectId((current) => current || items[0].id);
+      // `?projectId=` is how every link into this screen names its project — the pipeline screen's
+      // "← к проекту", and a workflow's own binding. Without it those all land on the first
+      // project in the list, which is the wrong one for everybody but its owner.
+      const preset = new URLSearchParams(window.location.search).get("projectId");
+      const initial = items.find((item) => item.id === preset)?.id ?? items[0]?.id;
+      if (initial) setSelectedProjectId((current) => current || initial);
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Не удалось загрузить проекты");
     }
@@ -234,6 +239,11 @@ const AgentizHome: React.FC = () => {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <NavCard title="Задачи" description="Трекер: задачи из внешних систем и запуски по ним" href={withProject("/agentiz-tasks")} />
             <NavCard title="Пайплайны" description="ACP-агенты, стадии, источник и хуки" href={withProject("/agentiz-pipelines")} />
+            <NavCard
+              title="Воркфлоу"
+              description="Графы проекта: что запускать автоматически и по какому условию"
+              href={`${PREFIX}/workflows?model=AgentProject&entityId=${selectedProject.id}`}
+            />
             <NavCard title="Воркеры" description="Регистрация машин и доступы" href={`${PREFIX}/agentiz-workers`} />
             <NavCard title="Репозитории" description="Подключения и привязка к проекту" href={withProject("/agentiz-repos")} />
             <NavCard title="Уведомления" description="Общие правила и где они переопределены" href={`${PREFIX}/agentiz-notifications`} />
