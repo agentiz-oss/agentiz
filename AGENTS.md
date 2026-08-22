@@ -171,19 +171,29 @@
   longer exists. `interaction.created` keeps its legacy push payload (`type=interaction`) for
   older app builds; every other type travels as `type=activity`.
 - Everything that waits on a **person** — a question, a review, a failed push or reset, a diff held
-  by `requireApproval`, an opened PR — reaches the phone as one shape, `InboxItem`
-  (`layers/app-agentiz-mobile-api/lib/inboxItems.ts`), served as `items` by
-  `GET /activities/summary` and, scoped to one task, as `actionRequired` in `GET /tasks/:id`. It is
-  computed from the **live entities** on every request, never from the `AgentActivity` journal: the
-  journal only grows, so an answered question would never leave it. Three rules: the words a person
-  reads are the server's (`badge` from `activityTypes.ts`, action `label`s from the builder — a
-  client inventing its own leaves three surfaces naming one event three ways); `facts` are files /
-  branch / revision / the first line of an error, never the agent's prose; and `actions` name the
-  endpoints that already exist (`/interactions/:id/answer`, `/proposals/:id/approve|reject`) —
-  the projection is read-only. A kind may only be added if something **closes** it: `pr.opened` has
-  no local resolution at all and stands or falls with its task's status. `actionableCount` is that
-  list; `badgeCount` is the same minus what the notify policy mutes for push. The old
-  `interactions`/`proposals`/`heldRuns` arrays stay for builds that predate `items`.
+  by `requireApproval`, an opened PR, a task whose last run died — reaches the phone as one shape,
+  `InboxItem` (`layers/app-agentiz-mobile-api/lib/inboxItems.ts`), served as `items` by
+  `GET /activities/summary`, as `actionRequired` in `GET /tasks/:id` and, per run, in
+  `GET /tasks/:taskId/runs/:runId` — the last is what the run screen prints **above** its own
+  result, and there `open_run` is stripped because the reader is already there. It is computed from
+  the **live entities** on every request, never from the `AgentActivity` journal: the journal only
+  grows, so an answered question would never leave it. Four rules: the words a person reads are the
+  server's (`badge` from `activityTypes.ts`, `label`/`explain` from the builder — a client inventing
+  its own leaves three surfaces naming one event three ways, and `explain` is what turns a state
+  into a choice: «ревью · 0 файлов · [Отклонить]» names a state machine, not a decision); `facts`
+  are files / branch / revision / the first line of an error, never the agent's prose; `actions`
+  name endpoints that already exist (`/interactions/:id/answer`, `/proposals/:id/approve|reject`,
+  `/tasks/:id/run`, `/tasks/:taskId/runs/:runId/apply`, `/tasks/:id/status`), with `action.value`
+  carrying the argument when one key means two things (`close_task` = `done` after a PR,
+  `cancelled` after a dead run); and a kind may only exist if something **closes** it — which is
+  why `held_diff` got an apply endpoint on mobile and `pr`/`run_failed` got a status one, instead
+  of shipping a row whose only honest button is "открой ноутбук". Degenerate states get their own
+  kind rather than a review with buttons missing: `no_changes` (the run touched no file, so approve
+  is closed for good and only the worker's directory is still reserved) and `run_failed` (the task's
+  last attempt died; one row per task, never per attempt, keyed off `AgentTask.status = 'failed'`,
+  which a re-run clears by itself). `actionableCount` is that list; `badgeCount` is the same minus
+  what the notify policy mutes for push. The old `interactions`/`proposals`/`heldRuns` arrays stay
+  for builds that predate `items`.
 - *How* a push travels is chosen once, from `PUSH_PROVIDER`, and never branched on again:
   `MobilePushService` builds one FCM-HTTP-v1-shaped `PushMessage` and sends it through a
   `PushProvider` (`layers/app-agentiz-mobile-api/lib/push/`). `firebase` (default) signs and posts to

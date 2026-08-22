@@ -15,6 +15,7 @@ import {
   proposalItem,
   pullRequestItem,
   questionItem,
+  runFailureItem,
   sortInboxItems,
   type InboxItem,
 } from '../lib/inboxItems';
@@ -142,7 +143,7 @@ export class MobileActivityService {
       return { items: [], interactions: [], proposals: [], heldRuns: [], actionableCount: 0, unseen: 0 };
     }
 
-    const [interactions, proposals, heldDiffs, openedPrs, unseen] = await Promise.all([
+    const [interactions, proposals, heldDiffs, openedPrs, failedTasks, unseen] = await Promise.all([
       AgentRunInteraction.findAll({
         where: { projectId: { [Op.in]: projectIds }, status: 'pending' },
         order: [['createdAt', 'ASC']],
@@ -161,8 +162,18 @@ export class MobileActivityService {
         order: [['createdAt', 'DESC']],
         limit: 100,
       }),
+      // A failed run leaves its task in `failed` and a re-run moves it out again (queued →
+      // running), so this status *is* "последняя попытка упала и с тех пор никто ничего не сделал"
+      // — one row per stuck task instead of one per failed attempt, without ranking runs here.
+      AgentTask.findAll({
+        where: { projectId: { [Op.in]: projectIds }, status: 'failed' },
+        order: [['updatedAt', 'DESC']],
+        limit: 100,
+      }),
       this.unseenCount(ownerId, userId),
     ]);
+
+    const failedRuns = await this.latestRunPerTask(failedTasks.map((task) => task.id));
 
     const runIds = new Set<string>([
       ...interactions.map((item) => item.runId),
@@ -193,7 +204,7 @@ export class MobileActivityService {
       ...openedPrs.map((row) => row.taskId).filter(Boolean) as string[],
     ]);
     const tasks = await AgentTask.findAll({ where: { id: { [Op.in]: [...taskIds] } } });
-    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const taskById = new Map([...tasks, ...failedTasks].map((task) => [task.id, task]));
     const contextOf = (projectId: string, taskId: string | null | undefined) => ({
       project: projectById.get(projectId) ?? null,
       task: taskId ? taskById.get(taskId) ?? null : null,
@@ -247,6 +258,13 @@ export class MobileActivityService {
         });
       }),
       ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId))),
+      // A stuck task is only actionable while its proposal is not: an unapprovable proposal on the
+      // same run already says "освободите папку", and two rows for one dead end read as two.
+      ...failedTasks.flatMap((task) => {
+        const run = failedRuns.get(task.id);
+        if (!run || proposals.some((proposal) => proposal.taskId === task.id)) return [];
+        return [runFailureItem(run, contextOf(task.projectId, task.id))];
+      }),
       ...this.openPullRequests(openedPrs, taskById).map((row) => pullRequestItem({
         id: row.id,
         projectId: row.projectId,
@@ -294,6 +312,76 @@ export class MobileActivityService {
     });
   }
 
+  /**
+   * The newest run of each of the given tasks, in one query.
+   *
+   * Sorted client-side rather than with a window function: sqlite and postgres are both supported
+   * deployments here, and the caller's list is bounded (the failed tasks of one owner).
+   */
+  private static async latestRunPerTask(taskIds: string[]): Promise<Map<string, AgentRun>> {
+    if (taskIds.length === 0) return new Map();
+    const runs = await AgentRun.findAll({
+      where: { taskId: { [Op.in]: taskIds } },
+      order: [['createdAt', 'DESC']],
+    });
+    const byTask = new Map<string, AgentRun>();
+    for (const run of runs) if (!byTask.has(run.taskId)) byTask.set(run.taskId, run);
+    return byTask;
+  }
+
+  /**
+   * Everything waiting on a person because of **one run** — what the run screen puts above its own
+   * result, so that a run somebody opened from a notification states what to do about itself
+   * instead of leaving the reader to work it out from a status word and a log.
+   *
+   * Same projection as the inbox, narrowed to this run: its pending questions, the proposal it
+   * produced, a diff `requireApproval` held back, and the run's own failure when nothing else has
+   * happened on the task since.
+   */
+  static async itemsForRun(run: AgentRun, task: AgentTask | null, project: AgentProject | null): Promise<InboxItem[]> {
+    const [interactions, proposal, held] = await Promise.all([
+      AgentRunInteraction.findAll({ where: { runId: run.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
+      AgentWorkspaceProposal.findOne({
+        where: { latestRunId: run.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
+      }),
+      this.heldDiffs([run.projectId]),
+    ]);
+    const [stages, diff] = await Promise.all([
+      AgentStageExecution.findAll({
+        where: { id: { [Op.in]: [...new Set(interactions.map((item) => item.stageExecutionId).filter(Boolean))] as string[] } },
+      }),
+      proposal?.latestDiffId ? AgentRunDiff.findByPk(proposal.latestDiffId) : Promise.resolve(null),
+    ]);
+    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+    const context = { task: task ?? null, project };
+
+    // "Открыть запуск" is the reader's current location here, so it is dropped rather than drawn as
+    // a button that does nothing. Everything else is the same projection the inbox renders.
+    const here = (items: InboxItem[]) => items.map((item) => ({
+      ...item,
+      actions: item.actions.filter((action) => action.key !== 'open_run'),
+    }));
+
+    return here(sortInboxItems([
+      ...interactions.map((item) => questionItem(item, {
+        ...context,
+        run,
+        stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
+      })),
+      ...(proposal
+        ? [proposalItem(proposal, {
+            ...context,
+            diff,
+            approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
+          })]
+        : []),
+      ...held.filter((entry) => entry.diff.runId === run.id).map((entry) => heldDiffItem(entry.diff, entry.run, context)),
+      // Only when the task is still sitting on this failure: a task re-run since then is out of
+      // `failed`, and offering "запустить ещё раз" on an old attempt would compete with it.
+      ...(!proposal && run.status === 'failed' && task?.status === 'failed' ? [runFailureItem(run, context)] : []),
+    ]));
+  }
+
   /** Everything waiting on a person within one task — the "что дальше" strip on the task screen. */
   static async itemsForTask(task: AgentTask, project: AgentProject | null): Promise<InboxItem[]> {
     const [interactions, proposals, runs] = await Promise.all([
@@ -320,11 +408,16 @@ export class MobileActivityService {
     const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
     const context = { task, project };
 
+    const latestRun = task.status === 'failed' && proposals.length === 0
+      ? (await this.latestRunPerTask([task.id])).get(task.id) ?? null
+      : null;
+
     return sortInboxItems([
       ...ownInteractions.map((item) => questionItem(item, {
         ...context,
         stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
       })),
+      ...(latestRun ? [runFailureItem(latestRun, context)] : []),
       ...proposals.map((item) => {
         const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
         return proposalItem(item, { ...context, diff, approvable: AgentWorkspaceProposalService.isApprovableDiff(diff) });

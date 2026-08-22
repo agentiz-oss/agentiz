@@ -9,6 +9,7 @@ import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecutio
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentTaskAttachment } from '../../app-agentiz/models/AgentTaskAttachment';
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
+import type { AgentTaskStatus } from '../../app-agentiz/types/agentiz';
 import { AgentPipelineService } from '../../app-agentiz/services/AgentPipelineService';
 import { AgentTaskService } from '../../app-agentiz/services/AgentTaskService';
 import { normalizeRunOverride } from '../../app-agentiz/lib/harnessCatalog';
@@ -345,7 +346,62 @@ export class MobileTaskService {
       taskTitle: task.title,
       projectId: project.id,
       projectName: project.name,
+      /**
+       * What this run wants from a person, in the same shape the inbox renders — printed at the
+       * very top of the run screen, above the result.
+       *
+       * A run that stopped on something a human has to settle used to say so only by its status
+       * word and, further down the page, by a review block a reader had to recognise. The list the
+       * inbox is built from already knows the answer *and* the words for it, so the run screen asks
+       * it instead of restating the state machine in Kotlin.
+       */
+      actionRequired: await MobileActivityService.itemsForRun(run, task, project),
     };
+  }
+
+  /**
+   * Closes or reopens a task from the phone.
+   *
+   * The exit for the two inbox rows nothing local can resolve: an opened pull request (Agentiz
+   * never learns it was merged) and a run that failed for good. Only the statuses a person picks
+   * are accepted — the pipeline's own `queued`/`running`/`waiting_*` are written by the pipeline,
+   * and letting a client set them would fake a state no run is in.
+   */
+  static async setStatus(taskId: string, ownerId: number | string, status: string) {
+    const allowed = ['done', 'cancelled', 'ignored', 'new'];
+    if (!allowed.includes(status)) {
+      throw new MobileAuthError(400, `Status must be one of ${allowed.join(', ')}`);
+    }
+    const task = await this.ownedTask(taskId, ownerId);
+    await task.update({ status: status as AgentTaskStatus });
+    return this.listRow(task);
+  }
+
+  /**
+   * Applies a diff `requireApproval` held back — the same call the panel's button makes.
+   *
+   * Without it the phone could only *show* a held diff and send the reader to a laptop, which is
+   * exactly the dead end the inbox is supposed to not have. The rules (a diff applies once,
+   * workspace diffs go through their proposal instead) live in `applyStoredDiff`; here they only
+   * get translated into a status code the app can act on.
+   */
+  static async applyDiff(
+    taskId: string,
+    runId: string,
+    ownerId: number | string,
+    actor: { id: number | null; name: string },
+  ) {
+    await this.ownedTask(taskId, ownerId);
+    const run = await AgentRun.findOne({ where: { id: runId, taskId } });
+    if (!run) throw new MobileAuthError(404, 'Run not found');
+    try {
+      const diff = await AgentPipelineService.applyStoredDiff(run.id, actor.id !== null ? `user:${actor.id} (${actor.name})` : actor.name);
+      return { applied: true, diffId: diff.id, appliedCommitSha: diff.appliedCommitSha ?? null };
+    } catch (error) {
+      // Everything this can refuse is a conflict about the diff's state, not a server fault: it was
+      // applied already, it holds no operations, it belongs to a workspace proposal.
+      throw new MobileAuthError(409, error instanceof Error ? error.message : String(error));
+    }
   }
 
   /** Cancellation is scoped through the task, so a known run id cannot cross project boundaries. */

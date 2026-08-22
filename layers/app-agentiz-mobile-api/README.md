@@ -27,6 +27,8 @@ session cookies.
 | GET    | `/tasks/:id/runs` | Bearer JWT | Compact history of a task's pipeline runs.            |
 | GET    | `/tasks/:taskId/runs/:runId` | Bearer JWT | Full result, stages and log of one run.       |
 | POST   | `/tasks/:taskId/runs/:runId/cancel` | Bearer JWT | Requests cancellation of a run.             |
+| POST   | `/tasks/:taskId/runs/:runId/apply` | Bearer JWT | Applies a diff `requireApproval` held back. |
+| POST   | `/tasks/:id/status` | Bearer JWT | `{ status }` — closes or reopens a task by hand.       |
 | GET    | `/interactions`  | Bearer JWT  | Questions agents are waiting on, across all owned projects. |
 | GET    | `/interactions/:id` | Bearer JWT | One question by id — what a tapped notification opens. |
 | POST   | `/interactions/:id/answer` | Bearer JWT | `{ action, content }` — answers one question.   |
@@ -110,35 +112,55 @@ live thing that needs a decision, in one shape, already sorted.
 ```jsonc
 {
   "id": "proposal:01J…",          // stable, unique across kinds — the client's list key
-  "kind": "review",               // question | review | push_failed | reset_failed | held_diff | pr
+  "kind": "review",               // question | review | no_changes | push_failed | reset_failed
+                                  //  | held_diff | run_failed | pr
   "activityType": "proposal.waiting_review",
   "badge": "ревью",               // spelled by app-agentiz/lib/notifications/activityTypes.ts
   "headline": "Обновить зависимости",
   "facts": "3 файл(ов) · +48/−12 · ветка main · ревизия 2",
+  "explain": "Изменения лежат в папке воркера … «Одобрить» — закоммитить их и запушить …",
   "projectId": "…", "projectName": "…", "taskId": "…", "taskTitle": "…", "runId": "…",
   "proposalId": "…", "revision": 2, "interactionId": null, "url": null,
   "waitingSince": "2026-08-22T11:02:00.000Z", "expiresAt": null,
   "priority": 2,
   "actions": [{ "key": "approve", "label": "Одобрить…", "style": "primary" }, …]
+  // action.value carries the endpoint's argument when one key means two things: close_task is
+  // "done" after a pull request and "cancelled" after a run that will not be retried.
 }
 ```
 
 Three rules hold it together, and breaking any of them puts the client back to guessing:
 
 - **The server spells everything a person reads.** `badge` comes from the activity catalogue — the
-  same file the notification policy schema is generated from — and `label` from the item builder
-  (`lib/inboxItems.ts`). A client that invents its own words for "ревью" ends up with a chip that
-  means nothing in particular.
+  same file the notification policy schema is generated from — and `label` and `explain` from the
+  item builder (`lib/inboxItems.ts`). A client that invents its own words for "ревью" ends up with a
+  chip that means nothing in particular. `explain` is the sentence that turns a state into a
+  choice — what happened and what each button will do about it; without it "ревью · 0 файлов ·
+  [Отклонить]" is a state machine, not a decision anybody can make.
 - **`facts` are facts, never the agent's prose.** Files and line counts, a branch, a revision, the
   first line of an error. The first sentence of a run's output reads like an explanation and is not
   one.
 - **`actions` name existing endpoints, not new ones.** `answer` → `POST /interactions/:id/answer`,
-  `approve`/`reject` → `POST /proposals/:id/…`, `open_run`/`open_url` are navigation. The inbox is a
-  projection for reading; nothing is written through it.
+  `approve`/`reject` → `POST /proposals/:id/…`, `rerun` → `POST /tasks/:id/run`, `apply_diff` →
+  `POST /tasks/:taskId/runs/:runId/apply`, `close_task` → `POST /tasks/:id/status`, and
+  `open_run`/`open_url` are navigation. The inbox is a projection for reading; nothing is written
+  through it.
+- **Every kind has a way out.** A row a person cannot resolve from the phone is worse than no row:
+  `held_diff` got `/apply` and `pr`/`run_failed` got `/status` for exactly that reason. The two
+  degenerate states are named rather than papered over — `no_changes` is a review of a run that
+  changed no file (approve is closed for good, and all that is left is that the worker's directory
+  is still reserved), `run_failed` is a task whose last attempt died and which nothing will move on
+  its own.
 
 Ordering is `priority` then `waitingSince` ascending: a question first (an agent is parked
-mid-turn), then a failed push or reset (a worker's directory is wedged), then reviews, held diffs
-and finally pull requests, and inside a group the oldest — the one ignored longest — on top.
+mid-turn), then everything holding a worker's directory (a failed push or reset, a review nobody
+can approve), then a task stuck on a failure, then reviews, held diffs and finally pull requests,
+and inside a group the oldest — the one ignored longest — on top.
+
+The same projection answers two narrower questions: `GET /tasks/:id` returns `actionRequired` for
+one task, and `GET /tasks/:taskId/runs/:runId` returns it for one run — that is what the run screen
+prints above everything the run produced. At run scope `open_run` is stripped from the actions: the
+reader is already there.
 
 `interactions`, `proposals` and `heldRuns` are the same facts in the shape older builds parse and
 are still filled. `actionableCount` is `items.length`; `MobileActivityService.badgeCount` is that

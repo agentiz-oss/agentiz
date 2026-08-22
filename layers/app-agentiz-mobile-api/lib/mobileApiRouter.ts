@@ -222,6 +222,22 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   });
 
   /**
+   * Closing (or reopening) a task by hand.
+   *
+   * Two inbox rows have no other exit: an opened pull request, whose fate Agentiz never learns,
+   * and a run that failed and is not going to be retried. Both say "закройте задачу" — this is the
+   * endpoint that lets the phone actually do it. Pipeline-owned statuses are refused; see
+   * MobileTaskService.setStatus.
+   */
+  router.post('/tasks/:id/status', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.setStatus(idOf(req), ownerOf(req), String(req.body?.status ?? '')) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
    * What is running right now across every project the caller owns, plus the last finished runs.
    * The per-task history below answers "how did this task go"; this answers "is anything going on",
    * which the app otherwise could not ask without opening every task in turn.
@@ -252,6 +268,20 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
         ...(Number(req.query.logLimit) > 0 ? { limit: Number(req.query.logLimit) } : {}),
       };
       res.json({ data: await MobileTaskService.runDetailForTask(String(req.params.taskId), String(req.params.runId), ownerOf(req), logQuery) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * Applies a diff the pipeline's `requireApproval` held back — the phone's half of the panel's
+   * "Применить" button, and the reason `held_diff` can offer an action instead of a link.
+   */
+  router.post('/tasks/:taskId/runs/:runId/apply', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileTaskService.applyDiff(
+        String(req.params.taskId), String(req.params.runId), ownerOf(req), actorOf(req),
+      ) });
     } catch (error) {
       errorResponse(res, error);
     }

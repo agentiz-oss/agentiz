@@ -247,4 +247,87 @@ describe('MobileActivityService', () => {
       delete process.env.AGENTIZ_NOTIFY_POLICY;
     }
   });
+  it('turns a review nobody can approve into an honest "освободить папку" row', async () => {
+    // The shape a research run leaves behind: it finished, answered in text, touched no file. The
+    // proposal is still waiting_review and still holding the worker's directory.
+    const run = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'succeeded', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'commit' } },
+    } as any);
+    const diff = await AgentRunDiff.create({
+      runId: run.id, projectId: ownProject.id, baseSha: 'a'.repeat(40), treeSha: 'b'.repeat(40),
+      patch: '', patchSizeBytes: 0, patchSha256: 'c'.repeat(64),
+      ops: [], stats: { files: 0, insertions: 0, deletions: 0 }, truncated: false, appliedAt: null, proposalId: 'p',
+    } as any);
+    await AgentWorkspaceProposal.create({
+      projectId: ownProject.id, taskId: ownTask.id, workerId: 'w1', workspaceKey: 'lyapka-rf', workspacePath: '/prj/lyapka-rf',
+      reservationKey: 'w1:lyapka-rf', initialRunId: run.id, latestRunId: run.id, revision: 1, latestDiffId: diff.id,
+      remote: 'origin', targetMode: 'new', targetBranch: 'agentiz/x', commitMessage: 'выполни',
+      status: 'waiting_review',
+    } as any);
+
+    const [item] = (await MobileActivityService.summary(OWNER, OWNER)).items;
+
+    expect(item).toMatchObject({ kind: 'no_changes', badge: 'без изменений', headline: 'Запуск ничего не изменил' });
+    // No approve to press and no pretending otherwise; reading the answer comes first, and the
+    // remaining decision is only about the directory.
+    expect(item.actions.map((action) => action.key)).toEqual(['open_run', 'reject']);
+    expect(item.actions.find((action) => action.key === 'reject')?.label).toBe('Освободить папку');
+    expect(item.explain).toContain('lyapka-rf');
+    // Ahead of an ordinary review: this one is blocking every later run in that directory.
+    expect(item.priority).toBeLessThan(3);
+  });
+
+  it('offers a stuck task one retry row, and drops it when the task is closed', async () => {
+    await ownTask.update({ status: 'failed' });
+    await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+      errorMessage: 'Worker job queued\nno worker claimed it', finishedAt: new Date(),
+    } as any);
+    // An earlier attempt of the same task is history, not a second thing to decide.
+    await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+      errorMessage: 'older', finishedAt: new Date(Date.now() - 3_600_000), createdAt: new Date(Date.now() - 3_600_000),
+    } as any);
+
+    const items = (await MobileActivityService.summary(OWNER, OWNER)).items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: 'run_failed', headline: 'Worker job queued' });
+    expect(items[0].actions.map((action) => action.key)).toEqual(['rerun', 'open_run', 'close_task']);
+    // The same row is what the task screen prints.
+    expect((await MobileActivityService.itemsForTask(ownTask, ownProject)).map((item) => item.kind)).toEqual(['run_failed']);
+
+    await ownTask.update({ status: 'ignored' });
+    expect((await MobileActivityService.summary(OWNER, OWNER)).items).toHaveLength(0);
+  });
+
+  it('answers what one run is waiting on, so its screen can say it above the result', async () => {
+    const run = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'waiting_input', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+    } as any);
+    const other = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'waiting_input', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+    } as any);
+    const job = await AgentRunJob.create({ runId: run.id, projectId: ownProject.id, status: 'running', attempt: 1, snapshot: {} } as any);
+    for (const [target, message] of [[run, 'Ставить ли зависимость?'], [other, 'Чужой вопрос']] as const) {
+      const stage = await AgentStageExecution.create({
+        runId: (target as AgentRun).id, stageIndex: 0, role: 'implement', status: 'waiting_input',
+      } as any);
+      await AgentRunInteraction.create({
+        projectId: ownProject.id, runId: (target as AgentRun).id, jobId: job.id, attempt: 1, stageExecutionId: stage.id,
+        kind: 'elicitation', source: 'codex', externalRequestId: `req-${(target as AgentRun).id}`, message,
+        requestedSchema: { type: 'object', properties: {} }, status: 'pending',
+      } as any);
+    }
+
+    const items = await MobileActivityService.itemsForRun(run, ownTask, ownProject);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: 'question', headline: 'Ставить ли зависимость?', runId: run.id });
+    expect(items[0].explain).toBeTruthy();
+  });
 });
