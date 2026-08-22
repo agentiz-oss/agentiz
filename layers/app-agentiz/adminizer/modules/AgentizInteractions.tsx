@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
-import { DocsButton } from "./components/DocsButton";
 
 type Field = HumanInputField;
 type PendingInteraction = {
@@ -91,10 +90,7 @@ const AgentizInteractions: React.FC = () => {
           <h1 className="text-3xl font-bold tracking-tight">Нужен ответ</h1>
           <p className="text-sm text-muted-foreground">Вопросы работающих агентов из доступных вам проектов.</p>
         </div>
-        <div className="flex items-center gap-3 text-sm">
-          <DocsButton className="underline" />
-          <a href={`${PREFIX}/agentiz-tasks`} className="underline">← к задачам</a>
-        </div>
+        <a href={`${PREFIX}/agentiz-tasks`} className="text-sm underline">← к задачам</a>
       </div>
 
       {error && <div className="rounded border p-3 text-sm" style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2", color: "#b91c1c" }}>{error}</div>}

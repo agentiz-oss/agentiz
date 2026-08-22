@@ -4,7 +4,6 @@ import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { humanInputChoices, missingHumanInputChoice, selectedHumanInputChoice, type HumanInputField } from "./humanInputSchema";
 import { DiffViewer } from "./components/diff-viewer";
 import { formatTokens, tokensTooltip, totalTokens, type TokenUsage } from "./lib/tokenUsage";
-import { DocsButton } from "./components/DocsButton";
 
 /**
  * One pipeline run in full: its stages, its log and — when it changed code — the diff, with a
@@ -452,14 +451,11 @@ const AgentizRunDetail: React.FC = () => {
           )}
           {run?.pipelineSpecId && <div className="mt-2"><RunNotificationHint pipelineSpecId={run.pipelineSpecId} projectId={run.projectId} /></div>}
         </div>
-        <div className="flex items-center gap-3 text-xs">
-          <DocsButton className="underline" />
-          {run && (
-            <a href={`${PREFIX}/agentiz-tasks`} className="underline">
-              ← к задачам
-            </a>
-          )}
-        </div>
+        {run && (
+          <a href={`${PREFIX}/agentiz-tasks`} className="text-xs underline">
+            ← к задачам
+          </a>
+        )}
       </div>
 
       {error && <div className="rounded border p-3 text-sm" style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2", color: "#b91c1c" }}>{error}</div>}

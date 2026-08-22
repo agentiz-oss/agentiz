@@ -357,12 +357,12 @@
   navigation. Per-document access is declarative frontmatter (`accessRightsToken`, `models`), the
   base token is `read-documentation`, and nothing here creates tokens. Agentiz's own articles live
   in `layers/app-agentiz/docs/panel/*.ru.md`, bound to pages and models through `urls:`/`models:`.
-  Every agentiz panel page carries a «Документация» button (`adminizer/modules/components/
-  DocsButton.tsx`) that appears only when an article is actually bound to that page: it asks
-  `/docs/api/context` for the current path rather than reading adminizer's shared `docs` prop,
-  because that prop belongs to whichever page was loaded first and the panel navigates
-  client-side. Rights, a disabled subsystem and «nobody wrote about this page» all end as the same
-  thing — the button renders nothing.
+  Reading an article from the page it is about needs **no code in a module**: adminizer's own
+  header carries `DocsInfoButton` (`components/docs/DocsDrawer.tsx`), which appears as soon as the
+  shared `docs` prop is non-empty and opens the text in a sheet next to the page, with `#info` /
+  `#info=<id>` as deep links. That prop is filled from the article's `urls:` — so binding an
+  article to a page *is* the whole integration, and a module page must not grow a documentation
+  button of its own.
   app-adminizer is a **separate package**: prod installs it from the registry (`local_modules` is
   excluded from the Docker context), so a change to the seam needs a publish + lock bump, while a
   change to an article ships with the server image.

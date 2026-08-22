@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { PipelineHooksSection } from "./hooks/PipelineHooksSection";
 import NotificationPolicySection from "./components/NotificationPolicySection";
-import { DocsButton } from "./components/DocsButton";
 
 /**
  * ACP-agent assignment and pipeline-spec editing for one project. Split out of the project
@@ -458,7 +457,6 @@ const AgentizPipelines: React.FC = () => {
               ← к проекту
             </a>
           )}
-          <DocsButton className="rounded border px-2 py-1 text-xs font-medium" />
         </div>
       </div>
 

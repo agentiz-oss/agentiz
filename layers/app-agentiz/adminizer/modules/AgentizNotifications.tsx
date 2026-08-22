@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import NotificationPolicySection from "./components/NotificationPolicySection";
-import { DocsButton } from "./components/DocsButton";
 
 /**
  * Notifications, the whole picture: the `defaults` scope — the tail of every resolution — and a
@@ -69,10 +68,7 @@ const AgentizNotifications: React.FC = () => {
             настраивается только доставка: пуш на телефон и колокольчик в панели.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs">
-          <DocsButton className="underline" />
-          <a href={`${PREFIX}/agentiz`} className="underline">← к проектам</a>
-        </div>
+        <a href={`${PREFIX}/agentiz`} className="text-xs underline">← к проектам</a>
       </div>
 
       {error && (

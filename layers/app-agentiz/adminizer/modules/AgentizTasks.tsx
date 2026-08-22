@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import axios from "axios";
 import { formatDateTime, useViewerTimezone } from "./lib/viewerTime";
 import { formatTokens } from "./lib/tokenUsage";
-import { DocsButton } from "./components/DocsButton";
 
 const API_URL = `${(window as any).routePrefix ?? "/dashboard"}/agentiz-tasks`;
 
@@ -526,7 +525,6 @@ const AgentizTasks: React.FC = () => {
           <button onClick={() => setShowSources((v) => !v)} className="rounded border px-3 py-1.5 text-sm font-medium">
             Источники задач ({sources.length})
           </button>
-          <DocsButton />
         </div>
       </div>
 
