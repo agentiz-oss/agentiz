@@ -21,3 +21,6 @@
 [submodule "mobile-client"]
 	path = mobile-client
 	url = git@github.com:agentiz-oss/mobile-client.git
+[submodule "local_modules/app-workflow"]
+	path = local_modules/app-workflow
+	url = git@github.com:nodeknit/app-workflow.git
