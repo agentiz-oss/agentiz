@@ -366,6 +366,15 @@
   app-adminizer is a **separate package**: prod installs it from the registry (`local_modules` is
   excluded from the Docker context), so a change to the seam needs a publish + lock bump, while a
   change to an article ships with the server image.
+- The image installs `@nodeknit/*` from the `commit` dist-tag (`local_modules` is excluded from
+  the Docker context), and `container.yml` repoints that tag at the submodule shas this repo pins.
+  Nothing about the install layer changes when the tag moves, so BuildKit used to reuse an older
+  `node_modules` and the bump never reached prod — with a green build and no error anywhere. The
+  tagged versions are therefore passed in as `NODEKNIT_COMMIT_VERSIONS` and are part of that
+  layer's cache key; a new local module needs an entry in the workflow's `base` map or it inherits
+  the same silent staleness. When prod runs code that does not match the submodule, check the
+  installed package version (`window.adminizerVersion` on any panel page) before reading anything
+  else.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 
