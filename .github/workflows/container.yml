@@ -63,6 +63,7 @@ jobs:
       # `git submodule status` reads the recorded gitlink SHA from the index, so the
       # submodules do not need to be checked out.
       - name: Ensure commit dist-tags point to pinned submodule versions
+        id: nodeknit
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
@@ -74,13 +75,20 @@ jobs:
             [app-manager]=1.0.0
             [app-mcp]=1.0.0
             [app-telegram-bot]=1.0.0
+            [app-workflow]=0.1.0
           )
-          for pkg in "${!base[@]}"; do
+          versions=""
+          # Sorted, so the same pins always produce the same string — this is a Docker cache key
+          # (NODEKNIT_COMMIT_VERSIONS below), and an unstable order would rebuild node_modules on
+          # every push while a stale order would keep serving them.
+          for pkg in $(printf '%s\n' "${!base[@]}" | sort); do
             sha=$(git submodule status -- "local_modules/$pkg" | awk '{print $1}' | sed 's/^[-+U]//' | cut -c1-7)
             version="${base[$pkg]}-commit.${sha}"
             echo "Tagging @nodeknit/${pkg}@${version} as commit"
             npm dist-tag add "@nodeknit/${pkg}@${version}" commit --registry=https://npm.pkg.github.com || true
+            versions="${versions}@nodeknit/${pkg}@${version} "
           done
+          echo "versions=${versions% }" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -92,6 +100,7 @@ jobs:
           build-args: |
             GIT_SHA=${{ steps.build_meta.outputs.git_sha }}
             BUILD_TIME=${{ steps.build_meta.outputs.build_time }}
+            NODEKNIT_COMMIT_VERSIONS=${{ steps.nodeknit.outputs.versions }}
           secrets: |
             github_npm_token=${{ secrets.GH_PAT || github.token }}
           cache-from: type=gha

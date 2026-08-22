@@ -22,6 +22,15 @@ RUN set -eu; \
     printf 'npmScopes:\n  nodeknit:\n    npmRegistryServer: "https://npm.pkg.github.com"\n    npmAlwaysAuth: true\n' >> .yarnrc.yml; \
     sed -r -i 's#"(@nodeknit/[^"]+)":\s*"file:\./local_modules/[^"]+"#"\1": "commit"#g' package.json
 
+# What "commit" resolves to changes every time a submodule is pushed, but nothing about *this*
+# layer does — its cache key is the install command plus the copied package.json/yarn.lock. Without
+# this argument BuildKit reuses the node_modules of an older build, the image quietly ships the
+# @nodeknit/* packages of whenever the cache was warmed, and a submodule bump never reaches prod
+# however green the build looks. The workflow passes the versions it just tagged; a local build
+# without it keeps the old behaviour.
+ARG NODEKNIT_COMMIT_VERSIONS=unpinned
+RUN echo "$NODEKNIT_COMMIT_VERSIONS" > .nodeknit-commit-versions
+
 # The auth token is appended for the duration of the install only, so it never
 # lands in an image layer.
 RUN --mount=type=secret,id=github_npm_token set -eu; \
