@@ -1,4 +1,12 @@
-import { activityTypeDef } from '../../app-agentiz/lib/notifications/activityTypes';
+import {
+  activityTypeDef,
+  type ActivityDashboardMode,
+  type ActivityPushMode,
+} from '../../app-agentiz/lib/notifications/activityTypes';
+import {
+  effectiveActivityPolicyExplained,
+  type ActivityPolicyScopeName,
+} from '../../app-agentiz/lib/notifications/policySettings';
 import type { AgentProject } from '../../app-agentiz/models/AgentProject';
 import type { AgentRun } from '../../app-agentiz/models/AgentRun';
 import type { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
@@ -45,12 +53,45 @@ export type InboxActionKey =
   | 'apply_diff'
   | 'rerun'
   | 'open_run'
-  | 'open_url';
+  | 'open_url'
+  /**
+   * "Прочитал, делать ничего не буду" — the exit from a row that holds nothing and that nothing
+   * else will ever close. Offered only where [InboxItem.dismissible] is true; see the field.
+   */
+  | 'dismiss'
+  | 'restore';
 
 export interface InboxAction {
   key: InboxActionKey;
   label: string;
   style: 'primary' | 'default' | 'danger';
+}
+
+/**
+ * How this row's event is delivered right now, and where that was decided.
+ *
+ * The inbox and the notification policy are two views of one thing — a row is here *because* an
+ * event of this type was recorded, and whether that event also woke anybody is the policy's
+ * decision. Saying so on the row is what makes "почему мне не пришёл пуш" answerable where the
+ * question is asked, and it is what lets the same row offer the switch: `scope` names the exact
+ * rule in force, so turning it off from the inbox edits the entry a person would otherwise have
+ * had to find on the settings screen.
+ *
+ * Delivery is per **type**, never per row: silencing this row silences every future event of the
+ * same type in the same scope, which is the honest description of what the policy can express.
+ */
+export interface InboxNotify {
+  /** The catalogue's own name for the event — «Запуск завершился с ошибкой». */
+  typeLabel: string;
+  push: ActivityPushMode;
+  dashboard: ActivityDashboardMode;
+  /** Which scope decided `push`, and whether it did so through that scope's `mute: true`. */
+  scope: ActivityPolicyScopeName;
+  mutedByScope: boolean;
+  /** The pipeline scope this row resolved against, when its run had one — the client edits it. */
+  pipelineSpecId: string | null;
+  /** One line for the row: «пуш выключен правилом проекта». */
+  label: string;
 }
 
 export interface InboxItem {
@@ -86,6 +127,21 @@ export interface InboxItem {
   expiresAt: Date | null;
   /** Sort group; see [sortInboxItems]. */
   priority: number;
+  /**
+   * Whether this row may be closed by simply reading it.
+   *
+   * True exactly for the **reminders** — a row that holds nothing (a failed run, an opened pull
+   * request). Those are the ones nothing in Agentiz ever resolves, so without this they stay on
+   * the screen forever and a person learns to ignore the whole list. A **blocking** row is never
+   * dismissible: it holds an agent's turn or a worker's directory, and hiding it would leave the
+   * next run failing on a reservation with the explanation gone from view. Its exit is its own
+   * entity — answer, approve, reject, release.
+   */
+  dismissible: boolean;
+  /** Set only on a row the caller has dismissed and asked to see anyway. */
+  dismissedAt: Date | null;
+  /** Delivery of this row's event, and the rule that decided it. */
+  notify: InboxNotify;
   actions: InboxAction[];
 }
 
@@ -127,6 +183,13 @@ export function isBlockingInboxItem(item: InboxItem): boolean {
 export interface InboxContext {
   task?: AgentTask | null;
   project?: AgentProject | null;
+  /**
+   * The pipeline the row's run came from (`AgentRun.pipelineSpecId`), when there is one.
+   *
+   * Only used to resolve the notification policy the way the dispatcher resolved it for the push:
+   * a row must not claim "пуш включён" while the pipeline scope has the type switched off.
+   */
+  pipelineSpecId?: string | null;
 }
 
 /** First non-empty line, collapsed and clipped — a card gives any of these two lines at most. */
@@ -156,12 +219,46 @@ function workspaceName(proposal: AgentWorkspaceProposal): string {
   return proposal.workspaceKey || proposal.workspacePath || 'воркспейс';
 }
 
-function base(kind: InboxItemKind, activityType: string, context: InboxContext) {
+/** «пуш выключен правилом проекта» — the value and the rule that produced it, in one line. */
+function notifyLabel(notify: Omit<InboxNotify, 'label'>): string {
+  const state = notify.push === 'on' ? 'пуш включён'
+    : notify.push === 'silent' ? 'пуш без звука'
+      : 'пуш выключен';
+  const by = notify.scope === 'pipeline' ? 'правилом пайплайна'
+    : notify.scope === 'project' ? 'правилом проекта'
+      : notify.scope === 'defaults' ? 'общим правилом'
+        : 'по умолчанию';
+  return `${state} ${by}`;
+}
+
+/**
+ * The delivery state of one row, resolved exactly as `ActivityService.record()` resolved it when
+ * the event happened — same function, same scope chain. A row that says something else about its
+ * own notification is worse than a row that says nothing.
+ */
+function notifyOf(activityType: string, projectId: string, context: InboxContext): InboxNotify {
+  const pipelineSpecId = context.pipelineSpecId ?? null;
+  const explained = effectiveActivityPolicyExplained(activityType, projectId, pipelineSpecId);
+  const notify = {
+    typeLabel: activityTypeDef(activityType).label,
+    push: explained.push.mode,
+    dashboard: explained.dashboard.mode,
+    scope: explained.push.scope,
+    mutedByScope: explained.push.byMute,
+    pipelineSpecId,
+  };
+  return { ...notify, label: notifyLabel(notify) };
+}
+
+function base(kind: InboxItemKind, activityType: string, context: InboxContext, projectId: string) {
   const def = activityTypeDef(activityType);
   return {
     kind,
     activityType,
     badge: def.badge,
+    dismissible: !BLOCKING.has(kind),
+    dismissedAt: null as Date | null,
+    notify: notifyOf(activityType, projectId, context),
     projectName: context.project?.name ?? null,
     taskId: context.task?.id ?? null,
     taskTitle: context.task?.title ?? null,
@@ -180,7 +277,7 @@ export function questionItem(
   context: InboxContext & { run?: AgentRun | null; stageRole?: string | null },
 ): InboxItem {
   return {
-    ...base('question', 'interaction.created', context),
+    ...base('question', 'interaction.created', context, interaction.projectId),
     id: `question:${interaction.id}`,
     headline: firstLine(interaction.message) ?? 'Агент ждёт ответа',
     facts: join(['Запуск на паузе', context.stageRole ? `этап ${context.stageRole}` : null]),
@@ -259,7 +356,7 @@ export function proposalItem(
           + ' Пока это не пройдёт, папка остаётся занятой и следующий запуск в ней не стартует.'
           + ' «Повторить сброс» ставит ту же операцию заново.';
   return {
-    ...base(kind, activityType, context),
+    ...base(kind, activityType, context, proposal.projectId),
     id: `proposal:${proposal.id}`,
     // The catalogue names the *event* ("изменения ждут ревью"); when the state of that event makes
     // the name a lie, the badge is narrowed here — still one server-side place, so the phone, the
@@ -286,7 +383,7 @@ export function proposalItem(
 export function heldDiffItem(diff: AgentRunDiff, run: AgentRun, context: InboxContext): InboxItem {
   const operations = diff.ops?.length ?? 0;
   return {
-    ...base('held_diff', 'run.held_for_approval', context),
+    ...base('held_diff', 'run.held_for_approval', context, run.projectId),
     id: `held:${diff.id}`,
     headline: operations === 1 ? '1 изменение ждёт одобрения' : `${operations} изменений ждут одобрения`,
     facts: diffFacts(diff),
@@ -334,7 +431,7 @@ function runFailureHeadline(error: string | null): string {
 export function runFailureItem(run: AgentRun, context: InboxContext): InboxItem {
   const error = firstLine(run.errorMessage);
   return {
-    ...base('run_failed', 'run.failed', context),
+    ...base('run_failed', 'run.failed', context, run.projectId),
     id: `run:${run.id}`,
     // Classified on the whole message, not on the line shown: the recognisable part of a worker
     // error is often on the second line.
@@ -361,7 +458,7 @@ export function pullRequestItem(
   context: InboxContext,
 ): InboxItem {
   return {
-    ...base('pr', 'pr.opened', context),
+    ...base('pr', 'pr.opened', context, input.projectId),
     id: `pr:${input.id}`,
     headline: 'Открыт pull request',
     facts: input.url,
@@ -375,6 +472,56 @@ export function pullRequestItem(
     waitingSince: input.createdAt,
     actions: input.url ? [{ key: 'open_url', label: 'Открыть PR', style: 'primary' }] : [],
   };
+}
+
+/**
+ * The sort group a dismissed row moves to: under everything, in the order it was hidden.
+ *
+ * Higher than every kind's own priority on purpose — a hidden row is only ever visible because the
+ * reader asked to see hidden rows, and it must not push a live one down while they look.
+ */
+const DISMISSED_PRIORITY = 9;
+
+/**
+ * The "прочитал, делать ничего не буду" exit, applied to a row that has one.
+ *
+ * Two rules, both from the design of the list: only a reminder may be dismissed (a blocking row
+ * holds something, and hiding it hides the reason the next run will fail), and dismissal is
+ * per person and per row — it closes *this* failure, not the task and not the type. A task that
+ * fails again produces a new run, hence a new row id, hence a new row: nothing here can silence a
+ * future problem, which is what the notification policy is for.
+ */
+export function applyDismissal(item: InboxItem, dismissedAt: Date | null): InboxItem {
+  if (!item.dismissible) return item;
+  if (dismissedAt) {
+    return {
+      ...item,
+      dismissedAt,
+      priority: DISMISSED_PRIORITY,
+      explain: join2(
+        'Скрыто вами: строка не показывается во входящих и ни на что не влияет.',
+        item.explain,
+      ),
+      actions: [
+        ...item.actions.filter((action) => action.key !== 'dismiss'),
+        { key: 'restore', label: 'Вернуть в список', style: 'default' },
+      ],
+    };
+  }
+  return {
+    ...item,
+    explain: join2(
+      item.explain,
+      'Если разбираться не планируете — «Не требует действий» уберёт строку из входящих; запуск,'
+      + ' задача и лента останутся как есть, а следующая такая же ошибка придёт заново.',
+    ),
+    actions: [...item.actions, { key: 'dismiss', label: 'Не требует действий', style: 'default' }],
+  };
+}
+
+function join2(...parts: Array<string | null>): string | null {
+  const kept = parts.filter((part): part is string => Boolean(part && part.length > 0));
+  return kept.length > 0 ? kept.join(' ') : null;
 }
 
 /**

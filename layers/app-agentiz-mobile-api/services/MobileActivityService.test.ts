@@ -15,6 +15,7 @@ import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecutio
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { MobileDevice } from '../models/MobileDevice';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileActivityService } from './MobileActivityService';
 
 const OWNER = 21;
@@ -29,7 +30,7 @@ describe('MobileActivityService', () => {
   beforeAll(async () => {
     sequelize = new Sequelize({
       dialect: 'sqlite', storage: ':memory:', logging: false,
-      models: [...(Object.values(agentizModels) as any[]), MobileDevice],
+      models: [...(Object.values(agentizModels) as any[]), MobileDevice, MobileInboxDismissal],
     });
   });
 
@@ -298,7 +299,8 @@ describe('MobileActivityService', () => {
     const items = (await MobileActivityService.summary(OWNER, OWNER)).items;
     expect(items).toHaveLength(1);
     expect(items[0].kind).toBe('run_failed');
-    expect(items[0].actions.map((action) => action.key)).toEqual(['rerun', 'open_run']);
+    // A reminder always carries its own exit: nothing else in Agentiz will ever close this row.
+    expect(items[0].actions.map((action) => action.key)).toEqual(['rerun', 'open_run', 'dismiss']);
     // Recognised wording up top, the raw diagnostic line kept underneath it.
     expect(items[0].headline).toBe('Воркер не смог отчитаться серверу');
     expect(items[0].facts).toContain('HTTP 409');
@@ -309,6 +311,89 @@ describe('MobileActivityService', () => {
 
     await ownTask.update({ status: 'ignored' });
     expect((await MobileActivityService.summary(OWNER, OWNER)).items).toHaveLength(0);
+  });
+
+  it('lets a reader close a reminder by reading it, and never a row that holds something', async () => {
+    await ownTask.update({ status: 'failed' });
+    const run = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+      errorMessage: 'POST /jobs/1/result: HTTP 409: nope', finishedAt: new Date(),
+    } as any);
+
+    const before = await MobileActivityService.summary(OWNER, OWNER);
+    expect(before.items.map((item) => item.id)).toEqual([`run:${run.id}`]);
+    expect(before.dismissedCount).toBe(0);
+
+    await MobileActivityService.dismiss(OWNER, OWNER, `run:${run.id}`);
+
+    const after = await MobileActivityService.summary(OWNER, OWNER);
+    expect(after.items).toHaveLength(0);
+    expect(after.dismissedCount).toBe(1);
+    // Hidden from the inbox is hidden everywhere: the task's own screen must agree with it.
+    expect(await MobileActivityService.itemsForTask(ownTask, ownProject, OWNER)).toHaveLength(0);
+    // Nothing was decided *about the task* — only about the reader's list.
+    await ownTask.reload();
+    expect(ownTask.status).toBe('failed');
+
+    // Asked for explicitly, it comes back last, marked, and offering the undo.
+    const shown = await MobileActivityService.summary(OWNER, OWNER, { includeDismissed: true });
+    expect(shown.items).toHaveLength(1);
+    expect(shown.items[0].dismissedAt).toBeTruthy();
+    expect(shown.items[0].actions.map((action) => action.key)).toContain('restore');
+
+    await MobileActivityService.restore(OWNER, OWNER, `run:${run.id}`);
+    expect((await MobileActivityService.summary(OWNER, OWNER)).items).toHaveLength(1);
+
+    // A run that fails again is a different row, so a dismissal can never hide a future failure.
+    await MobileActivityService.dismiss(OWNER, OWNER, `run:${run.id}`);
+    const second = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+      errorMessage: 'and again', finishedAt: new Date(Date.now() + 1000), createdAt: new Date(Date.now() + 1000),
+    } as any);
+    expect((await MobileActivityService.summary(OWNER, OWNER)).items.map((item) => item.id))
+      .toEqual([`run:${second.id}`]);
+  });
+
+  it('refuses to hide a row that holds a worker’s directory', async () => {
+    const run = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'succeeded', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+    } as any);
+    const proposal = await AgentWorkspaceProposal.create({
+      projectId: ownProject.id, taskId: ownTask.id, workerId: 'w1', workspaceKey: 'k', workspacePath: '/srv/k',
+      reservationKey: 'w1:k', initialRunId: run.id, latestRunId: run.id, revision: 1,
+      remote: 'origin', targetMode: 'new', targetBranch: 'agentiz/x', commitMessage: 'msg', status: 'waiting_review',
+    } as any);
+
+    const items = (await MobileActivityService.summary(OWNER, OWNER)).items;
+    expect(items[0].dismissible).toBe(false);
+    await expect(MobileActivityService.dismiss(OWNER, OWNER, `proposal:${proposal.id}`)).rejects.toMatchObject({ status: 409 });
+    // And a row belonging to somebody else is not there to be hidden at all.
+    await expect(MobileActivityService.dismiss(STRANGER, STRANGER, `proposal:${proposal.id}`)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('tells each row how its own notification is configured, and which rule decided', async () => {
+    await ownTask.update({ status: 'failed' });
+    await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: { stages: [], finalAction: { type: 'none' } }, errorMessage: 'boom', finishedAt: new Date(),
+    } as any);
+
+    const builtin = (await MobileActivityService.summary(OWNER, OWNER)).items[0].notify;
+    expect(builtin).toMatchObject({ push: 'on', scope: 'builtin', mutedByScope: false });
+    expect(builtin.label).toBe('пуш включён по умолчанию');
+
+    // Muting the project must show up on the row as the project's doing, not as a default.
+    process.env.AGENTIZ_NOTIFY_POLICY = JSON.stringify({ projects: { [ownProject.id]: { mute: true } } });
+    try {
+      const muted = (await MobileActivityService.summary(OWNER, OWNER)).items[0].notify;
+      expect(muted).toMatchObject({ push: 'off', scope: 'project', mutedByScope: true });
+      expect(muted.label).toBe('пуш выключен правилом проекта');
+    } finally {
+      delete process.env.AGENTIZ_NOTIFY_POLICY;
+    }
   });
 
   it('answers what one run is waiting on, so its screen can say it above the result', async () => {

@@ -12,6 +12,7 @@ import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
 import { MobileTaskService } from './MobileTaskService';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 
 const OWNER = 31;
 const STRANGER = 32;
@@ -29,7 +30,7 @@ describe('MobileTaskService attachments', () => {
   let strangerTaskId: string;
 
   beforeAll(async () => {
-    sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: Object.values(agentizModels) as any[] });
+    sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: [...(Object.values(agentizModels) as any[]), MobileInboxDismissal] });
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentiz-mobile-attachments-'));
     process.env.AGENTIZ_ATTACHMENTS_DIR = root;
   });

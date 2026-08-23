@@ -12,6 +12,7 @@ import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { MobileDevice } from '../models/MobileDevice';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileProposalService } from './MobileProposalService';
 
 const OWNER = 21;
@@ -29,7 +30,7 @@ describe('MobileProposalService', () => {
   beforeAll(async () => {
     sequelize = new Sequelize({
       dialect: 'sqlite', storage: ':memory:', logging: false,
-      models: [...(Object.values(agentizModels) as any[]), MobileDevice],
+      models: [...(Object.values(agentizModels) as any[]), MobileDevice, MobileInboxDismissal],
     });
   });
 

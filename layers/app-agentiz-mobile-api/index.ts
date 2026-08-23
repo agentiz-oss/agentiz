@@ -10,6 +10,7 @@ import { deviceMcpTools } from './mcp/deviceTools';
 import { pushSettingsMcpTools } from './mcp/pushSettingsTools';
 import { migrations } from './migrations';
 import { MobileDevice } from './models/MobileDevice';
+import { MobileInboxDismissal } from './models/MobileInboxDismissal';
 import { MobilePushService } from './services/MobilePushService';
 import { PushSettingsService } from './services/PushSettingsService';
 import type { ActivityNotifier } from '../app-agentiz/lib/activityNotifiers';
@@ -22,8 +23,9 @@ import type { ActivityNotifier } from '../app-agentiz/lib/activityNotifiers';
  * app-adminizer) and AgentProject (from app-agentiz) and simply exposes them, over its own router,
  * outside the admin panel's `/dashboard` prefix.
  *
- * The single thing it owns is `MobileDevice` — the push tokens of installed apps — because a device
- * is a property of this API's clients, not of the pipeline domain.
+ * What it owns is what belongs to its clients rather than to the pipeline domain: `MobileDevice`
+ * (the push tokens of installed apps) and `MobileInboxDismissal` (the inbox rows a person has read
+ * and decided not to act on — the inbox being this layer's own projection).
  */
 export class AppAgentizMobileApi extends AbstractApp {
   appId: string = 'app-agentiz-mobile-api';
@@ -34,11 +36,12 @@ export class AppAgentizMobileApi extends AbstractApp {
   }
 
   /**
-   * The one table this layer owns: the push tokens of installed apps. Everything else it serves
-   * still belongs to app-agentiz, app-adminizer or — for the push credentials below — app-manager.
+   * The two tables this layer owns: the push tokens of installed apps, and the inbox rows a person
+   * has read and decided not to act on. Everything else it serves still belongs to app-agentiz,
+   * app-adminizer or — for the push credentials below — app-manager.
    */
   @Collection
-  models: any[] = [MobileDevice];
+  models: any[] = [MobileDevice, MobileInboxDismissal];
 
   /**
    * Push credentials and switches, as app-manager settings: they live in the platform's `settings`

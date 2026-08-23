@@ -12,6 +12,7 @@ import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { MobileInteractionService } from './MobileInteractionService';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 
 const OWNER = 7;
 const STRANGER = 8;
@@ -32,7 +33,7 @@ describe('MobileInteractionService', () => {
       dialect: 'sqlite',
       storage: ':memory:',
       logging: false,
-      models: Object.values(agentizModels) as any[],
+      models: [...(Object.values(agentizModels) as any[]), MobileInboxDismissal],
     });
   });
 

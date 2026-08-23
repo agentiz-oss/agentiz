@@ -11,8 +11,9 @@ import { MobileAuthError } from './MobileAuthService';
  *
  * The stored document is installation-wide (one settings slot), but a mobile caller must neither
  * see nor overwrite other owners' project entries. GET filters the document down to the caller's
- * projects and their pipelines; PUT merges: it replaces `defaults` and the caller's own entries,
- * carries every foreign entry through untouched, and refuses ids the caller does not own.
+ * projects and their pipelines; PUT merges: for each map the caller **sends** it replaces their own
+ * entries and carries foreign ones through untouched, a map they omit is left as stored, and an id
+ * they do not own is refused.
  * Last-write-wins between two simultaneous editors — accepted for v1.
  */
 export class MobileNotificationPolicyService {
@@ -65,10 +66,24 @@ export class MobileNotificationPolicyService {
     const keepForeign = (entries: Record<string, ActivityPolicyScope> | undefined, ownedIds: Set<string>) =>
       Object.fromEntries(Object.entries(entries ?? {}).filter(([id]) => !ownedIds.has(id)));
 
+    /**
+     * A map the caller did not send is left alone; a map they did send replaces **their own**
+     * entries in it wholesale (that is how a rule is removed — by sending the map without it).
+     *
+     * The distinction matters now that two screens write this document: the inbox edits one
+     * project or one pipeline entry and sends only that map, and an omitted `pipelines` used to be
+     * read as "no pipeline rules", quietly deleting every pipeline rule the owner had.
+     */
+    const mergeScopes = (
+      stored: Record<string, ActivityPolicyScope> | undefined,
+      incoming: Record<string, ActivityPolicyScope> | undefined,
+      ownedIds: Set<string>,
+    ) => (incoming === undefined ? { ...(stored ?? {}) } : { ...keepForeign(stored, ownedIds), ...incoming });
+
     const merged: NotifyPolicyDocument = {
       ...(input.defaults !== undefined ? { defaults: input.defaults } : base.defaults ? { defaults: base.defaults } : {}),
-      projects: { ...keepForeign(base.projects, owned), ...(input.projects ?? {}) },
-      pipelines: { ...keepForeign(base.pipelines, ownedPipelines), ...(input.pipelines ?? {}) },
+      projects: mergeScopes(base.projects, input.projects, owned),
+      pipelines: mergeScopes(base.pipelines, input.pipelines, ownedPipelines),
     };
 
     const result = await this.rethrowingValidation(() => NotificationPolicyService.set(merged));

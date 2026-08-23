@@ -10,7 +10,10 @@ import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentWorkspaceProposalService';
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
+import { MobileAuthError } from './MobileAuthService';
 import {
+  applyDismissal,
   heldDiffItem,
   isBlockingInboxItem,
   proposalItem,
@@ -23,6 +26,15 @@ import {
 
 const PAGE_LIMIT_DEFAULT = 50;
 const PAGE_LIMIT_MAX = 200;
+
+/**
+ * How long a dismissal is kept.
+ *
+ * It only has to outlive the row it hides, and a row lives as long as its entity is the latest
+ * failure of a task or an open PR. Ninety days is far past that for both, and the sweep keeps a
+ * phone that dismisses a reminder a day from growing a table nobody ever reads.
+ */
+const DISMISSAL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** Proposal statuses a human has to act on — the same three the review screen shows buttons for. */
 const ACTIONABLE_PROPOSAL_STATUSES = ['waiting_review', 'push_failed', 'reset_failed'] as const;
@@ -138,10 +150,17 @@ export class MobileActivityService {
    * proposals somebody has to approve/reject/retry, and repository runs whose diff `requireApproval`
    * holds back. Plus the unseen-feed counter, so the app needs one request, not four.
    */
-  static async summary(ownerId: number | string, userId: number) {
+  static async summary(
+    ownerId: number | string,
+    userId: number,
+    options: { includeDismissed?: boolean } = {},
+  ) {
     const projectIds = await this.ownedProjectIds(ownerId);
     if (projectIds.length === 0) {
-      return { items: [], interactions: [], proposals: [], heldRuns: [], actionableCount: 0, unseen: 0 };
+      return {
+        items: [], interactions: [], proposals: [], heldRuns: [],
+        actionableCount: 0, dismissedCount: 0, unseen: 0,
+      };
     }
 
     const [interactions, proposals, heldDiffs, openedPrs, failedTasks, unseen] = await Promise.all([
@@ -206,9 +225,13 @@ export class MobileActivityService {
     ]);
     const tasks = await AgentTask.findAll({ where: { id: { [Op.in]: [...taskIds] } } });
     const taskById = new Map([...tasks, ...failedTasks].map((task) => [task.id, task]));
-    const contextOf = (projectId: string, taskId: string | null | undefined) => ({
+    // The pipeline goes into the context for one reason: the notification policy resolves
+    // `pipelines[specId]` before the project scope, so a row that skipped it could tell a reader
+    // "пуш включён" about an event their pipeline rule had switched off.
+    const contextOf = (projectId: string, taskId: string | null | undefined, pipelineSpecId?: string | null) => ({
       project: projectById.get(projectId) ?? null,
       task: taskId ? taskById.get(taskId) ?? null : null,
+      pipelineSpecId: pipelineSpecId ?? null,
     });
 
     const interactionRows = interactions.map((item) => ({
@@ -244,27 +267,27 @@ export class MobileActivityService {
       finishedAt: run.finishedAt,
     }));
 
-    const items = sortInboxItems([
+    const built = sortInboxItems([
       ...interactions.map((item) => questionItem(item, {
-        ...contextOf(item.projectId, runById.get(item.runId)?.taskId),
+        ...contextOf(item.projectId, runById.get(item.runId)?.taskId, runById.get(item.runId)?.pipelineSpecId),
         run: runById.get(item.runId) ?? null,
         stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
       })),
       ...proposals.map((item) => {
         const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
         return proposalItem(item, {
-          ...contextOf(item.projectId, item.taskId),
+          ...contextOf(item.projectId, item.taskId, runById.get(item.latestRunId)?.pipelineSpecId),
           diff,
           approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
         });
       }),
-      ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId))),
+      ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId, run.pipelineSpecId))),
       // A stuck task is only actionable while its proposal is not: an unapprovable proposal on the
       // same run already says "освободите папку", and two rows for one dead end read as two.
       ...failedTasks.flatMap((task) => {
         const run = failedRuns.get(task.id);
         if (!run || proposals.some((proposal) => proposal.taskId === task.id)) return [];
-        return [runFailureItem(run, contextOf(task.projectId, task.id))];
+        return [runFailureItem(run, contextOf(task.projectId, task.id, run.pipelineSpecId))];
       }),
       ...this.openPullRequests(openedPrs, taskById).map((row) => pullRequestItem({
         id: row.id,
@@ -272,8 +295,17 @@ export class MobileActivityService {
         url: typeof (row.data as any)?.prUrl === 'string' ? (row.data as any).prUrl : row.body,
         createdAt: row.createdAt,
         runId: row.runId,
-      }, contextOf(row.projectId, row.taskId))),
+      }, contextOf(row.projectId, row.taskId, row.runId ? runById.get(row.runId)?.pipelineSpecId : null))),
     ]);
+
+    // What the reader has already read and waved through. Dismissed rows are dropped rather than
+    // greyed out — «я этим не занимаюсь» means gone from the list — but they are still counted, so
+    // the screen can offer to show them again instead of losing them silently.
+    const decided = await this.withDismissals(userId, built);
+    const dismissedCount = decided.filter((item) => item.dismissedAt).length;
+    const items = options.includeDismissed
+      ? sortInboxItems(decided)
+      : decided.filter((item) => !item.dismissedAt);
 
     return {
       /**
@@ -291,8 +323,88 @@ export class MobileActivityService {
        * forever until "12 требуют действия" stopped meaning anything at all.
        */
       actionableCount: items.filter(isBlockingInboxItem).length,
+      /** How many rows this caller has hidden — the "Скрытые (N)" switch, nothing else. */
+      dismissedCount,
       unseen,
     };
+  }
+
+  /**
+   * "Прочитал, разбираться не буду" — the only way a reminder ever leaves this list.
+   *
+   * Deliberately narrow. It records **one person's** decision about **one row**, and it is refused
+   * for anything blocking: a review, a question or a failed push holds a real resource, hiding it
+   * would leave the next run failing on a reservation whose explanation is no longer on screen,
+   * and those already have an exit (answer, approve, reject, release). The row must also currently
+   * be in the caller's own inbox — that is what makes a foreign id a 404 here, like everywhere else
+   * in this API, and it means the stored row is always one the caller could see.
+   *
+   * Nothing else moves: the task keeps its status, the tracker is not touched and the activity feed
+   * keeps its entry. A run that fails again is a new run, a new row id and a new row.
+   */
+  static async dismiss(ownerId: number | string, userId: number, itemId: string) {
+    const item = await this.findOwnItem(ownerId, userId, itemId);
+    if (!item.dismissible) {
+      throw new MobileAuthError(
+        409,
+        'Эту строку нельзя просто скрыть: она держит воркер или изменения. Решите её кнопками на карточке.',
+      );
+    }
+    const dismissedAt = new Date();
+    const [row, created] = await MobileInboxDismissal.findOrCreate({
+      where: { userId, itemId },
+      defaults: {
+        userId,
+        itemId,
+        projectId: item.projectId,
+        taskId: item.taskId,
+        runId: item.runId,
+        activityType: item.activityType,
+        dismissedAt,
+      },
+    });
+    // Dismissing twice is the same statement, not a second one — keep the original moment.
+    await this.pruneDismissals(userId);
+    return { item: applyDismissal(item, created ? dismissedAt : row.dismissedAt), dismissed: true };
+  }
+
+  /** The undo. Absent row = already back in the list, which is the state the caller asked for. */
+  static async restore(ownerId: number | string, userId: number, itemId: string) {
+    const item = await this.findOwnItem(ownerId, userId, itemId, { includeDismissed: true });
+    await MobileInboxDismissal.destroy({ where: { userId, itemId } });
+    return { item: applyDismissal({ ...item, dismissedAt: null }, null), dismissed: false };
+  }
+
+  /** The caller's own row by id, or a 404 — the ownership check both writes above share. */
+  private static async findOwnItem(
+    ownerId: number | string,
+    userId: number,
+    itemId: string,
+    options: { includeDismissed?: boolean } = {},
+  ): Promise<InboxItem> {
+    const summary = await this.summary(ownerId, userId, { includeDismissed: options.includeDismissed ?? true });
+    const item = summary.items.find((row) => row.id === itemId);
+    if (!item) throw new MobileAuthError(404, 'Inbox item not found');
+    // Returned as the builders wrote it: applyDismissal is what the callers put back on top.
+    return { ...item, dismissedAt: null };
+  }
+
+  /** Marks each row with this caller's dismissal, in one query for the whole list. */
+  private static async withDismissals(userId: number, items: InboxItem[]): Promise<InboxItem[]> {
+    const dismissible = items.filter((item) => item.dismissible).map((item) => item.id);
+    if (dismissible.length === 0) return items;
+    const rows = await MobileInboxDismissal.findAll({
+      where: { userId, itemId: { [Op.in]: dismissible } },
+    });
+    const byItem = new Map(rows.map((row) => [row.itemId, row.dismissedAt]));
+    return items.map((item) => applyDismissal(item, byItem.get(item.id) ?? null));
+  }
+
+  /** Drops this caller's dismissals older than the TTL. Cheap, and only on a write. */
+  private static async pruneDismissals(userId: number): Promise<void> {
+    await MobileInboxDismissal.destroy({
+      where: { userId, dismissedAt: { [Op.lt]: new Date(Date.now() - DISMISSAL_TTL_MS) } },
+    });
   }
 
   /**
@@ -344,7 +456,13 @@ export class MobileActivityService {
    * produced, a diff `requireApproval` held back, and the run's own failure when nothing else has
    * happened on the task since.
    */
-  static async itemsForRun(run: AgentRun, task: AgentTask | null, project: AgentProject | null): Promise<InboxItem[]> {
+  static async itemsForRun(
+    run: AgentRun,
+    task: AgentTask | null,
+    project: AgentProject | null,
+    /** The reader, when known: their dismissed rows are hidden here as well as in the inbox. */
+    userId?: number,
+  ): Promise<InboxItem[]> {
     const [interactions, proposal, held] = await Promise.all([
       AgentRunInteraction.findAll({ where: { runId: run.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
       AgentWorkspaceProposal.findOne({
@@ -359,7 +477,7 @@ export class MobileActivityService {
       proposal?.latestDiffId ? AgentRunDiff.findByPk(proposal.latestDiffId) : Promise.resolve(null),
     ]);
     const stageById = new Map(stages.map((stage) => [stage.id, stage]));
-    const context = { task: task ?? null, project };
+    const context = { task: task ?? null, project, pipelineSpecId: run.pipelineSpecId ?? null };
 
     // "Открыть запуск" is the reader's current location here, so it is dropped rather than drawn as
     // a button that does nothing. Everything else is the same projection the inbox renders.
@@ -368,7 +486,7 @@ export class MobileActivityService {
       actions: item.actions.filter((action) => action.key !== 'open_run'),
     }));
 
-    return here(sortInboxItems([
+    return this.visible(userId, here(sortInboxItems([
       ...interactions.map((item) => questionItem(item, {
         ...context,
         run,
@@ -385,20 +503,25 @@ export class MobileActivityService {
       // Only when the task is still sitting on this failure: a task re-run since then is out of
       // `failed`, and offering "запустить ещё раз" on an old attempt would compete with it.
       ...(!proposal && run.status === 'failed' && task?.status === 'failed' ? [runFailureItem(run, context)] : []),
-    ]));
+    ])));
   }
 
   /** Everything waiting on a person within one task — the "что дальше" strip on the task screen. */
-  static async itemsForTask(task: AgentTask, project: AgentProject | null): Promise<InboxItem[]> {
+  static async itemsForTask(
+    task: AgentTask,
+    project: AgentProject | null,
+    userId?: number,
+  ): Promise<InboxItem[]> {
     const [interactions, proposals, runs] = await Promise.all([
       AgentRunInteraction.findAll({ where: { projectId: task.projectId, status: 'pending' }, order: [['createdAt', 'ASC']] }),
       AgentWorkspaceProposal.findAll({
         where: { taskId: task.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
         order: [['updatedAt', 'DESC']],
       }),
-      AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id'] }),
+      AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id', 'pipelineSpecId'] }),
     ]);
     const runIds = new Set(runs.map((run) => run.id));
+    const pipelineOfRun = new Map(runs.map((run) => [run.id, run.pipelineSpecId ?? null]));
     const ownInteractions = interactions.filter((item) => runIds.has(item.runId));
 
     const [stages, diffs, held] = await Promise.all([
@@ -412,24 +535,43 @@ export class MobileActivityService {
     ]);
     const stageById = new Map(stages.map((stage) => [stage.id, stage]));
     const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
-    const context = { task, project };
+    // One task can hold rows from runs of different pipelines, so the policy scope is per row.
+    const context = (pipelineSpecId?: string | null) => ({ task, project, pipelineSpecId: pipelineSpecId ?? null });
 
     const latestRun = task.status === 'failed' && proposals.length === 0
       ? (await this.latestRunPerTask([task.id])).get(task.id) ?? null
       : null;
 
-    return sortInboxItems([
+    return this.visible(userId, sortInboxItems([
       ...ownInteractions.map((item) => questionItem(item, {
-        ...context,
+        ...context(pipelineOfRun.get(item.runId)),
         stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
       })),
-      ...(latestRun ? [runFailureItem(latestRun, context)] : []),
+      ...(latestRun ? [runFailureItem(latestRun, context(latestRun.pipelineSpecId))] : []),
       ...proposals.map((item) => {
         const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
-        return proposalItem(item, { ...context, diff, approvable: AgentWorkspaceProposalService.isApprovableDiff(diff) });
+        return proposalItem(item, {
+          ...context(pipelineOfRun.get(item.latestRunId)),
+          diff,
+          approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
+        });
       }),
-      ...held.filter(({ run }) => run.taskId === task.id).map(({ diff, run }) => heldDiffItem(diff, run, context)),
-    ]);
+      ...held.filter(({ run }) => run.taskId === task.id)
+        .map(({ diff, run }) => heldDiffItem(diff, run, context(run.pipelineSpecId))),
+    ]));
+  }
+
+  /**
+   * The same list minus what this reader has dismissed.
+   *
+   * A task's and a run's own screens hide dismissed rows too: a row waved away in the inbox that
+   * kept reappearing one screen deeper would read as the dismissal not having worked. Without a
+   * `userId` (an older caller) nothing is hidden — the pre-existing behaviour.
+   */
+  private static async visible(userId: number | undefined, items: InboxItem[]): Promise<InboxItem[]> {
+    if (userId === undefined) return items;
+    const decided = await this.withDismissals(userId, items);
+    return decided.filter((item) => !item.dismissedAt);
   }
 
   /**

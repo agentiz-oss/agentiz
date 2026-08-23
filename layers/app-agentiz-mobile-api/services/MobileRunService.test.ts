@@ -11,6 +11,7 @@ import { AgentRunLog } from '../../app-agentiz/models/AgentRunLog';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { MobileRunService } from './MobileRunService';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 
 const OWNER = 11;
 const STRANGER = 12;
@@ -29,7 +30,7 @@ describe('MobileRunService.board', () => {
       dialect: 'sqlite',
       storage: ':memory:',
       logging: false,
-      models: Object.values(agentizModels) as any[],
+      models: [...(Object.values(agentizModels) as any[]), MobileInboxDismissal],
     });
   });
 

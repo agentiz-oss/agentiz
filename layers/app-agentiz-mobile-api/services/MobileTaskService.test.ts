@@ -10,6 +10,7 @@ import { AgentRun } from '../../app-agentiz/models/AgentRun';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
 import { MobileTaskService } from './MobileTaskService';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 
 const OWNER = 21;
 const STRANGER = 22;
@@ -29,7 +30,7 @@ describe('MobileTaskService.runDetailForTask', () => {
       dialect: 'sqlite',
       storage: ':memory:',
       logging: false,
-      models: Object.values(agentizModels) as any[],
+      models: [...(Object.values(agentizModels) as any[]), MobileInboxDismissal],
     });
   });
 
@@ -120,7 +121,7 @@ describe('MobileTaskService.runDetailForTask', () => {
     // and the reader has to work out that another attempt is the whole of the remedy.
     expect(detail.actionRequired.map((item) => item.kind)).toEqual(['run_failed']);
     // "Открыть лог" is dropped at run scope: the reader is already on that page.
-    expect(detail.actionRequired[0].actions.map((action) => action.key)).toEqual(['rerun']);
+    expect(detail.actionRequired[0].actions.map((action) => action.key)).toEqual(['rerun', 'dismiss']);
   });
 
 });

@@ -401,7 +401,43 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   router.get('/activities/summary', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
-      res.json({ data: await MobileActivityService.summary(ownerOf(req), userId) });
+      res.json({ data: await MobileActivityService.summary(ownerOf(req), userId, {
+        // Off by default: a dismissed row is gone from the list, and only the "Скрытые (N)" switch
+        // — whose count the summary always reports — asks for them back.
+        includeDismissed: req.query.includeDismissed === 'true' || req.query.includeDismissed === '1',
+      }) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * «Прочитал, разбираться не буду» — the exit from a row that holds nothing.
+   *
+   * A failed run and an opened pull request are reminders: nothing in Agentiz ever closes them, so
+   * without this they sit in the inbox until a person stops reading the inbox. Dismissing records
+   * *this reader's* decision about *this row* and nothing else — the task keeps its status, the
+   * tracker is untouched, the feed keeps its entry, and the same failure happening again is a new
+   * run and a new row. Rows that hold a worker's directory or an agent's turn are refused (409):
+   * they have real exits, and hiding one hides why the next run will fail.
+   *
+   * The id is the inbox row's own (`run:<id>`, `pr:<id>`), so it travels in the body rather than in
+   * the path — it contains a colon and is a projection's key, not a resource of its own.
+   */
+  router.post('/activities/inbox/dismiss', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
+      res.json({ data: await MobileActivityService.dismiss(ownerOf(req), userId, String(req.body?.itemId ?? '')) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /** The undo, so a mis-swipe costs a tap rather than the row. */
+  router.post('/activities/inbox/restore', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const userId = Number(MobileAuthService.toAuthUser(req.mobileUser).id);
+      res.json({ data: await MobileActivityService.restore(ownerOf(req), userId, String(req.body?.itemId ?? '')) });
     } catch (error) {
       errorResponse(res, error);
     }

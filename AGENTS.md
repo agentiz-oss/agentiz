@@ -192,7 +192,18 @@
   group blocking rows sort oldest-first and reminders newest-first, so an old reminder leaves the
   top because newer ones arrive. There is on purpose no expiry rule and no "close the task" action
   — a task that is merely stale is not done, and in a synced tracker saying otherwise is a lie
-  other people read. Degenerate states get their own kind instead of a review with buttons missing:
+  other people read. What a reminder does have is `dismiss` («прочитал, разбираться не буду»):
+  `MobileInboxDismissal`, keyed by `userId` + the **row's** id (`run:<runId>`), so it records one
+  person's reading decision and touches neither the task, the tracker nor the feed — and so it can
+  never hide a *future* problem, because the next failure is a new run and a new row id. A blocking
+  row refuses it with 409: hiding it would leave the directory reserved with the explanation gone.
+  `dismissedCount` + `?includeDismissed=true` + `restore` are what make the gesture safe enough to
+  hang on a swipe. Every row also carries `notify` — the delivery decision for its type, resolved
+  by the same `explainActivityPolicy` the dispatcher used (hence `pipelineSpecId` in the builder's
+  context) plus the scope that decided it — which is what lets the phone edit that one rule from
+  the row; delivery is per type per scope, never per row, so the two gestures answer two different
+  questions («убрать эту строку» vs «не присылать такое»). Degenerate states get their own kind
+  instead of a review with buttons missing:
   `no_changes` (the run touched no file, so approve is closed for good and only the worker's
   directory is still reserved) and `run_failed` (one row per task, keyed off
   `AgentTask.status = 'failed'`, which a re-run clears by itself). The old

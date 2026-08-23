@@ -250,7 +250,10 @@ export class MobileTaskService {
       AgentTaskComment.findAll({ where: { taskId } }),
       MobileInteractionService.pendingForTask(taskId),
       listTaskAttachments(taskId),
-      MobileActivityService.itemsForTask(task, project),
+      // The owner id *is* the caller's user id in this API (see MobileAuthService), and the inbox
+      // hides what they have dismissed — here too, or a waved-away row would come back one screen
+      // deeper.
+      MobileActivityService.itemsForTask(task, project, Number(ownerId)),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -354,7 +357,7 @@ export class MobileTaskService {
        * inbox is built from already knows the answer *and* the words for it, so the run screen asks
        * it instead of restating the state machine in Kotlin.
        */
-      actionRequired: await MobileActivityService.itemsForRun(run, task, project),
+      actionRequired: await MobileActivityService.itemsForRun(run, task, project, Number(ownerId)),
     };
   }
 

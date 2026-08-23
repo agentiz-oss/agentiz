@@ -23,6 +23,7 @@ import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecutio
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import type { ActivityEvent } from '../../app-agentiz/lib/activityNotifiers';
 import { MobileDevice } from '../models/MobileDevice';
+import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileDeviceService } from './MobileDeviceService';
 import { MobilePushService } from './MobilePushService';
 
@@ -45,7 +46,7 @@ describe('MobilePushService', () => {
       dialect: 'sqlite',
       storage: ':memory:',
       logging: false,
-      models: [...(Object.values(agentizModels) as any[]), MobileDevice],
+      models: [...(Object.values(agentizModels) as any[]), MobileDevice, MobileInboxDismissal],
     });
   });
 

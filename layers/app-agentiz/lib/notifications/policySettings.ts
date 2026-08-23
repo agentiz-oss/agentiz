@@ -167,19 +167,53 @@ function entryOf(scope: ActivityPolicyScope | undefined, type: string): Activity
   return plainObject(entry) ? entry as ActivityPolicyEntry : undefined;
 }
 
+/**
+ * Which of the three scopes answered — `builtin` when none of them did.
+ *
+ * Reported alongside the value because "почему тихо" is not answerable from the value alone: an
+ * event muted by the project's `mute: true` and one muted by the built-in default look identical
+ * on a phone, and the two are undone in different places.
+ */
+export type ActivityPolicyScopeName = 'pipeline' | 'project' | 'defaults' | 'builtin';
+
+export interface ResolvedActivityChannel<T extends string> {
+  mode: T;
+  scope: ActivityPolicyScopeName;
+  /** True when the scope said nothing about this type and its `mute: true` decided instead. */
+  byMute: boolean;
+}
+
+export interface ActivityPolicyExplanation {
+  push: ResolvedActivityChannel<ActivityPushMode>;
+  dashboard: ResolvedActivityChannel<ActivityDashboardMode>;
+}
+
+/** The scopes in resolution order, named — one list, so the two resolvers cannot disagree. */
+function scopeChain(
+  document: NotifyPolicyDocument,
+  projectId?: string | null,
+  pipelineSpecId?: string | null,
+): Array<{ name: ActivityPolicyScopeName; scope: ActivityPolicyScope | undefined }> {
+  return [
+    { name: 'pipeline', scope: pipelineSpecId ? document.pipelines?.[pipelineSpecId] : undefined },
+    { name: 'project', scope: projectId ? document.projects?.[projectId] : undefined },
+    { name: 'defaults', scope: document.defaults },
+  ];
+}
+
 function resolveChannel<T extends string>(
-  scopes: Array<ActivityPolicyScope | undefined>,
+  scopes: Array<{ name: ActivityPolicyScopeName; scope: ActivityPolicyScope | undefined }>,
   type: string,
   channel: 'push' | 'dashboard',
   builtin: T,
-): T {
-  for (const scope of scopes) {
+): ResolvedActivityChannel<T> {
+  for (const { name, scope } of scopes) {
     if (!scope) continue;
     const explicit = entryOf(scope, type)?.[channel];
-    if (explicit !== undefined) return explicit as T;
-    if (scope.mute === true) return 'off' as T;
+    if (explicit !== undefined) return { mode: explicit as T, scope: name, byMute: false };
+    if (scope.mute === true) return { mode: 'off' as T, scope: name, byMute: true };
   }
-  return builtin;
+  return { mode: builtin, scope: 'builtin', byMute: false };
 }
 
 /**
@@ -197,11 +231,23 @@ export function resolveActivityPolicy(
 ): ActivityChannelPolicy {
   const builtin = builtinActivityDefaults()[type];
   if (!builtin) throw new Error(`Unknown activity type "${type}"`);
-  const scopes = [
-    pipelineSpecId ? document.pipelines?.[pipelineSpecId] : undefined,
-    projectId ? document.projects?.[projectId] : undefined,
-    document.defaults,
-  ];
+  const explained = explainActivityPolicy(document, type, projectId, pipelineSpecId);
+  return { push: explained.push.mode, dashboard: explained.dashboard.mode };
+}
+
+/**
+ * The same decision, plus the scope that made it — what an inbox row needs to say "пуш выключен
+ * правилом проекта" and to offer the switch that undoes exactly that rule.
+ */
+export function explainActivityPolicy(
+  document: NotifyPolicyDocument,
+  type: string,
+  projectId?: string | null,
+  pipelineSpecId?: string | null,
+): ActivityPolicyExplanation {
+  const builtin = builtinActivityDefaults()[type];
+  if (!builtin) throw new Error(`Unknown activity type "${type}"`);
+  const scopes = scopeChain(document, projectId, pipelineSpecId);
   return {
     push: resolveChannel(scopes, type, 'push', builtin.push),
     dashboard: resolveChannel(scopes, type, 'dashboard', builtin.dashboard),
@@ -215,4 +261,13 @@ export function effectiveActivityPolicy(
   pipelineSpecId?: string | null,
 ): ActivityChannelPolicy {
   return resolveActivityPolicy(notifyPolicy(), type, projectId, pipelineSpecId);
+}
+
+/** `explainActivityPolicy` against the document actually in force. */
+export function effectiveActivityPolicyExplained(
+  type: string,
+  projectId: string,
+  pipelineSpecId?: string | null,
+): ActivityPolicyExplanation {
+  return explainActivityPolicy(notifyPolicy(), type, projectId, pipelineSpecId);
 }
