@@ -9,7 +9,6 @@ import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecutio
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentTaskAttachment } from '../../app-agentiz/models/AgentTaskAttachment';
 import { AgentTaskComment } from '../../app-agentiz/models/AgentTaskComment';
-import type { AgentTaskStatus } from '../../app-agentiz/types/agentiz';
 import { AgentPipelineService } from '../../app-agentiz/services/AgentPipelineService';
 import { AgentTaskService } from '../../app-agentiz/services/AgentTaskService';
 import { normalizeRunOverride } from '../../app-agentiz/lib/harnessCatalog';
@@ -357,24 +356,6 @@ export class MobileTaskService {
        */
       actionRequired: await MobileActivityService.itemsForRun(run, task, project),
     };
-  }
-
-  /**
-   * Closes or reopens a task from the phone.
-   *
-   * The exit for the two inbox rows nothing local can resolve: an opened pull request (Agentiz
-   * never learns it was merged) and a run that failed for good. Only the statuses a person picks
-   * are accepted — the pipeline's own `queued`/`running`/`waiting_*` are written by the pipeline,
-   * and letting a client set them would fake a state no run is in.
-   */
-  static async setStatus(taskId: string, ownerId: number | string, status: string) {
-    const allowed = ['done', 'cancelled', 'ignored', 'new'];
-    if (!allowed.includes(status)) {
-      throw new MobileAuthError(400, `Status must be one of ${allowed.join(', ')}`);
-    }
-    const task = await this.ownedTask(taskId, ownerId);
-    await task.update({ status: status as AgentTaskStatus });
-    return this.listRow(task);
   }
 
   /**

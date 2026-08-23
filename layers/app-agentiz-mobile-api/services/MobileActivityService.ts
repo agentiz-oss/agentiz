@@ -12,6 +12,7 @@ import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentW
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
 import {
   heldDiffItem,
+  isBlockingInboxItem,
   proposalItem,
   pullRequestItem,
   questionItem,
@@ -284,7 +285,12 @@ export class MobileActivityService {
       interactions: interactionRows,
       proposals: proposalRows,
       heldRuns: heldRunRows,
-      actionableCount: items.length,
+      /**
+       * Only what actually holds something. A pull request and a dead run are shown in the list
+       * but not counted: nothing local ever resolves them, so counting them would grow the number
+       * forever until "12 требуют действия" stopped meaning anything at all.
+       */
+      actionableCount: items.filter(isBlockingInboxItem).length,
       unseen,
     };
   }
@@ -434,9 +440,12 @@ export class MobileActivityService {
    */
   static async badgeCount(userId: number): Promise<number> {
     const summary = await this.summary(userId, userId);
-    // One rule for every kind now that every kind is one shape: the item names its catalogue type,
-    // and a type muted for push in that project must not keep a badge lit either.
-    return summary.items.filter((item) => effectiveActivityPolicy(item.activityType, item.projectId).push !== 'off').length;
+    // Same two rules as the count above it: only what holds something, minus what the policy mutes
+    // for push in that project — a mute means "не дёргай", so it must not keep a badge lit either.
+    return summary.items
+      .filter(isBlockingInboxItem)
+      .filter((item) => effectiveActivityPolicy(item.activityType, item.projectId).push !== 'off')
+      .length;
   }
 
   /** Diffs `requireApproval` parked in Agentiz: stored, never applied, from a succeeded repository run. */

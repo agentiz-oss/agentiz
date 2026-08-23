@@ -44,7 +44,6 @@ export type InboxActionKey =
   | 'reject'
   | 'apply_diff'
   | 'rerun'
-  | 'close_task'
   | 'open_run'
   | 'open_url';
 
@@ -52,12 +51,6 @@ export interface InboxAction {
   key: InboxActionKey;
   label: string;
   style: 'primary' | 'default' | 'danger';
-  /**
-   * The argument the endpoint takes, when the same action means different things on different
-   * rows: «Закрыть задачу» is `done` for a merged pull request and `cancelled` for a run that will
-   * not be retried. Deciding that on the client would put the meaning of a button in two places.
-   */
-  value?: string;
 }
 
 export interface InboxItem {
@@ -99,21 +92,37 @@ export interface InboxItem {
 /**
  * Who blocks whom, in that order: a question holds an agent mid-turn; a failed push, a failed reset
  * and a proposal nobody can approve all hold a worker's directory, so every later run on that path
- * fails until a person acts; a failed run holds nothing but means the work did not happen; a review
- * holds only the change itself; a pull request holds nothing of ours at all. Time is the tiebreaker
- * inside a group, oldest first — the opposite of the feed, because here the oldest row is the one
- * that has been ignored longest.
+ * fails until a person acts; a review holds the change itself; a held diff waits to be applied.
+ * Below them sit the two **reminders** — a failed run and an opened pull request hold nothing at
+ * all, and nothing in Agentiz resolves them.
  */
 const PRIORITY: Record<InboxItemKind, number> = {
   question: 0,
   push_failed: 1,
   reset_failed: 1,
   no_changes: 1,
-  run_failed: 2,
-  review: 3,
-  held_diff: 4,
+  review: 2,
+  held_diff: 3,
+  run_failed: 4,
   pr: 5,
 };
+
+/**
+ * The kinds that actually hold something — an agent's turn, a worker's directory, a change waiting
+ * to be applied. They are what `actionableCount` and the app-icon badge count, and they never go
+ * away by themselves: only their own entity closes them.
+ *
+ * The other two are reminders. They are shown, they are useful, and they are deliberately **not**
+ * counted: nothing local resolves a pull request or a run that failed for good, so counting them
+ * would make the number on the icon grow forever until it stopped meaning anything.
+ */
+const BLOCKING: ReadonlySet<InboxItemKind> = new Set<InboxItemKind>([
+  'question', 'push_failed', 'reset_failed', 'no_changes', 'review', 'held_diff',
+]);
+
+export function isBlockingInboxItem(item: InboxItem): boolean {
+  return BLOCKING.has(item.kind);
+}
 
 export interface InboxContext {
   task?: AgentTask | null;
@@ -296,23 +305,46 @@ export function heldDiffItem(diff: AgentRunDiff, run: AgentRun, context: InboxCo
 }
 
 /**
+ * What a failure was, in words, when we recognise it.
+ *
+ * `run.errorMessage` is written for whoever is debugging: it carries the HTTP verb, the job id and
+ * sometimes a JSON body, and as a headline it is unreadable. The vocabulary here is deliberately
+ * tiny and anything unrecognised falls through to the raw first line — inventing a category for an
+ * error we do not know is worse than showing the text, because a wrong category sends the reader
+ * looking in the wrong place. The raw line is never lost either way: it becomes the row's `facts`.
+ */
+function runFailureHeadline(error: string | null): string {
+  if (!error?.trim()) return 'Запуск завершился с ошибкой';
+  if (/(session|usage|rate) limit/i.test(error)) return 'Упёрся в лимит подписки';
+  if (/is reserved by proposal/i.test(error)) return 'Папка воркера была занята другим ревью';
+  if (/^(POST|GET|PUT|DELETE)\s+\/jobs\/.*HTTP\s+\d{3}/i.test(error)) return 'Воркер не смог отчитаться серверу';
+  if (/no worker|not claimed|requiredWorkerId/i.test(error)) return 'Задание никто не взял в работу';
+  return firstLine(error) ?? 'Запуск завершился с ошибкой';
+}
+
+/**
  * A run that ended in a failure nobody has answered yet.
  *
- * Nothing is *reserved* by it, so this is the one kind that waits on a decision rather than on a
- * release: either the task gets another attempt or it gets closed. Restricted to the **latest** run
- * of an open task by its callers — every earlier attempt of the same task is history, and a list
- * that grows by one row per failed attempt is a list nobody reads.
+ * Nothing is reserved by it — it is a **reminder**, not a block: the task simply did not get done,
+ * and only a person decides whether to try again. Nothing in Agentiz closes it, which is why it is
+ * outside `actionableCount` and sinks in the list as newer rows arrive instead of expiring on a
+ * timer. Restricted to the **latest** run of a task by its callers, so a task that failed six times
+ * is one row, not six.
  */
 export function runFailureItem(run: AgentRun, context: InboxContext): InboxItem {
   const error = firstLine(run.errorMessage);
   return {
     ...base('run_failed', 'run.failed', context),
     id: `run:${run.id}`,
-    headline: error ?? 'Запуск завершился с ошибкой',
-    facts: join([context.task?.status ? `задача: ${context.task.status}` : null]),
+    // Classified on the whole message, not on the line shown: the recognisable part of a worker
+    // error is often on the second line.
+    headline: runFailureHeadline(run.errorMessage ?? null),
+    // The diagnostic text stays on the row — one line below the human wording, where a raw HTTP
+    // body is information rather than a title.
+    facts: firstLine(run.errorMessage, 120),
     explain: 'Задача осталась несделанной, и сама она больше ничего не предпримет.'
-      + ' «Запустить ещё раз» повторит пайплайн с тем же заданием; если задача больше не нужна —'
-      + ' закройте её, и строка уйдёт из входящих.',
+      + ' «Запустить ещё раз» повторит пайплайн с тем же заданием. Ничего решать прямо сейчас не'
+      + ' обязательно: строка не блокирует ничью работу и со временем уйдёт вниз списка.',
     projectId: run.projectId,
     taskId: run.taskId,
     runId: run.id,
@@ -320,7 +352,6 @@ export function runFailureItem(run: AgentRun, context: InboxContext): InboxItem 
     actions: [
       { key: 'rerun', label: 'Запустить ещё раз', style: 'primary' },
       { key: 'open_run', label: 'Открыть лог', style: 'default' },
-      { key: 'close_task', label: 'Закрыть задачу', style: 'default', value: 'cancelled' },
     ],
   };
 }
@@ -335,24 +366,31 @@ export function pullRequestItem(
     headline: 'Открыт pull request',
     facts: input.url,
     explain: 'Дальше всё происходит на стороне гита: влить или закрыть PR Agentiz не может и не'
-      + ' узнаёт, что с ним стало. Когда разберётесь — закройте задачу, и строка уйдёт из входящих.',
+      + ' узнаёт, что с ним стало. Это напоминание, а не задача с решением: оно никого не держит и'
+      + ' со временем уйдёт вниз списка.',
     projectId: input.projectId,
     taskId: context.task?.id ?? null,
     runId: input.runId,
     url: input.url,
     waitingSince: input.createdAt,
-    actions: [
-      ...(input.url ? [{ key: 'open_url' as const, label: 'Открыть PR', style: 'primary' as const }] : []),
-      { key: 'close_task', label: 'Закрыть задачу', style: 'default', value: 'done' },
-    ],
+    actions: input.url ? [{ key: 'open_url', label: 'Открыть PR', style: 'primary' }] : [],
   };
 }
 
+/**
+ * Order: `priority` first, then time — but the direction of *time* depends on what the row is.
+ *
+ * Something that is blocking is sorted oldest-first: the one ignored longest is the one to deal
+ * with, and it must climb, not sink. A reminder is sorted the other way, newest first, because it
+ * is never resolved by anybody — it is only superseded. That is what makes "старое просто уходит
+ * вниз и перестаёт попадаться на глаза" work without any expiry rule: nothing is hidden by a
+ * timer, it just stops being near the top.
+ */
 export function sortInboxItems(items: InboxItem[]): InboxItem[] {
   return [...items].sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
     const left = a.waitingSince ? new Date(a.waitingSince).getTime() : 0;
     const right = b.waitingSince ? new Date(b.waitingSince).getTime() : 0;
-    return left - right;
+    return isBlockingInboxItem(a) ? left - right : right - left;
   });
 }

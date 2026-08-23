@@ -218,6 +218,8 @@ describe('MobileActivityService', () => {
     const open = await MobileActivityService.summary(OWNER, OWNER);
     expect(open.items).toHaveLength(1);
     expect(open.items[0]).toMatchObject({ kind: 'pr', badge: 'pull request', url: 'https://git/pr/1' });
+    // Shown, never counted — nothing here ever learns that a PR was dealt with.
+    expect(open.actionableCount).toBe(0);
 
     // Closing the task is the only signal Agentiz gets that the PR was dealt with.
     await ownTask.update({ status: 'done' });
@@ -283,7 +285,8 @@ describe('MobileActivityService', () => {
     await AgentRun.create({
       projectId: ownProject.id, taskId: ownTask.id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
       pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
-      errorMessage: 'Worker job queued\nno worker claimed it', finishedAt: new Date(),
+      errorMessage: 'POST /jobs/149854be/result: HTTP 409: {"message":"Successful result is not allowed"}',
+      finishedAt: new Date(),
     } as any);
     // An earlier attempt of the same task is history, not a second thing to decide.
     await AgentRun.create({
@@ -294,8 +297,13 @@ describe('MobileActivityService', () => {
 
     const items = (await MobileActivityService.summary(OWNER, OWNER)).items;
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ kind: 'run_failed', headline: 'Worker job queued' });
-    expect(items[0].actions.map((action) => action.key)).toEqual(['rerun', 'open_run', 'close_task']);
+    expect(items[0].kind).toBe('run_failed');
+    expect(items[0].actions.map((action) => action.key)).toEqual(['rerun', 'open_run']);
+    // Recognised wording up top, the raw diagnostic line kept underneath it.
+    expect(items[0].headline).toBe('Воркер не смог отчитаться серверу');
+    expect(items[0].facts).toContain('HTTP 409');
+    // A reminder, not a block: it is in the list but out of the number on the icon.
+    expect((await MobileActivityService.summary(OWNER, OWNER)).actionableCount).toBe(0);
     // The same row is what the task screen prints.
     expect((await MobileActivityService.itemsForTask(ownTask, ownProject)).map((item) => item.kind)).toEqual(['run_failed']);
 
@@ -329,5 +337,23 @@ describe('MobileActivityService', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: 'question', headline: 'Ставить ли зависимость?', runId: run.id });
     expect(items[0].explain).toBeTruthy();
+  });
+  it('sinks reminders as newer ones arrive, while blocking rows still climb by age', async () => {
+    // No expiry rule anywhere: old reminders leave the top of the list because newer ones push
+    // them down, which is the whole mechanism behind "уйдут вниз и перестанут попадаться на глаза".
+    const older = await AgentTask.create({ projectId: ownProject.id, externalId: 'local:old', title: 'Старая', status: 'failed', priority: 'normal' } as any);
+    const newer = await AgentTask.create({ projectId: ownProject.id, externalId: 'local:new', title: 'Свежая', status: 'failed', priority: 'normal' } as any);
+    for (const [task, when] of [[older, 30], [newer, 1]] as const) {
+      await AgentRun.create({
+        projectId: ownProject.id, taskId: (task as AgentTask).id, status: 'failed', trigger: 'manual', currentStageIndex: 0,
+        pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+        errorMessage: 'boom', finishedAt: new Date(Date.now() - (when as number) * 86_400_000),
+      } as any);
+    }
+
+    const items = (await MobileActivityService.summary(OWNER, OWNER)).items;
+
+    expect(items.map((item) => item.taskTitle)).toEqual(['Свежая', 'Старая']);
+    expect((await MobileActivityService.summary(OWNER, OWNER)).actionableCount).toBe(0);
   });
 });

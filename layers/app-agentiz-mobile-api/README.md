@@ -28,7 +28,6 @@ session cookies.
 | GET    | `/tasks/:taskId/runs/:runId` | Bearer JWT | Full result, stages and log of one run.       |
 | POST   | `/tasks/:taskId/runs/:runId/cancel` | Bearer JWT | Requests cancellation of a run.             |
 | POST   | `/tasks/:taskId/runs/:runId/apply` | Bearer JWT | Applies a diff `requireApproval` held back. |
-| POST   | `/tasks/:id/status` | Bearer JWT | `{ status }` — closes or reopens a task by hand.       |
 | GET    | `/interactions`  | Bearer JWT  | Questions agents are waiting on, across all owned projects. |
 | GET    | `/interactions/:id` | Bearer JWT | One question by id — what a tapped notification opens. |
 | POST   | `/interactions/:id/answer` | Bearer JWT | `{ action, content }` — answers one question.   |
@@ -124,8 +123,6 @@ live thing that needs a decision, in one shape, already sorted.
   "waitingSince": "2026-08-22T11:02:00.000Z", "expiresAt": null,
   "priority": 2,
   "actions": [{ "key": "approve", "label": "Одобрить…", "style": "primary" }, …]
-  // action.value carries the endpoint's argument when one key means two things: close_task is
-  // "done" after a pull request and "cancelled" after a run that will not be retried.
 }
 ```
 
@@ -142,20 +139,27 @@ Three rules hold it together, and breaking any of them puts the client back to g
   one.
 - **`actions` name existing endpoints, not new ones.** `answer` → `POST /interactions/:id/answer`,
   `approve`/`reject` → `POST /proposals/:id/…`, `rerun` → `POST /tasks/:id/run`, `apply_diff` →
-  `POST /tasks/:taskId/runs/:runId/apply`, `close_task` → `POST /tasks/:id/status`, and
-  `open_run`/`open_url` are navigation. The inbox is a projection for reading; nothing is written
-  through it.
-- **Every kind has a way out.** A row a person cannot resolve from the phone is worse than no row:
-  `held_diff` got `/apply` and `pr`/`run_failed` got `/status` for exactly that reason. The two
-  degenerate states are named rather than papered over — `no_changes` is a review of a run that
-  changed no file (approve is closed for good, and all that is left is that the worker's directory
-  is still reserved), `run_failed` is a task whose last attempt died and which nothing will move on
-  its own.
+  `POST /tasks/:taskId/runs/:runId/apply`, and `open_run`/`open_url` are navigation. The inbox is a
+  projection for reading; nothing is written through it.
+- **Blocking rows and reminders are different things.** A row that *holds* something — a parked
+  agent, a reserved worker directory, a diff waiting to be applied — must be resolvable from the
+  phone (that is why `held_diff` got `/apply`), is counted by `actionableCount` and the app badge,
+  and never goes away by itself. A reminder — `pr`, `run_failed` — holds nothing, is resolved by
+  nobody, so it is shown but **not counted**, and it sinks instead of expiring: inside their group
+  reminders sort newest-first, so an old one leaves the top of the list because newer ones arrive,
+  not because a timer hid it. There is deliberately no expiry rule and no "закрыть задачу" action:
+  closing a task that simply is not done any more would be a lie, and in a synced tracker it would
+  be a lie other people read.
+- **Degenerate states are named, not papered over.** `no_changes` is a review of a run that changed
+  no file (approve is closed for good, and all that is left is that the worker's directory is still
+  reserved); `run_failed` is a task whose last attempt died, one row per task rather than per
+  attempt, keyed off `AgentTask.status = 'failed'` — a re-run clears it by itself.
 
-Ordering is `priority` then `waitingSince` ascending: a question first (an agent is parked
-mid-turn), then everything holding a worker's directory (a failed push or reset, a review nobody
-can approve), then a task stuck on a failure, then reviews, held diffs and finally pull requests,
-and inside a group the oldest — the one ignored longest — on top.
+Ordering is `priority` then time: a question first (an agent is parked mid-turn), then everything
+holding a worker's directory (a failed push or reset, a review nobody can approve), then reviews
+and held diffs, and finally the two reminders — a dead run and an opened pull request. Inside a
+group the direction of time depends on the kind: a blocking row sorts oldest-first (the one ignored
+longest has to climb), a reminder newest-first (it is never resolved, only superseded).
 
 The same projection answers two narrower questions: `GET /tasks/:id` returns `actionRequired` for
 one task, and `GET /tasks/:taskId/runs/:runId` returns it for one run — that is what the run screen
@@ -163,12 +167,12 @@ prints above everything the run produced. At run scope `open_run` is stripped fr
 reader is already there.
 
 `interactions`, `proposals` and `heldRuns` are the same facts in the shape older builds parse and
-are still filled. `actionableCount` is `items.length`; `MobileActivityService.badgeCount` is that
-list minus whatever the notification policy mutes for push in its project.
+are still filled. `actionableCount` is the **blocking** part of `items`; `MobileActivityService.badgeCount` is that
+same part minus whatever the notification policy mutes for push in its project.
 
 A pull request is the one kind whose resolution happens outside Agentiz — nothing here learns that
 it was merged. Its stand-in is the task: an open task keeps the row, a `done`/`cancelled`/`ignored`
-one drops it.
+one drops it. The same is true of `run_failed`, and it is why neither is counted.
 
 The same projection, scoped to one task, is `actionRequired` in `GET /tasks/:id` — what the task
 screen states above everything else instead of leaving "ждёт ревью" to be deduced from a run's page.

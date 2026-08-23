@@ -120,13 +120,7 @@ describe('MobileTaskService.runDetailForTask', () => {
     // and the reader has to work out that another attempt is the whole of the remedy.
     expect(detail.actionRequired.map((item) => item.kind)).toEqual(['run_failed']);
     // "Открыть лог" is dropped at run scope: the reader is already on that page.
-    expect(detail.actionRequired[0].actions.map((action) => action.key)).toEqual(['rerun', 'close_task']);
+    expect(detail.actionRequired[0].actions.map((action) => action.key)).toEqual(['rerun']);
   });
 
-  it('lets a person close a task but never write a status the pipeline owns', async () => {
-    expect((await MobileTaskService.setStatus(taskId, OWNER, 'done')).status).toBe('done');
-    await expect(MobileTaskService.setStatus(taskId, OWNER, 'running')).rejects.toThrow(/Status must be one of/);
-    // Ownership is scoped exactly like every other call here.
-    await expect(MobileTaskService.setStatus(taskId, STRANGER, 'done')).rejects.toThrow(/Task not found/);
-  });
 });

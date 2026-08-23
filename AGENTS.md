@@ -177,23 +177,26 @@
   `GET /tasks/:taskId/runs/:runId` — the last is what the run screen prints **above** its own
   result, and there `open_run` is stripped because the reader is already there. It is computed from
   the **live entities** on every request, never from the `AgentActivity` journal: the journal only
-  grows, so an answered question would never leave it. Four rules: the words a person reads are the
-  server's (`badge` from `activityTypes.ts`, `label`/`explain` from the builder — a client inventing
-  its own leaves three surfaces naming one event three ways, and `explain` is what turns a state
-  into a choice: «ревью · 0 файлов · [Отклонить]» names a state machine, not a decision); `facts`
-  are files / branch / revision / the first line of an error, never the agent's prose; `actions`
-  name endpoints that already exist (`/interactions/:id/answer`, `/proposals/:id/approve|reject`,
-  `/tasks/:id/run`, `/tasks/:taskId/runs/:runId/apply`, `/tasks/:id/status`), with `action.value`
-  carrying the argument when one key means two things (`close_task` = `done` after a PR,
-  `cancelled` after a dead run); and a kind may only exist if something **closes** it — which is
-  why `held_diff` got an apply endpoint on mobile and `pr`/`run_failed` got a status one, instead
-  of shipping a row whose only honest button is "открой ноутбук". Degenerate states get their own
-  kind rather than a review with buttons missing: `no_changes` (the run touched no file, so approve
-  is closed for good and only the worker's directory is still reserved) and `run_failed` (the task's
-  last attempt died; one row per task, never per attempt, keyed off `AgentTask.status = 'failed'`,
-  which a re-run clears by itself). `actionableCount` is that list; `badgeCount` is the same minus
-  what the notify policy mutes for push. The old `interactions`/`proposals`/`heldRuns` arrays stay
-  for builds that predate `items`.
+  grows, so an answered question would never leave it. The rules: the words a person reads are the
+  server's (`badge` from `activityTypes.ts`, `label`/`explain` from the builder — a client
+  inventing its own leaves three surfaces naming one event three ways, and `explain` is what turns
+  a state into a choice: «ревью · 0 файлов · [Отклонить]» names a state machine, not a decision);
+  `facts` are files / branch / revision / the first line of an error, never the agent's prose; and
+  `actions` name endpoints that already exist (`/interactions/:id/answer`,
+  `/proposals/:id/approve|reject`, `/tasks/:id/run`, `/tasks/:taskId/runs/:runId/apply`).
+  Two classes of row, and confusing them is what breaks the list: a **blocking** one holds
+  something (a parked agent, a reserved worker directory, a diff waiting to be applied), must be
+  resolvable from the phone, is what `actionableCount`/`badgeCount` count, and is closed only by
+  its own entity — never by time. A **reminder** (`pr`, `run_failed`) holds nothing and is resolved
+  by nobody, so it is shown, deliberately **not** counted, and sinks rather than expires: inside a
+  group blocking rows sort oldest-first and reminders newest-first, so an old reminder leaves the
+  top because newer ones arrive. There is on purpose no expiry rule and no "close the task" action
+  — a task that is merely stale is not done, and in a synced tracker saying otherwise is a lie
+  other people read. Degenerate states get their own kind instead of a review with buttons missing:
+  `no_changes` (the run touched no file, so approve is closed for good and only the worker's
+  directory is still reserved) and `run_failed` (one row per task, keyed off
+  `AgentTask.status = 'failed'`, which a re-run clears by itself). The old
+  `interactions`/`proposals`/`heldRuns` arrays stay for builds that predate `items`.
 - *How* a push travels is chosen once, from `PUSH_PROVIDER`, and never branched on again:
   `MobilePushService` builds one FCM-HTTP-v1-shaped `PushMessage` and sends it through a
   `PushProvider` (`layers/app-agentiz-mobile-api/lib/push/`). `firebase` (default) signs and posts to
