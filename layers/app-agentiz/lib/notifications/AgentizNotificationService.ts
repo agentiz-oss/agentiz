@@ -38,7 +38,7 @@ export class AgentizNotificationService extends AbstractNotificationService {
         // DashboardActivityNotifier, which always addresses the owner.
         const users = await this.userModel().find({});
         for (const user of users) {
-          if (!this.adminizer.accessRightsHelper.hasPermission(`notification-${this.notificationClass}`, user)) continue;
+          if (!await this.adminizer.accessRightsHelper.checkPermission(`notification-${this.notificationClass}`, user)) continue;
           try {
             await this.createUserNotification(stored.id, user.id);
           } catch (error) {

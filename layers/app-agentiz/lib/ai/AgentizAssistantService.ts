@@ -360,7 +360,7 @@ export class AgentizAssistantService extends AbstractAiModelService {
         // update_model_record, create_model_record, ...): every call re-checks this user's model
         // permissions server-side. Available to every user, not just administrators.
         const skillTools: Record<string, any> = {};
-        for (const skill of this.getAgentSkills?.(user) ?? []) {
+        for (const skill of (await this.getAgentSkills?.(user)) ?? []) {
             skillTools[skill.id] = tool({
                 description: skill.description,
                 inputSchema: jsonSchema(skill.inputSchema),

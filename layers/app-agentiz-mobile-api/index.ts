@@ -80,7 +80,7 @@ export class AppAgentizMobileApi extends AbstractApp {
     method: 'get',
     handler: async (req: any, res: any) => {
       if (!req.user) return res.sendStatus(401);
-      if (!req.adminizer.accessRightsHelper.hasPermission('ai-assistant-agentiz-assistant', req.user)) return res.sendStatus(403);
+      if (!await req.adminizer.accessRightsHelper.checkPermission('ai-assistant-agentiz-assistant', req.user)) return res.sendStatus(403);
       return req.Inertia.render({ component: 'module', props: { moduleComponent: '/dashboard/modules/MobileAssistant.js' } });
     },
   }];

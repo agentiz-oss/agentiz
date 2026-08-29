@@ -38,17 +38,19 @@ export function agentSkillsSupported(): boolean {
  */
 
 /** Names of the model resources this user may create records in. */
-function creatableModels(adminizer: Adminizer, user: User): string[] {
-    return listModelResources!(adminizer)
-        .filter((resource) => adminizer.accessRightsHelper.hasPermission(`create-${resource.name}-model`, user))
-        .map((resource) => resource.name);
+async function creatableModels(adminizer: Adminizer, user: User): Promise<string[]> {
+    const resources = listModelResources!(adminizer);
+    const permitted = await Promise.all(
+        resources.map((resource) => adminizer.accessRightsHelper.checkPermission(`create-${resource.name}-model`, user)),
+    );
+    return resources.filter((_resource, index) => permitted[index]).map((resource) => resource.name);
 }
 
 /** Resolves a model this user may create in; anything else is simply not reachable. */
-function requireCreatableModel(adminizer: Adminizer, user: User, name: string) {
+async function requireCreatableModel(adminizer: Adminizer, user: User, name: string) {
     const resource = resolveModelResource!(adminizer, name);
     if (!resource?.model) throw new Error(`Model "${name}" is not available.`);
-    if (!adminizer.accessRightsHelper.hasPermission(`create-${resource.name}-model`, user)) {
+    if (!await adminizer.accessRightsHelper.checkPermission(`create-${resource.name}-model`, user)) {
         throw new Error(`You are not allowed to create records in the "${resource.name}" model.`);
     }
     return resource;
@@ -84,15 +86,15 @@ export function buildAgentizAgentSkills(adminizer: Adminizer): any[] {
             additionalProperties: false,
         },
         requiresUser: true,
-        describe: (user: User) => {
-            const models = creatableModels(adminizer, user);
+        describe: async (user: User) => {
+            const models = await creatableModels(adminizer, user);
             return {
                 description: `Create one record in a data model the current user may add to. Creatable models: ${models.join(', ') || 'none'}.`,
                 inputSchema: withModelEnum(createRecord.inputSchema, models),
             };
         },
         execute: async (input: Record<string, any>, { user }: { user: User }) => {
-            const resource = requireCreatableModel(adminizer, user, String(input.model ?? ''));
+            const resource = await requireCreatableModel(adminizer, user, String(input.model ?? ''));
             const values = input.values && typeof input.values === 'object' && !Array.isArray(input.values)
                 ? input.values
                 : null;

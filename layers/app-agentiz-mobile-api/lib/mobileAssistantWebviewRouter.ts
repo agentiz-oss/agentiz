@@ -12,8 +12,10 @@ const LAUNCH_TTL_MS = 60_000;
 type AdminizerRuntime = {
   jwtSecret: string;
   accessRightsHelper: {
-    // build.19 widened this to a promise for some backends; both shapes are accepted here.
-    hasPermission(token: string, user: any): boolean | Promise<boolean>;
+    // The asynchronous decision, and the only one that can honour a contextual token's `check`:
+    // adminizer 5.1.0-build.25 froze the deprecated `hasPermission` at a synchronous, fail-closed
+    // boolean precisely so a missing `await` could not silently grant access.
+    checkPermission(token: string, user: any): Promise<boolean>;
   };
 };
 
@@ -39,7 +41,7 @@ function mobileError(res: Response, error: unknown) {
 }
 
 async function hasAssistantAccess(adminizer: AdminizerRuntime, user: Model): Promise<boolean> {
-  return await adminizer.accessRightsHelper.hasPermission(`ai-assistant-${ASSISTANT_MODEL_ID}`, user);
+  return await adminizer.accessRightsHelper.checkPermission(`ai-assistant-${ASSISTANT_MODEL_ID}`, user);
 }
 
 async function mobileUserFromBearer(req: Request, sequelize: Sequelize): Promise<Model> {
