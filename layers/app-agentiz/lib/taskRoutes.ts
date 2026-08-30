@@ -23,6 +23,8 @@ import { projectIdsForUser } from './access/projectAccess';
 import { PROJECT_TOKENS } from './access/tokens';
 import { AgentRun } from '../models/AgentRun';
 import { AgentTaskComment } from '../models/AgentTaskComment';
+import { AgentApprovalRequest } from '../models/AgentApprovalRequest';
+import { ApprovalError, ApprovalService } from '../services/ApprovalService';
 import type { AgentRunExecutorOverride } from '../types/agentiz';
 
 /** Whoever is driving the admin panel — recorded as the author of manual changes. */
@@ -35,7 +37,7 @@ function actorOf(req: any): { id: number | null; name: string } {
 }
 
 function errorResponse(res: any, error: unknown) {
-  if (error instanceof TaskServiceError || error instanceof AttachmentError) {
+  if (error instanceof TaskServiceError || error instanceof AttachmentError || error instanceof ApprovalError) {
     return res.status(error.status).json({ message: error.message });
   }
   return res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
@@ -278,6 +280,35 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
               actor,
             ),
           });
+        }
+
+        /**
+         * The human gate from the panel — the counterpart of the phone's
+         * `POST /approvals/:id/(approve|reject)`.
+         *
+         * Guarded by the **request's own** `assigneeToken`, not by a fixed one: a graph may
+         * address a decision more narrowly than «приёмка», and the panel must not be the surface
+         * that widens it. Everything else — "pending only", "a rejection needs a reason", and the
+         * order in which the workflow is told — belongs to `ApprovalService` and is not restated
+         * here.
+         */
+        if (method === 'decideApproval') {
+          const approvalId = str(req.body?.approvalId);
+          if (!approvalId) return res.status(400).json({ message: 'approvalId is required' });
+          const approval = await AgentApprovalRequest.findByPk(approvalId);
+          if (!approval) return res.status(404).json({ message: 'Approval request not found' });
+          if (!await guardProject(req, res, approval.projectId, approval.assigneeToken)) return undefined;
+          const decision = str(req.body?.decision);
+          if (decision !== 'approved' && decision !== 'rejected') {
+            return res.status(400).json({ message: 'decision must be "approved" or "rejected"' });
+          }
+          const decided = await ApprovalService.decide({
+            approvalId,
+            actor: panelActor(req),
+            decision,
+            comment: req.body?.comment === undefined ? null : str(req.body.comment),
+          });
+          return res.json({ data: await ApprovalService.describe(decided) });
         }
 
         if (method === 'updateTask') {

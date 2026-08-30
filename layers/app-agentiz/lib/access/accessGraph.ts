@@ -68,6 +68,9 @@ export const AGENTIZ_ACCESS_GRAPH: AccessGraphConfig = {
     PipelineSpec: { parent: 'project' },
     AgentRole: { parent: 'project' },
     AgentActivity: { parent: 'project' },
+    // A decision waiting for a person belongs to its project like everything else here — and it
+    // must, because the row names a task and carries the reviewer's words about it.
+    AgentApprovalRequest: { parent: 'project' },
     // Transitive — no project column of their own, and no scope at all before this.
     AgentTaskComment: { parent: 'task' },
     AgentTaskAttachment: { parent: 'task' },

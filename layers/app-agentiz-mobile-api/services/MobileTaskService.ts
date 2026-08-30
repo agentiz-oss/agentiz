@@ -292,6 +292,19 @@ export class MobileTaskService {
        * status, so "ждёт ревью" was something a reader had to deduce from a run's page.
        */
       actionRequired,
+      /**
+       * Where the workflow says the task stands, in the words of whoever drew the graph — «ждём
+       * тестировщика», «на доработке». Deliberately separate from `task.status`: that ENUM is the
+       * pipeline's and moves on every run, while this is the sentence a person asked for.
+       *
+       * `flowRunId` is the flow that owns the task right now, or null when none does — which is
+       * also the answer to "почему мой комментарий не запустил ничего".
+       */
+      workflow: {
+        status: task.workflowStatus ?? null,
+        since: task.workflowStatusAt ?? null,
+        flowRunId: task.currentWorkflowRunId ?? null,
+      },
       // Surfaced at task level too: a question can belong to a run the task screen is not showing
       // in full, and a blocked run must not be something the reader has to go hunting for.
       pendingInteractions,

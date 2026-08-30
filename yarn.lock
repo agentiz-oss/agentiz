@@ -1537,7 +1537,7 @@ __metadata:
 
 "@nodeknit/app-adminizer@file:./local_modules/app-adminizer::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-adminizer@file:./local_modules/app-adminizer#./local_modules/app-adminizer::hash=8b5170&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-adminizer@file:./local_modules/app-adminizer#./local_modules/app-adminizer::hash=c084c8&locator=agentiz%40workspace%3A."
   dependencies:
     adminizer: "npm:5.1.0-build.25"
     ajv: "npm:^8.17.1"
@@ -1550,13 +1550,13 @@ __metadata:
   peerDependencies:
     "@nodeknit/app-manager": "*"
     reflect-metadata: ^0.2.2
-  checksum: 10c0/7f018da0d7e695dc10b5a451853e4586088f3f66c5928c38b275d3c43a7323d71ff01dc61464440d804ae79faf17d4c68bad526880bd603407bc3a60c666ab56
+  checksum: 10c0/cadcfc05b97e16070b4d91b260299113107c055589e69eec27641fc609b35e82c5ad71dc7e9a94f0c116ac0b401e74a9cb97cc9d12720c11b6da31e2561e0693
   languageName: node
   linkType: hard
 
 "@nodeknit/app-graphql@file:./local_modules/app-graphql::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-graphql@file:./local_modules/app-graphql#./local_modules/app-graphql::hash=e8a46b&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-graphql@file:./local_modules/app-graphql#./local_modules/app-graphql::hash=84cf0c&locator=agentiz%40workspace%3A."
   dependencies:
     "@apollo/server": "npm:^5.0.0"
     graphql: "npm:^16.8.1"
@@ -1566,13 +1566,13 @@ __metadata:
   peerDependencies:
     "@nodeknit/app-manager": "*"
     reflect-metadata: ^0.2.2
-  checksum: 10c0/01e216defb6deee1a8415d7edc28517809a497239139953ed949e40a51fe2d51765c556133ab637367bd4837e4fef2fc9e8bd2fe8a9a116f9fe57169a87d4c18
+  checksum: 10c0/89b8daf393e408cecdd9582354558c45831d8d07e27390f4ed7f7fd9f5c835ec96eb73e0985d89c383ea180befbd2e1c59058e141f192116921211d390ab4952
   languageName: node
   linkType: hard
 
 "@nodeknit/app-manager@file:./local_modules/app-manager::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-manager@file:./local_modules/app-manager#./local_modules/app-manager::hash=99a3ed&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-manager@file:./local_modules/app-manager#./local_modules/app-manager::hash=8d0f6b&locator=agentiz%40workspace%3A."
   dependencies:
     ajv: "npm:^8.17.1"
     express: "npm:^4.21.2"
@@ -1583,41 +1583,41 @@ __metadata:
     winston: "npm:^3.17.0"
   peerDependencies:
     reflect-metadata: ^0.2.2
-  checksum: 10c0/a988a89daaa207369a5ee64d7b85fed01869971074e3dcd01b606cf204e283fe412986be04b5854269a7ca914afdb2b33fb00efe727825814c97f02b2f05d2d7
+  checksum: 10c0/a438569248d03ce170161bb45a00571de1e54fbb5b0835980f7fdf446dece62791c7b2e5a0493425e1524fee5b11c267f2bbe06b2b22da4b142809c791813d07
   languageName: node
   linkType: hard
 
 "@nodeknit/app-mcp@file:./local_modules/app-mcp::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-mcp@file:./local_modules/app-mcp#./local_modules/app-mcp::hash=1da416&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-mcp@file:./local_modules/app-mcp#./local_modules/app-mcp::hash=aa18f9&locator=agentiz%40workspace%3A."
   peerDependencies:
     "@nodeknit/app-manager": "*"
-  checksum: 10c0/31883dd384b23cc1271ff4c0119c4dc2d60b280bbfede565262c04f9a7960f671546a3ace178e7a534f895869a6932a4c46a4f7ea0c9a3abf1b2d5503ca851e3
+  checksum: 10c0/25edafb86932cc2bf7c9b9945574d31fc01e998d46672d2d883772e3c53784e8ed110acb181d775f3de4c84ca397e2554dd361303fbd9fb0b4e79d57b49e9207
   languageName: node
   linkType: hard
 
 "@nodeknit/app-telegram-bot@file:./local_modules/app-telegram-bot::locator=agentiz%40workspace%3A.":
   version: 1.0.0
-  resolution: "@nodeknit/app-telegram-bot@file:./local_modules/app-telegram-bot#./local_modules/app-telegram-bot::hash=5b34f2&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-telegram-bot@file:./local_modules/app-telegram-bot#./local_modules/app-telegram-bot::hash=29c583&locator=agentiz%40workspace%3A."
   dependencies:
     telegraf: "npm:^4.16.3"
   peerDependencies:
     "@nodeknit/app-manager": "*"
     reflect-metadata: ^0.2.2
-  checksum: 10c0/49dc7a649c2527d9747627c1fb83609c9af9ab775f05dd39d0759f1ad24ae64eaa9015594f5b8aa019d505eb0831145b8767c98ad51bd867b5ded83b83dcef92
+  checksum: 10c0/ddb3c8b046acb5b7f4f66daffba3d268101f83ad2a28d6ab010590f3be632c581c0e6a999fabf18890320ca808e483d2f5ad00e8d765d0df294db36763ca1e75
   languageName: node
   linkType: hard
 
 "@nodeknit/app-workflow@file:./local_modules/app-workflow::locator=agentiz%40workspace%3A.":
   version: 0.1.0
-  resolution: "@nodeknit/app-workflow@file:./local_modules/app-workflow#./local_modules/app-workflow::hash=2559d9&locator=agentiz%40workspace%3A."
+  resolution: "@nodeknit/app-workflow@file:./local_modules/app-workflow#./local_modules/app-workflow::hash=c27595&locator=agentiz%40workspace%3A."
   peerDependencies:
     "@nodeknit/app-adminizer": "*"
     "@nodeknit/app-manager": "*"
   peerDependenciesMeta:
     "@nodeknit/app-adminizer":
       optional: true
-  checksum: 10c0/35d73d3c93c61815808101e49201049daf583678f94de27f29fff8866d3971c59d55556332ddd250301ba479730b1528c4203879faa28ebaebc96ce978812e18
+  checksum: 10c0/d39ae665ed52dba9265147d6e3e20d07913df1765f58bc93a5b23e221e4e6d411ded73b6fe7a575d3b3eaaf9a52f809eb9b32372edadc2fc3d3593ffc212d276
   languageName: node
   linkType: hard
 

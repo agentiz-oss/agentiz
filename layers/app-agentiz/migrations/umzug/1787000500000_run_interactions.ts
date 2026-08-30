@@ -13,6 +13,33 @@ type QI = {
 
 const TABLE = 'agentiz_run_interactions';
 
+/**
+ * Widen three status ENUMs by one value.
+ *
+ * **On sqlite this must do nothing at all, and that is not an optimisation.** Sequelize renders an
+ * ENUM there as a plain `TEXT` column with no CHECK constraint, so the column already accepts
+ * `waiting_input` and there is nothing to widen. What `changeColumn` *would* do is rebuild the
+ * whole table — and sequelize's sqlite rebuild reads the old shape through `describeTable`, which
+ * copies a **composite** unique index's `unique` flag onto **every** column of it
+ * (`lib/dialects/sqlite/query-interface.js`). `agentiz_tasks` has `(projectId, externalId)` unique
+ * and `agentiz_stage_executions` has `(runId, stageIndex)`, so the rebuilt tables came out with
+ * `projectId`, `externalId`, `runId` and `stageIndex` each marked `UNIQUE` on the column: one task
+ * per project, one stage per run, one run per stage row. The symptom is a `UNIQUE constraint
+ * failed: agentiz_tasks.projectId` from the seed on a **fresh** database, and it made a sqlite
+ * install unusable from the first boot.
+ *
+ * The same trap is waiting for any future migration: on sqlite, `changeColumn` and `removeColumn`
+ * rebuild the table, so on a table carrying a composite unique index they corrupt it. `addColumn`
+ * is safe — it is a real `ALTER TABLE ADD COLUMN`. `migrationSchema.test.ts` replays every
+ * migration on a fresh sqlite and fails if any column comes out uniquely constrained that should
+ * not be.
+ *
+ * Editing an already-applied migration is safe here precisely because the sqlite branch was a
+ * no-op in intent: postgres is untouched, and a sqlite database that already ran it has the broken
+ * schema either way — this only stops it happening again. An existing broken sqlite file cannot be
+ * repaired through sequelize (its rebuild reads the inline `UNIQUE` back as an index and keeps it)
+ * and has to be recreated.
+ */
 async function addWaitingInput(context: QI): Promise<void> {
   if (context.sequelize.getDialect() === 'postgres') {
     await context.sequelize.query(`ALTER TYPE "enum_agentiz_tasks_status" ADD VALUE IF NOT EXISTS 'waiting_input'`);
@@ -20,6 +47,7 @@ async function addWaitingInput(context: QI): Promise<void> {
     await context.sequelize.query(`ALTER TYPE "enum_agentiz_stage_executions_status" ADD VALUE IF NOT EXISTS 'waiting_input'`);
     return;
   }
+  if (context.sequelize.getDialect() === 'sqlite') return;
   await context.changeColumn('agentiz_tasks', 'status', {
     type: DataTypes.ENUM('new', 'queued', 'running', 'waiting_input', 'waiting_review', 'done', 'failed', 'cancelled', 'ignored'),
     allowNull: false,
@@ -109,6 +137,9 @@ export async function down({ context }: { context: QI }) {
   await context.sequelize.query(`UPDATE agentiz_tasks SET status = 'running' WHERE status = 'waiting_input'`);
   await context.sequelize.query(`UPDATE agentiz_runs SET status = 'running' WHERE status = 'waiting_input'`);
   await context.sequelize.query(`UPDATE agentiz_stage_executions SET status = 'running' WHERE status = 'waiting_input'`);
+  // Same reason as in `addWaitingInput`: on sqlite the rows above are the whole of the rollback,
+  // and narrowing the ENUM there would only rebuild three tables and corrupt two of them.
+  if (context.sequelize.getDialect() === 'sqlite') return;
   await context.changeColumn('agentiz_tasks', 'status', {
     type: DataTypes.ENUM('new', 'queued', 'running', 'waiting_review', 'done', 'failed', 'cancelled', 'ignored'),
     allowNull: false,

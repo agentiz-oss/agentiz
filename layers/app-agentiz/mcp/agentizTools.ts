@@ -23,6 +23,7 @@ import { agentizProposalMcpTools } from './agentizProposalTools';
 import { agentizCapacityActionTools } from './agentizCapacityTools';
 import { notificationPolicyMcpTools } from './notificationPolicyTools';
 import { agentizWorkflowMcpTools } from './agentizWorkflowTools';
+import { agentizApprovalMcpTools } from './agentizApprovalTools';
 
 type Params = Record<string, unknown>;
 
@@ -58,6 +59,16 @@ function taskTeaser(task: AgentTask) {
     id: task.id, projectId: task.projectId, externalId: task.externalId, title: task.title,
     status: task.status, externalStatus: task.externalStatus, tags: task.tags ?? [], externalUrl: task.externalUrl,
     pipelineSpecId: task.pipelineSpecId, updatedAt: task.updatedAt,
+    /**
+     * Where a **workflow** says the task stands, in the words of whoever drew the graph — «ждём
+     * тестировщика», «на доработке». Deliberately alongside `status` and not instead of it:
+     * `status` is the pipeline's ENUM and moves on every run, this is free text a graph wrote and
+     * is the only place the flow's own opinion is visible. `workflowRunId` non-null means a flow is
+     * driving this task right now, which is also why a comment on it may start nothing.
+     */
+    workflowStatus: task.workflowStatus ?? null,
+    workflowStatusAt: task.workflowStatusAt ?? null,
+    workflowRunId: task.currentWorkflowRunId ?? null,
   };
 }
 
@@ -552,4 +563,5 @@ export const agentizMcpTools: IMcpTool[] = [
   ...agentizCapacityActionTools,
   ...notificationPolicyMcpTools,
   ...agentizWorkflowMcpTools,
+  ...agentizApprovalMcpTools,
 ];

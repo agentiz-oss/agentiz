@@ -86,6 +86,30 @@ const DEFS: ActivityTypeDef[] = [
     badge: 'ждёт одобрения',
   },
   {
+    /**
+     * A person has to accept (or send back) the work itself — the human gate of a workflow, see
+     * `.ai-notes/human-in-the-loop-workflow-plan.md` §7. Distinct from `run.held_for_approval`,
+     * which is about a *diff* waiting to be committed: this one is about the feature being right,
+     * and it is addressed to whoever carries `agentiz-approval-decide` in the project rather than
+     * to everybody in it.
+     */
+    type: 'approval.requested',
+    kind: 'action_required',
+    defaults: { push: 'on', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_ACTIONS,
+    label: 'Требуется решение человека',
+    badge: 'решение',
+  },
+  {
+    /** The decision itself, as news for everybody who was not the one who made it. */
+    type: 'approval.decided',
+    kind: 'info',
+    defaults: { push: 'silent', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_RESULTS,
+    label: 'Решение по приёмке принято',
+    badge: 'решено',
+  },
+  {
     type: 'pr.opened',
     kind: 'action_required',
     defaults: { push: 'on', dashboard: 'on' },

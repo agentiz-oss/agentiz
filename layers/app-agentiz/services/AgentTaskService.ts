@@ -7,6 +7,8 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentTaskAttachment } from '../models/AgentTaskAttachment';
 import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentTaskSource } from '../models/AgentTaskSource';
+import { AgentWorkflowRun } from '../models/AgentWorkflowRun';
+import { AgentApprovalRequest } from '../models/AgentApprovalRequest';
 import { buildRunOptions } from '../lib/runOptions';
 import {
   createTaskManager,
@@ -195,13 +197,18 @@ export class AgentTaskService {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new TaskServiceError(404, 'Task not found');
 
-    const [project, runs, comments, source, runOptions, attachments] = await Promise.all([
+    const [project, runs, comments, source, runOptions, attachments, flowRuns, approvals] = await Promise.all([
       AgentProject.findByPk(task.projectId),
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 50 }),
       AgentTaskComment.findAll({ where: { taskId } }),
       task.sourceId ? AgentTaskSource.findByPk(task.sourceId) : Promise.resolve(null),
       buildRunOptions(task),
       listTaskAttachments(taskId),
+      // "Покажи воркфлоу этой задачи" became a SQL question the day `taskId` moved out of the
+      // engine's `msg` jsonb onto a column. It is also the visible form of the rounds counter: the
+      // number of rows here is exactly what `maxRounds` compares against.
+      AgentWorkflowRun.findAll({ where: { taskId }, order: [['startedAt', 'DESC']], limit: 20 }),
+      AgentApprovalRequest.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 20 }),
     ]);
 
     const latestRun = runs[0] ?? null;
@@ -245,6 +252,44 @@ export class AgentTaskService {
         .sort((a, b) => this.commentTime(a) - this.commentTime(b))
         .map((comment) => comment.toJSON()),
       attachments: attachments.map(describeAttachment),
+      /**
+       * The workflow card: the sentence a flow wrote into the task, which flow owns it right now,
+       * how many rounds there have been, and any decision still waiting for a person.
+       *
+       * `status` is `AgentTask.workflowStatus` and is deliberately not `AgentTask.status` — that
+       * ENUM belongs to the pipeline and moves on every run, while this is the customer's
+       * language («ждём тестировщика»).
+       */
+      workflow: {
+        status: task.workflowStatus ?? null,
+        statusAt: task.workflowStatusAt ?? null,
+        currentRunId: task.currentWorkflowRunId ?? null,
+        rounds: flowRuns.length,
+        runs: flowRuns.map((run) => ({
+          id: run.id,
+          specId: run.specId,
+          status: run.status,
+          currentNodeId: run.currentNodeId,
+          waitingReason: run.waitingReason,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          error: run.error,
+        })),
+        approvals: approvals.map((approval) => ({
+          id: approval.id,
+          status: approval.status,
+          title: approval.title,
+          message: approval.message,
+          links: approval.links ?? [],
+          runId: approval.runId,
+          assigneeToken: approval.assigneeToken,
+          assigneeUserId: approval.assigneeUserId,
+          decidedByUserId: approval.decidedByUserId,
+          decidedAt: approval.decidedAt,
+          decisionComment: approval.decisionComment,
+          createdAt: approval.createdAt,
+        })),
+      },
     };
   }
 

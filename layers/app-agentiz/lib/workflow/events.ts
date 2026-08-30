@@ -14,6 +14,15 @@ import type { AgentTask } from '../../models/AgentTask';
  */
 export const AGENTIZ_TASK_CREATED = 'agentiz.task.created';
 export const AGENTIZ_TASK_UPDATED = 'agentiz.task.updated';
+/**
+ * The second input of the human-in-the-loop graph
+ * (`.ai-notes/human-in-the-loop-workflow-plan.md` §9): a remark landed in the task's thread.
+ * Fired for every comment, whoever wrote it — a comment that is a run's own report (`runId` set)
+ * is not filtered out here, because the event is a fact about the thread, not a decision about
+ * who should react to it. The decision "don't wake on our own report" belongs to whatever listens
+ * (the `agentiz.task.trigger` node's second input), the same way `authorKind`/`maxRounds` do.
+ */
+export const AGENTIZ_TASK_COMMENTED = 'agentiz.task.commented';
 
 /** What a trigger node hands the graph as `msg.payload`. Flat on purpose: the nodes read paths. */
 export interface AgentizTaskEventPayload {
@@ -29,6 +38,26 @@ export interface AgentizTaskEventPayload {
   sourceType: string | null;
   /** Only on `agentiz.task.updated`: which of the watched fields the save touched. */
   changed?: string[];
+}
+
+/** What a trigger node hands the graph as `msg.payload` for `agentiz.task.commented`. */
+export interface AgentizTaskCommentedPayload extends AgentizTaskEventPayload {
+  commentId: string;
+  authorKind: string;
+  authorName: string | null;
+  origin: string;
+  /** Set when the comment is a run's own report to the thread — see the constant's doc comment. */
+  runId: string | null;
+  body: string;
+  /**
+   * The comment asked not to wake anything (`meta.silent`).
+   *
+   * Written by the workflow's own bookkeeping — the note `agentiz.task.status` leaves in the
+   * thread when it is told to — so that a flow narrating its own progress cannot be mistaken for
+   * a remark somebody has to react to. Like `runId`, it is a fact about the comment, and what a
+   * listener does with it is the listener's business; the trigger node treats both as hard rules.
+   */
+  silent: boolean;
 }
 
 /**
@@ -51,7 +80,14 @@ export class EventAgentizTaskUpdated {
   arguments = [Object];
 }
 
-export const agentizWorkflowEvents = [EventAgentizTaskCreated, EventAgentizTaskUpdated];
+export class EventAgentizTaskCommented {
+  key = AGENTIZ_TASK_COMMENTED;
+  name = 'Agentiz: в задаче написали комментарий';
+  description = 'В треде задачи появился комментарий — человека, агента или из внешнего трекера';
+  arguments = [Object];
+}
+
+export const agentizWorkflowEvents = [EventAgentizTaskCreated, EventAgentizTaskUpdated, EventAgentizTaskCommented];
 
 interface EmitterLike {
   emit(eventKey: string, payload: unknown): void;

@@ -11,6 +11,7 @@ import { MobileDeviceService } from '../services/MobileDeviceService';
 import { MobileInteractionService } from '../services/MobileInteractionService';
 import { MobileNotificationPolicyService } from '../services/MobileNotificationPolicyService';
 import { MobileProposalService } from '../services/MobileProposalService';
+import { MobileApprovalService } from '../services/MobileApprovalService';
 import { MobilePushService } from '../services/MobilePushService';
 import { MobileProjectService } from '../services/MobileProjectService';
 import { MobileRunService } from '../services/MobileRunService';
@@ -471,6 +472,49 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
         revision: Number(req.body?.revision),
       }, actorOf(req));
       res.json({ data });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
+   * The human gate: decisions waiting on this person, and the two buttons that answer them.
+   *
+   * A foreign or non-decidable request answers **404**, like every other id in this API — the
+   * right to decide is the request's own `assigneeToken`, checked per row, so a member who may
+   * read the project but not accept work sees nothing here rather than a 403 that confirms the
+   * request exists.
+   */
+  router.get('/approvals', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileApprovalService.list(ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.get('/approvals/:id', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      res.json({ data: await MobileApprovalService.byId(idOf(req), ownerOf(req)) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  router.post('/approvals/:id/approve', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const comment = req.body?.comment === undefined ? null : String(req.body.comment);
+      res.json({ data: await MobileApprovalService.decide(idOf(req), ownerOf(req), 'approved', comment) });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /** The comment is **required** here: it is what the agent receives as its next instruction. */
+  router.post('/approvals/:id/reject', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const comment = req.body?.comment === undefined ? '' : String(req.body.comment);
+      res.json({ data: await MobileApprovalService.decide(idOf(req), ownerOf(req), 'rejected', comment) });
     } catch (error) {
       errorResponse(res, error);
     }

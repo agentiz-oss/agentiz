@@ -27,8 +27,14 @@ import { agentizWorkflowNodes, taskMatchNode, taskRunNode } from './nodes';
 import { AgentizWorkflowRunStore } from './runStore';
 import { forgetWorkflowEvents, useWorkflowEvents } from './events';
 
-/** The engine walks a graph out of band; give it a moment before reading the run record. */
-const settled = () => new Promise((resolve) => setTimeout(resolve, 40));
+/**
+ * The engine walks a graph out of band; give it a moment before reading the run record.
+ *
+ * Generous on purpose. A flow now touches several tables per run (the run record, the task's
+ * workflow ownership, an approval row), and 40 ms was enough only on an idle machine — under the
+ * whole suite the same assertions started failing on timing rather than on behaviour.
+ */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 250));
 
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 

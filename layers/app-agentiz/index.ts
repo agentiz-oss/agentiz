@@ -38,6 +38,7 @@ import { AgentActivitySeen } from './models/AgentActivitySeen';
 import { AgentAssistantConversation } from './models/AgentAssistantConversation';
 import { AgentWorkflowSpec } from './models/AgentWorkflowSpec';
 import { AgentWorkflowRun } from './models/AgentWorkflowRun';
+import { AgentApprovalRequest } from './models/AgentApprovalRequest';
 import { AgentCapacityService } from './services/AgentCapacityService';
 import { AgentJobReaperService } from './services/AgentJobReaperService';
 import { AgentWorkerQueueService } from './services/AgentWorkerQueueService';
@@ -132,6 +133,7 @@ export class AppAgentiz extends AbstractApp {
         AgentAssistantConversation,
         AgentWorkflowSpec,
         AgentWorkflowRun,
+        AgentApprovalRequest,
     ];
 
     @Collection
@@ -432,6 +434,11 @@ export class AppAgentiz extends AbstractApp {
             // itself, closed by the global `agentiz-project-members` token, because whoever may read
             // membership rows would otherwise read them in every project they belong to.
             generateAdminizerModelConfig(AgentProjectMember),
+            // Named by the graph for the same reason as the two above: a decision waiting for a
+            // person carries the reviewer's words about somebody's task, and a model the graph
+            // includes but the panel never registered is left outside the boundary with only a
+            // warning.
+            generateAdminizerModelConfig(AgentApprovalRequest),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 

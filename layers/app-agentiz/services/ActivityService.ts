@@ -27,6 +27,17 @@ export interface RecordActivityInput {
   title: string;
   body: string;
   data?: Record<string, unknown> | null;
+  /**
+   * Narrows the addressees to the people who hold this project token, instead of everybody with a
+   * stake in the project.
+   *
+   * Absent (the default, and what every pre-existing emitter passes) means the whole project —
+   * news is news for all of it. An **approval request** is the first event for which that is
+   * wrong: it is a decision, only the holders of `agentiz-approval-decide` may make it, and
+   * waking the rest is how a notification list stops being read. `recipientsForProject` always
+   * includes the owner whatever the token says.
+   */
+  recipientToken?: string | null;
 }
 
 /**
@@ -93,7 +104,7 @@ export class ActivityService {
           // Everybody with a stake in this project, not just its owner. Resolved once, here, so
           // no delivery layer has to know what a membership row is — and resolved from the live
           // rows on every event, because a person added yesterday must hear about today's run.
-          recipientIds: await recipientsForProject(project.id),
+          recipientIds: await recipientsForProject(project.id, input.recipientToken ?? undefined),
           projectName: project.name ?? '',
           taskTitle: task?.title ?? null,
           run,

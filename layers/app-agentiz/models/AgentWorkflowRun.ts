@@ -42,6 +42,25 @@ export class AgentWorkflowRun extends Model<
   @Column({ type: DataType.JSONB, allowNull: false })
   declare msg: Record<string, unknown>;
 
+  /**
+   * Which project and which task this run is about, lifted out of `msg.payload` by the store.
+   *
+   * The facts were always there, inside a jsonb blob, and that made two ordinary questions
+   * un-askable in SQL: "покажи воркфлоу этой задачи" (the card in the task) and "сколько кругов
+   * доработки уже было" (the `maxRounds` safeguard of the second trigger input). Both are counted
+   * off `taskId` now, which also makes the number visible to a person rather than living in
+   * engine state.
+   *
+   * Nullable because a graph need not be about a task at all — a release flow on a schedule is
+   * not.
+   */
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare projectId: CreationOptional<string | null>;
+
+  @Index('agentiz_workflow_runs_task_idx')
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare taskId: CreationOptional<string | null>;
+
   @Column({ type: DataType.STRING, allowNull: true })
   declare currentNodeId: CreationOptional<string | null>;
 

@@ -7,6 +7,7 @@ import { AgentRun } from '../../app-agentiz/models/AgentRun';
 import { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
 import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteraction';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
+import { AgentApprovalRequest } from '../../app-agentiz/models/AgentApprovalRequest';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentWorkspaceProposalService';
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
@@ -15,6 +16,7 @@ import { MobileAuthError } from './MobileAuthService';
 import { canInProject, visibleProjectIds } from '../lib/mobileScope';
 import {
   applyDismissal,
+  approvalItem,
   heldDiffItem,
   isBlockingInboxItem,
   proposalItem,
@@ -166,7 +168,7 @@ export class MobileActivityService {
       };
     }
 
-    const [interactions, proposals, heldDiffs, openedPrs, failedTasks, unseen] = await Promise.all([
+    const [interactions, proposals, approvals, heldDiffs, openedPrs, failedTasks, unseen] = await Promise.all([
       AgentRunInteraction.findAll({
         where: { projectId: { [Op.in]: projectIds }, status: 'pending' },
         order: [['createdAt', 'ASC']],
@@ -175,6 +177,14 @@ export class MobileActivityService {
       AgentWorkspaceProposal.findAll({
         where: { projectId: { [Op.in]: projectIds }, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
         order: [['updatedAt', 'DESC']],
+        limit: 200,
+      }),
+      // Approvals are the one row here whose visibility is not the caller's read scope: a decision
+      // belongs to whoever may make it. Filtered by the request's own token below rather than by a
+      // narrower project query, because a graph may address one to a token of its choosing.
+      AgentApprovalRequest.findAll({
+        where: { projectId: { [Op.in]: projectIds }, status: 'pending' },
+        order: [['createdAt', 'ASC']],
         limit: 200,
       }),
       this.heldDiffs(projectIds),
@@ -201,6 +211,7 @@ export class MobileActivityService {
     const runIds = new Set<string>([
       ...interactions.map((item) => item.runId),
       ...proposals.map((item) => item.latestRunId),
+      ...approvals.map((item) => item.runId).filter(Boolean) as string[],
       ...heldDiffs.map((item) => item.diff.runId),
       ...openedPrs.map((row) => row.runId).filter(Boolean) as string[],
     ]);
@@ -223,6 +234,7 @@ export class MobileActivityService {
 
     const taskIds = new Set<string>([
       ...proposals.map((item) => item.taskId),
+      ...approvals.map((item) => item.taskId).filter(Boolean) as string[],
       ...[...runById.values()].map((run) => run.taskId),
       ...openedPrs.map((row) => row.taskId).filter(Boolean) as string[],
     ]);
@@ -282,6 +294,14 @@ export class MobileActivityService {
           ...contextOf(item.projectId, item.taskId, runById.get(item.latestRunId)?.pipelineSpecId),
           diff,
           approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
+        });
+      }),
+      ...(await this.decidableApprovals(approvals, ownerId)).map((item) => {
+        const run = item.runId ? runById.get(item.runId) ?? null : null;
+        return approvalItem(item, {
+          ...contextOf(item.projectId, item.taskId, run?.pipelineSpecId),
+          verdict: run?.verdict ?? null,
+          verdictReason: run?.verdictReason ?? null,
         });
       }),
       ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId, run.pipelineSpecId))),
@@ -515,14 +535,16 @@ export class MobileActivityService {
     project: AgentProject | null,
     userId?: number,
   ): Promise<InboxItem[]> {
-    const [interactions, proposals, runs] = await Promise.all([
+    const [interactions, proposals, approvals, runs] = await Promise.all([
       AgentRunInteraction.findAll({ where: { projectId: task.projectId, status: 'pending' }, order: [['createdAt', 'ASC']] }),
       AgentWorkspaceProposal.findAll({
         where: { taskId: task.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
         order: [['updatedAt', 'DESC']],
       }),
-      AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id', 'pipelineSpecId'] }),
+      AgentApprovalRequest.findAll({ where: { taskId: task.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
+      AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id', 'pipelineSpecId', 'verdict', 'verdictReason'] }),
     ]);
+    const runById = new Map(runs.map((run) => [run.id, run]));
     const runIds = new Set(runs.map((run) => run.id));
     const pipelineOfRun = new Map(runs.map((run) => [run.id, run.pipelineSpecId ?? null]));
     const ownInteractions = interactions.filter((item) => runIds.has(item.runId));
@@ -559,6 +581,14 @@ export class MobileActivityService {
           approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
         });
       }),
+      ...(userId === undefined ? [] : (await this.decidableApprovals(approvals, userId)).map((item) => {
+        const run = item.runId ? runById.get(item.runId) ?? null : null;
+        return approvalItem(item, {
+          ...context(run?.pipelineSpecId),
+          verdict: run?.verdict ?? null,
+          verdictReason: run?.verdictReason ?? null,
+        });
+      })),
       ...held.filter(({ run }) => run.taskId === task.id)
         .map(({ diff, run }) => heldDiffItem(diff, run, context(run.pipelineSpecId))),
     ]));
@@ -594,6 +624,25 @@ export class MobileActivityService {
   }
 
   /** Diffs `requireApproval` parked in Agentiz: stored, never applied, from a succeeded repository run. */
+  /**
+   * Of the project's pending approvals, the ones **this** caller may actually decide.
+   *
+   * Filtered per row and not by the project query, because the addressee is a property of the
+   * request (`assigneeToken`, plus an optional `assigneeUserId` naming one person). Showing a row
+   * somebody cannot act on is worse here than anywhere else in the inbox: it is blocking, so it
+   * would be counted in `actionableCount` and would never go away for that reader.
+   */
+  private static async decidableApprovals(
+    approvals: AgentApprovalRequest[],
+    userId: number | string,
+  ): Promise<AgentApprovalRequest[]> {
+    const decisions = await Promise.all(approvals.map(async (approval) => {
+      if (approval.assigneeUserId !== null && Number(approval.assigneeUserId) !== Number(userId)) return false;
+      return canInProject(approval.projectId, userId, approval.assigneeToken);
+    }));
+    return approvals.filter((_approval, index) => decisions[index]);
+  }
+
   private static async heldDiffs(projectIds: string[]): Promise<Array<{ diff: AgentRunDiff; run: AgentRun }>> {
     const diffs = await AgentRunDiff.findAll({
       where: { projectId: { [Op.in]: projectIds }, appliedAt: null, proposalId: null },

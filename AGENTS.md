@@ -227,6 +227,48 @@
   finds is a bug to raise and fix or explicitly document — never something to quietly absorb because
   "it's probably fine". Write the equivalent test for the next field before merging it, not after
   something reports a pipeline behaving differently.
+- A workflow's **round with a human** — «агент сделал → агент проверил → человек принял», long
+  form: [`docs/guides/workflow-human-gate.md`](docs/guides/workflow-human-gate.md) — is expressed
+  as an **acyclic** graph with **two inputs**: «задача создана» and «в задаче написали комментарий»
+  (`agentiz.task.commented`, emitted from `@AfterCreate` on `AgentTaskComment`, on the model like
+  `AgentTask`'s own). The loop closes not by an edge but by a fact: the last node writes the
+  remarks into the thread and that raises the second input. The engine's one concession is
+  **fan-in allowed, fan-out forbidden** (`validation.ts`) — and those go together, because
+  `advance()` keeps its queue of unrun siblings in a local variable and drops it the moment a
+  branch parks in an `external` node, so a second edge out of one port would silently never run.
+  Four safeguards keep the loop from feeding itself, and two of them are **hard rules, not
+  settings**: a comment carrying `runId` never wakes the trigger (that is how every run reports its
+  own outcome) and neither does one marked `meta.silent` (the status node's own note); the other
+  two are config — `skipIfFlowActive` (checked against `AgentTask.currentWorkflowRunId`, which the
+  **run store** maintains, not a node) and `maxRounds` (counted as `AgentWorkflowRun` rows by
+  `taskId` + `specId`, so the number is visible to a person and survives a deploy). Defaults are
+  strict **only** for the comment input, because no saved graph can already depend on an event that
+  did not exist; `created`/`updated` keep `maxRounds: 0` and `skipIfFlowActive: false`, which is
+  byte-identical to their pre-existing behaviour, and `humanInTheLoop.test.ts` walks a
+  legacy-shaped spec to prove it. `agentiz.task.comment` releases the task **before** writing the
+  comment, or safeguard 3 would swallow the very round that comment exists to start; and the
+  round only closes by itself if the trigger's `authorKind` lists `agent`, since the remark is
+  written by the flow.
+- A decision that waits for a **person outside any run** is `AgentApprovalRequest`, never
+  `AgentRunInteraction`: the latter is tied to a live worker lease and dies with it, while a
+  request holds nothing, survives the run, a restart and a deploy, and closes only on a decision or
+  on the flow being cancelled (swept in `lib/workflow/runStore.ts` — the engine has no
+  `ExternalNodeExecutor.cancel`). It is addressed by **token** (`assigneeToken`, default
+  `agentiz-approval-decide`), never by role or group, so a role invented tomorrow that carries the
+  token starts receiving them with no graph edited; `assigneeUserId` narrows to one person and
+  widens nothing. `ApprovalService` is the only place that decides, and it holds three invariants:
+  one pending request per (workflow run × node), the row is marked decided **before** the graph is
+  told (`completeExternal` replays the rest of the graph synchronously, including the node that
+  starts the next round), and **a rejection without a text is refused** — that text is what the
+  agent receives as its next instruction. A rejection is a *result* on its own port, never a failed
+  flow. All three surfaces — panel route, mobile `/approvals`, MCP `decideApproval` — ask the same
+  `can(actor, projectId, approval.assigneeToken)`; the mobile inbox filters **per row**
+  (`decidableApprovals`), because a blocking row shown to somebody who cannot act on it never goes
+  away for them.
+- `AgentTask.workflowStatus` is free text written by a **workflow** in the customer's language
+  («ждём тестировщика»), deliberately beside `AgentTask.status` and never instead of it: that ENUM
+  belongs to the pipeline and moves on every run. It must stay out of `WORKFLOW_WATCHED_FIELDS`, or
+  a flow writing its own status wakes its own `task.updated` trigger.
 - Every "a person may care" event (a question asked, a review waiting, a run finished, a failed
   push — catalogue in `layers/app-agentiz/lib/notifications/activityTypes.ts`, the single source
   the policy schema, the built-in defaults and the UI hints all derive from) goes through **one
@@ -452,6 +494,24 @@
   startup, which would otherwise run the flow twice for one task.
 - A migration file under `layers/app-agentiz/migrations/umzug/` does nothing until it is also listed
   in `migrations/umzugExports.ts` — that hand-written array, not the directory, is what runs.
+- **On sqlite, `changeColumn` and `removeColumn` corrupt any table that carries a composite unique
+  index, and they do it while reporting success.** Both rebuild the table, sequelize reconstructs
+  the old shape through `describeTable`, and that copies a composite index's `unique` flag onto
+  **every** column of the index (`lib/dialects/sqlite/query-interface.js`). One such call in
+  `1787000500000_run_interactions` left `agentiz_tasks.projectId` and
+  `agentiz_stage_executions.stageIndex` uniquely constrained — a fresh install that holds one task
+  per project and one stage per run, whose only symptom is the seed dying on `UNIQUE constraint
+  failed: agentiz_tasks.projectId`. `addColumn` is safe (a real `ALTER TABLE ADD COLUMN`); the
+  other two need a dialect guard, and widening an ENUM is a **no-op on sqlite anyway** — it is
+  plain `TEXT` there with no CHECK. `migrations/migrationSchema.test.ts` replays every migration on
+  an empty sqlite and fails on an unexpectedly unique column, a missing composite index, or a
+  project that cannot hold two tasks. An already-corrupted file cannot be repaired through
+  sequelize (its rebuild reads the inline `UNIQUE` back as an index) — delete it.
+- Schema is managed by **one** mechanism per database and the repo already picks it: with no
+  `DATABASE_URL`, `index.ts` sets `ORM_ALTER=false` + `USE_MIGRATIONS=true`, i.e. migrations, the
+  same as production. `sync({ alter: true })` is the fallback for a `DATABASE_URL` setup and has
+  the same sqlite rebuild hazard as above; running both against one file also makes umzug fail on
+  objects `sync` already created.
 - The panel's knowledge base (adminizer's `documentation` subsystem) is fed by **one collection**,
   `documentation`, handled in app-adminizer (`local_modules/app-adminizer/src/docs/`). Adminizer
   accepts exactly one `AbstractDocumentation` per instance, so what is registered is a

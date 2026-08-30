@@ -1,9 +1,10 @@
-import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default } from 'sequelize-typescript';
+import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default, AfterCreate } from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentTask } from './AgentTask';
 import type { AgentTaskCommentAuthorKind, AgentTaskCommentOrigin } from '../types/agentiz';
+import { AGENTIZ_TASK_COMMENTED, emitAgentizEvent, taskEventPayload } from '../lib/workflow/events';
 
 /**
  * A comment on an AgentTask — the discussion thread of the built-in tracker.
@@ -118,4 +119,33 @@ export class AgentTaskComment extends Model<
 
   @BelongsTo(() => AgentTask, 'taskId')
   declare task: AgentTask;
+
+  /**
+   * The second input of the human-in-the-loop graph (plan §9): on the model, not in the four call
+   * sites that write a comment (`AgentTaskService.addComment`, the tracker pull,
+   * `reportToTaskThread`, `AgentWorkspaceProposalService`) — same discipline as `AgentTask`'s own
+   * `@AfterCreate`/`@AfterUpdate` hooks, for the same reason: a call site that writes comments a
+   * fifth way would otherwise silently not wake anything.
+   *
+   * A bulk `AgentTaskComment.bulkCreate` bypasses this, same caveat as `AgentTask`'s hooks.
+   */
+  @AfterCreate
+  static async emitWorkflowCommented(comment: AgentTaskComment): Promise<void> {
+    try {
+      const task = await AgentTask.findByPk(comment.taskId);
+      if (!task) return;
+      emitAgentizEvent(AGENTIZ_TASK_COMMENTED, {
+        ...taskEventPayload(task),
+        commentId: comment.id,
+        authorKind: comment.authorKind,
+        authorName: comment.authorName,
+        origin: comment.origin,
+        runId: comment.runId,
+        body: comment.body,
+        silent: (comment.meta as Record<string, unknown> | null)?.silent === true,
+      });
+    } catch (error) {
+      console.error('[AppAgentiz] failed to look up task for a comment event:', error);
+    }
+  }
 }

@@ -28,6 +28,59 @@ export function pipelineRunRef(runId: string): string {
   return `run:${runId}`;
 }
 
+/** The external ref an `agentiz.approval` node parks on — same discipline, spelled once. */
+export function approvalRef(approvalId: string): string {
+  return `approval:${approvalId}`;
+}
+
+/**
+ * Continue the flow that was waiting for a person's decision.
+ *
+ * The exact shape of `completePipelineWait` below, and for the same reason: a rejection is a
+ * **result** the graph routes on its own port, not a broken flow. `error:` here would fail the
+ * workflow and the graph's «отклонили → напишем замечания» branch would never run.
+ *
+ * Ordering matters and belongs to the caller, not here: the request row must already be decided
+ * before this is called, because completing the node runs the rest of the graph synchronously —
+ * including the node that writes the remark into the task thread, which is what raises the next
+ * round. See ApprovalService.decide.
+ */
+export async function completeApprovalWait(
+  approvalId: string,
+  outcome: {
+    decision: 'approved' | 'rejected';
+    comment?: string | null;
+    decidedByUserId?: number | null;
+    taskId?: string | null;
+    projectId?: string | null;
+    runId?: string | null;
+  },
+): Promise<void> {
+  const engine = workflowEngine();
+  if (!engine) return;
+  try {
+    await engine.completeExternal(approvalRef(approvalId), {
+      output: outcome.decision,
+      msg: {
+        payload: {
+          approvalId,
+          decision: outcome.decision,
+          // Named `comment` and not `reason`: this text is written by a person and is handed to
+          // the agent verbatim as the next instruction, so the graph's templates read it as what
+          // it is — a remark in the thread.
+          comment: outcome.comment ?? null,
+          decidedByUserId: outcome.decidedByUserId ?? null,
+          taskId: outcome.taskId ?? null,
+          projectId: outcome.projectId ?? null,
+          runId: outcome.runId ?? null,
+        },
+      },
+    });
+  } catch (error) {
+    console.error(`[AppAgentiz] failed to continue the workflow waiting for approval ${approvalId}:`, error);
+  }
+}
+
 /**
  * Continue whatever flow was waiting for this pipeline run.
  *
@@ -49,6 +102,8 @@ export async function completePipelineWait(
      * on `succeeded`/`failed` exactly as before this field existed.
      */
     verdict?: 'pass' | 'fail' | null;
+    /** The agent's own words for a `fail` — what the round-ending remark node puts in the thread. */
+    verdictReason?: string | null;
   },
 ): Promise<void> {
   const engine = workflowEngine();
@@ -73,6 +128,7 @@ export async function completePipelineWait(
           summary: outcome.summary ?? null,
           error: outcome.error ?? null,
           verdict: outcome.verdict ?? null,
+          verdictReason: outcome.verdictReason ?? null,
         },
       },
     });

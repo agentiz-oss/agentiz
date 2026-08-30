@@ -286,6 +286,7 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
       taskId: instance.taskId,
       projectId: instance.projectId,
       verdict: instance.verdict,
+      verdictReason: instance.verdictReason,
     });
   }
 }

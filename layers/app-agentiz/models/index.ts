@@ -27,3 +27,4 @@ export { AgentHarnessUsageSample } from './AgentHarnessUsageSample';
 export { AgentAssistantConversation } from './AgentAssistantConversation';
 export { AgentWorkflowSpec } from './AgentWorkflowSpec';
 export { AgentWorkflowRun } from './AgentWorkflowRun';
+export { AgentApprovalRequest } from './AgentApprovalRequest';

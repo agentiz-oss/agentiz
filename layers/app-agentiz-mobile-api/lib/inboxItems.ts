@@ -12,6 +12,7 @@ import type { AgentRun } from '../../app-agentiz/models/AgentRun';
 import type { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
 import type { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteraction';
 import type { AgentTask } from '../../app-agentiz/models/AgentTask';
+import type { AgentApprovalRequest } from '../../app-agentiz/models/AgentApprovalRequest';
 import type { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 
 /**
@@ -32,6 +33,14 @@ import type { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorks
  */
 export type InboxItemKind =
   | 'question'
+  /**
+   * A person has to accept the work itself, or send it back with a reason — the human gate of a
+   * workflow (`AgentApprovalRequest`). Blocking: a whole flow is parked on it and only a decision
+   * moves it, so it is counted and cannot be dismissed. Distinct from `review`, which is about a
+   * *diff* waiting to be committed: here nothing is held in a worker's directory, and the question
+   * is whether the feature is right.
+   */
+  | 'approval'
   | 'review'
   /**
    * A review with nothing to review: the run finished without touching a file, so approve is
@@ -158,9 +167,13 @@ const PRIORITY: Record<InboxItemKind, number> = {
   reset_failed: 1,
   no_changes: 1,
   review: 2,
-  held_diff: 3,
-  run_failed: 4,
-  pr: 5,
+  // Below a diff review and above a held diff: it holds a workflow rather than a directory, so
+  // nothing else fails while it waits — but it is the last step of a feature and a person is
+  // explicitly expected.
+  approval: 3,
+  held_diff: 4,
+  run_failed: 5,
+  pr: 6,
 };
 
 /**
@@ -173,7 +186,7 @@ const PRIORITY: Record<InboxItemKind, number> = {
  * would make the number on the icon grow forever until it stopped meaning anything.
  */
 const BLOCKING: ReadonlySet<InboxItemKind> = new Set<InboxItemKind>([
-  'question', 'push_failed', 'reset_failed', 'no_changes', 'review', 'held_diff',
+  'question', 'push_failed', 'reset_failed', 'no_changes', 'review', 'held_diff', 'approval',
 ]);
 
 export function isBlockingInboxItem(item: InboxItem): boolean {
@@ -397,6 +410,52 @@ export function heldDiffItem(diff: AgentRunDiff, run: AgentRun, context: InboxCo
     actions: [
       { key: 'apply_diff', label: 'Применить изменения', style: 'primary' },
       { key: 'open_run', label: 'Посмотреть дифф', style: 'default' },
+    ],
+  };
+}
+
+/**
+ * A decision waiting for a person: the human gate of a workflow.
+ *
+ * `facts` are the facts, as everywhere in this file — the agent's machine verdict and its reason,
+ * the run it came from, how many links there are to look at — never the agent's prose. The
+ * verdict is exactly what belongs here: it is the one line that says whether the machine thinks
+ * the work is done, and it is what a person checks the links against.
+ *
+ * `explain` spells out what each button does, because the two do very different things: one ends
+ * the flow with the work accepted, the other sends the task back to the developer with the text
+ * the person types as the agent's next instruction. That is also why «Отклонить…» carries an
+ * ellipsis — the client must ask for the text, and the endpoint refuses a rejection without it.
+ */
+export function approvalItem(
+  approval: AgentApprovalRequest,
+  context: InboxContext & { verdict?: 'pass' | 'fail' | null; verdictReason?: string | null },
+): InboxItem {
+  const linkCount = approval.links?.length ?? 0;
+  const verdict = context.verdict
+    ? `вердикт агента: ${context.verdict === 'pass' ? 'ок' : 'не ок'}`
+    : null;
+  return {
+    ...base('approval', 'approval.requested', context, approval.projectId),
+    id: `approval:${approval.id}`,
+    headline: approval.title,
+    facts: join([
+      verdict,
+      context.verdict === 'fail' ? firstLine(context.verdictReason, 120) : null,
+      linkCount > 0 ? `${linkCount} ссыл${linkCount === 1 ? 'ка' : 'ок'} для проверки` : null,
+    ]),
+    explain: 'Работа дошла до вас: посмотрите по ссылкам и решите.'
+      + ' «Принять» — задача считается принятой и воркфлоу идёт дальше.'
+      + ' «Отклонить» — нужен текст: он уедет разработчику как задание на доработку, и по задаче'
+      + ' начнётся новый круг. Пока решения нет, воркфлоу стоит.',
+    projectId: approval.projectId,
+    taskId: approval.taskId,
+    runId: approval.runId,
+    url: approval.links?.[0]?.url ?? null,
+    waitingSince: approval.createdAt ?? null,
+    actions: [
+      { key: 'approve', label: 'Принять', style: 'primary' },
+      { key: 'reject', label: 'Отклонить…', style: 'danger' },
     ],
   };
 }

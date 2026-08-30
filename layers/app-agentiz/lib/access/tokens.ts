@@ -49,6 +49,7 @@ export const AGENTIZ_GRAPH_MODELS = [
   'AgentTaskComment',
   'AgentTaskAttachment',
   'AgentStageExecution',
+  'AgentApprovalRequest',
 ] as const;
 
 export type AgentizGraphModel = (typeof AGENTIZ_GRAPH_MODELS)[number];
@@ -218,7 +219,15 @@ export const ROLE_PRESETS: RolePreset[] = ladder([
     key: 'tester',
     name: 'Agentiz · Тестировщики',
     description: 'Запускает пайплайны и принимает работу',
-    adds: [modelCrudToken('create', 'AgentRun'), PROJECT_TOKENS.runOperate, PROJECT_TOKENS.approvalDecide],
+    adds: [
+      modelCrudToken('create', 'AgentRun'),
+      // The CRUD half of the same capability: the semantic token is what the approval endpoints
+      // check, this is what makes the row editable in the panel's generic CRUD for the same
+      // people. Splitting them would give a tester a decision they can make in one place only.
+      modelCrudToken('update', 'AgentApprovalRequest'),
+      PROJECT_TOKENS.runOperate,
+      PROJECT_TOKENS.approvalDecide,
+    ],
   },
   {
     key: 'developer',

@@ -20,12 +20,13 @@ import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
 import { listTaskAttachments } from '../lib/taskAttachments';
 import { harnessColumnValue, harnessKeysForStages } from '../lib/harness';
-import { VERDICT_PROMPT_INSTRUCTION } from '../lib/runVerdict';
+import { VERDICT_PROMPT_INSTRUCTION, extractVerdict } from '../lib/runVerdict';
+import type { AgentRunVerdict } from '../types/agentiz';
 import { nextScheduleOpen } from '../lib/activeHours';
 import { hasUpstreamThread } from '../lib/taskManager';
 import { generateWorkspaceBranch } from '../lib/workspaceBranch';
 import { assertWorkspaceOwnership } from '../lib/workspaceOwnership';
-import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecForTask } from './PipelineSpecResolver';
+import { assertValidSpec, isWorkspaceSource, orderedStages, resolveSpecById, resolveSpecForTask } from './PipelineSpecResolver';
 import { resolveAgentExecutor } from './agents';
 import type { AgentStageResult } from './agents';
 import type {
@@ -113,12 +114,23 @@ export class AgentPipelineService {
       proposalId?: string | null;
       workspaceRevision?: number | null;
       executorOverride?: AgentRunExecutorOverride | null;
+      /**
+       * Run *this* spec instead of resolving one by tag.
+       *
+       * The workflow's half of the answer to "какой пайплайн запустится": a graph that says
+       * «сначала разработчик, потом тестировщик» names two specs, and tag resolution cannot tell
+       * them apart — both would resolve to whatever the task's tags point at. Absent (every
+       * pre-existing caller) keeps the resolution exactly as it was.
+       */
+      pipelineSpecId?: string | null;
     } = {},
   ): Promise<AgentRun> {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new Error(`AgentTask ${taskId} not found`);
 
-    const spec = await resolveSpecForTask(task);
+    const spec = options.pipelineSpecId
+      ? await resolveSpecById(task, options.pipelineSpecId)
+      : await resolveSpecForTask(task);
     const snapshot = options.pipelineSnapshot ?? spec.spec as PipelineSpecDef;
     assertValidSpec(snapshot);
 
@@ -200,6 +212,13 @@ export class AgentPipelineService {
     let fileOps: FileOp[] = [];
     let failed = false;
     let failureMessage: string | null = null;
+    // Same rule as `resolveRunVerdict` for the external-worker path (AgentWorkerApiService.ts):
+    // only a stage whose spec asked for one (`stage.verdict`) may set this, and the last such
+    // stage in pipeline order wins. This is the in-process counterpart for the local worker
+    // (`AgentWorkerQueueService`) — without it a project running only the built-in/stub executor
+    // would never see a verdict at all, silently diverging from the external-worker path.
+    let verdict: AgentRunVerdict | null = null;
+    let verdictReason: string | null = null;
 
     for (const [index, stage] of stages.entries()) {
       const execution = await AgentStageExecution.findOne({ where: { runId: run.id, stageIndex: index } });
@@ -235,6 +254,14 @@ export class AgentPipelineService {
         previousOutputs[stage.role] = result;
         fileOps = mergeFileOps(fileOps, normalizeFileChanges(result.fileChanges));
 
+        if (stage.verdict) {
+          const extracted = extractVerdict(result.summary);
+          if (extracted.verdict) {
+            verdict = extracted.verdict;
+            verdictReason = extracted.reason;
+          }
+        }
+
         await execution.update({
           status: 'succeeded',
           output: { ...result.output, summary: result.summary },
@@ -261,6 +288,8 @@ export class AgentPipelineService {
         finishedAt: new Date(),
         resultSummary: summary || null,
         errorMessage: failureMessage,
+        verdict,
+        verdictReason,
       });
       await task.update({ status: 'failed' });
       await writeLog(run.id, run.projectId, null, 'error', `Run failed: ${failureMessage}`);
@@ -277,13 +306,13 @@ export class AgentPipelineService {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message });
+      await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message, verdict, verdictReason });
       await task.update({ status: 'failed' });
       await writeLog(run.id, run.projectId, null, 'error', `Final action failed: ${message}`);
       return run;
     }
 
-    await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null });
+    await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null, verdict, verdictReason });
     const finalTaskStatus: AgentTaskStatus = this.taskStatusAfter(run.pipelineSnapshot.finalAction);
     await task.update({ status: finalTaskStatus });
     await writeLog(run.id, run.projectId, null, 'info', `Run succeeded, task moved to "${finalTaskStatus}"`);
@@ -295,7 +324,11 @@ export class AgentPipelineService {
   static async runTask(
     taskId: string,
     trigger: AgentRunTrigger = 'manual',
-    options: { triggerCommentId?: string | null; executorOverride?: AgentRunExecutorOverride | null } = {},
+    options: {
+      triggerCommentId?: string | null;
+      executorOverride?: AgentRunExecutorOverride | null;
+      pipelineSpecId?: string | null;
+    } = {},
   ): Promise<AgentRun> {
     const run = await this.createRun(taskId, trigger, options);
     try {
@@ -318,10 +351,25 @@ export class AgentPipelineService {
     return run;
   }
 
-  /** Starts the matching pipeline for a newly written human message when that event is enabled. */
+  /**
+   * Starts the matching pipeline for a newly written human message when that event is enabled.
+   *
+   * **У задачи один хозяин.** While a workflow owns the task (`AgentTask.currentWorkflowRunId`,
+   * maintained by `lib/workflow/runStore.ts`), this stays out of the way: one comment would
+   * otherwise produce two runs — this one, on whatever spec the task's tags resolve to, and the
+   * graph's own, on the spec the graph named — and the two would fight over the same task. The
+   * behaviour outside a flow is unchanged, which is what `spec.triggers.humanComment` still means.
+   */
   static async runForHumanComment(taskId: string, commentId: string): Promise<AgentRun | null> {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new Error(`AgentTask ${taskId} not found`);
+    if (task.currentWorkflowRunId) {
+      console.info(
+        `[app-agentiz] task ${task.id} is driven by workflow run ${task.currentWorkflowRunId};`
+        + ' humanComment run skipped in favour of the flow',
+      );
+      return null;
+    }
     const spec = await resolveSpecForTask(task);
     if (spec.spec.triggers?.humanComment !== true) return null;
     return this.runTask(taskId, 'human_comment', { triggerCommentId: commentId });

@@ -152,6 +152,33 @@ export class AgentTask extends Model<InferAttributes<AgentTask>, InferCreationAt
   @Column({ type: DataType.DATE, allowNull: true })
   declare lastSyncedAt: Date | null;
 
+  /**
+   * Where the workflow says the task stands, in the words of whoever drew the graph — «ждём
+   * тестировщика», «на доработке», «в релизе». Free text on purpose: `status` above is the
+   * pipeline's ENUM and belongs to the pipeline, while this is the customer's language and must
+   * be able to say something the pipeline has no state for.
+   *
+   * Written by the `agentiz.task.status` node and read by the task card in the panel, the mobile
+   * `GET /tasks/:id` and MCP. Deliberately **not** in `WORKFLOW_WATCHED_FIELDS`: a flow that wrote
+   * its own status would otherwise wake its own `task.updated` trigger and feed itself.
+   */
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare workflowStatus: string | null;
+
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare workflowStatusAt: Date | null;
+
+  /**
+   * The workflow run that currently owns this task, or NULL when none does.
+   *
+   * Maintained by the run store (`lib/workflow/runStore.ts`), the one place every workflow-run
+   * transition passes through, so it cannot drift from the engine's own state. It is what makes
+   * "у задачи один хозяин" enforceable: while a flow owns the task, `runForHumanComment` must not
+   * start a second, spec-resolved run alongside it (see AgentPipelineService).
+   */
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare currentWorkflowRunId: string | null;
+
   @Column({ type: DataType.DATE, defaultValue: DataType.NOW })
   declare createdAt: Date;
 

@@ -98,6 +98,35 @@ interface TaskDetails {
   manualExecutorOptions: Array<{ workerId: string; executorKey: string; title: string; workerName: string; harnessKey?: string | null }>;
   /** Everything a manual launch may choose, built by lib/runOptions.ts. */
   runOptions?: RunOptions;
+  /** The workflow card: where the flow says the task stands, and what waits on a person. */
+  workflow?: TaskWorkflow;
+}
+
+/**
+ * What a workflow has to say about this task.
+ *
+ * `status` is free text written by an `agentiz.task.status` node, deliberately not the task's own
+ * ENUM: that one belongs to the pipeline and moves on every run, while this is the sentence
+ * somebody wrote for a person to read («ждём тестировщика»). `rounds` is the number of flow runs
+ * this task has had — the same number the trigger's `maxRounds` compares against, which is what
+ * makes "почему третий раз одно и то же" answerable here rather than in the engine.
+ */
+interface TaskWorkflow {
+  status: string | null;
+  statusAt?: string | null;
+  currentRunId: string | null;
+  rounds: number;
+  runs: Array<{ id: string; specId: string; status: string; currentNodeId?: string | null; waitingReason?: string | null; startedAt?: string; finishedAt?: string | null; error?: string | null }>;
+  approvals: Array<{
+    id: string;
+    status: string;
+    title: string;
+    message?: string | null;
+    links?: Array<{ label: string; url: string }>;
+    decisionComment?: string | null;
+    decidedAt?: string | null;
+    createdAt?: string;
+  }>;
 }
 
 /** What runs when the dialog is left alone, and the three things it may change about that. */
@@ -358,6 +387,33 @@ const AgentizTasks: React.FC = () => {
       }
     },
     [],
+  );
+
+  /**
+   * The human gate, from the panel.
+   *
+   * The rejection text is asked for and required, because that text is what the agent receives as
+   * its next instruction — the server refuses a rejection without it, and a dialog that let a
+   * person send an empty one would only turn that into an error message.
+   */
+  const decideApproval = useCallback(
+    async (approvalId: string, decision: "approved" | "rejected") => {
+      let comment: string | null = null;
+      if (decision === "rejected") {
+        comment = window.prompt("Что не так? Этот текст получит агент как задание на доработку:", "");
+        if (comment === null) return;
+        if (!comment.trim()) {
+          setError("Причина отказа обязательна — этот текст получит агент");
+          return;
+        }
+      }
+      const result = await post(
+        { _method: "decideApproval", approvalId, decision, comment },
+        decision === "approved" ? "Работа принята" : "Отправлено на доработку",
+      );
+      if (result && selectedId) await loadDetails(selectedId);
+    },
+    [post, selectedId, loadDetails],
   );
 
   const patchTask = useCallback(
@@ -1168,6 +1224,70 @@ const AgentizTasks: React.FC = () => {
                   ))}
                 </div>
               </div>
+
+              {details.workflow && (details.workflow.status || details.workflow.rounds > 0) && (
+                <div className="rounded border p-3" style={{ backgroundColor: "#f8fafc" }}>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold">Воркфлоу</h3>
+                    <span className="text-xs text-muted-foreground">
+                      {details.workflow.rounds === 1 ? "1 круг" : `${details.workflow.rounds} круга(ов)`}
+                      {details.workflow.currentRunId ? " · идёт сейчас" : " · сейчас не идёт"}
+                    </span>
+                  </div>
+                  {details.workflow.status && (
+                    <p className="mb-2 text-sm font-medium">{details.workflow.status}</p>
+                  )}
+                  {details.workflow.approvals
+                    .filter((approval) => approval.status === "pending")
+                    .map((approval) => (
+                      <div key={approval.id} className="mb-2 rounded border p-2" style={{ backgroundColor: "#ffffff" }}>
+                        <div className="text-sm font-medium">{approval.title}</div>
+                        {approval.message && (
+                          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{approval.message}</p>
+                        )}
+                        {(approval.links ?? []).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                            {(approval.links ?? []).map((link) => (
+                              <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="underline">
+                                {link.label}
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            onClick={() => decideApproval(approval.id, "approved")}
+                            disabled={busy}
+                            className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                          >
+                            Принять
+                          </button>
+                          <button
+                            onClick={() => decideApproval(approval.id, "rejected")}
+                            disabled={busy}
+                            className="rounded border px-2 py-1 text-xs font-medium disabled:opacity-50"
+                            style={{ color: "#b91c1c" }}
+                          >
+                            Отклонить…
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  {/* Decided ones stay visible: "кто и почему вернул задачу" is the first question
+                      asked when the same round happens twice. */}
+                  {details.workflow.approvals
+                    .filter((approval) => approval.status !== "pending")
+                    .slice(0, 3)
+                    .map((approval) => (
+                      <div key={approval.id} className="text-xs text-muted-foreground">
+                        {approval.status === "approved" ? "✅ принято" : approval.status === "rejected" ? "↩️ отклонено" : `· ${approval.status}`}
+                        {" — "}
+                        {approval.title}
+                        {approval.decisionComment ? `: ${approval.decisionComment}` : ""}
+                      </div>
+                    ))}
+                </div>
+              )}
 
               <div>
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">

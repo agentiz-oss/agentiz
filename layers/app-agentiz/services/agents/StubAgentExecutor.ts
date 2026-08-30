@@ -2,6 +2,22 @@ import { AgentExecutor } from './AgentExecutor';
 import type { AgentStageContext, AgentStageResult } from './AgentExecutor';
 
 /**
+ * A stub-only convention: since nothing calls a model here, a stage asking for a verdict
+ * (`stage.verdict`) has no opinion to report on its own. A task description may carry
+ * `[[stub-verdict:fail:<reason>]]` (or `[[stub-verdict:pass]]`, the default with none present) so
+ * a local run or a test can drive both outcomes of `.ai-notes/machine-verdict-plan.md` without a
+ * real harness. Not a format any real agent is asked to write — see `lib/runVerdict.ts` for that.
+ */
+const STUB_VERDICT_DIRECTIVE_RE = /\[\[stub-verdict:(pass|fail)(?::([^\]]*))?\]\]/i;
+
+export function stubVerdictDirective(description: string | null): { verdict: 'pass' | 'fail'; reason: string | null } {
+  const match = description ? STUB_VERDICT_DIRECTIVE_RE.exec(description) : null;
+  if (!match) return { verdict: 'pass', reason: null };
+  const verdict = match[1].toLowerCase() as 'pass' | 'fail';
+  return { verdict, reason: match[2]?.trim() || (verdict === 'fail' ? 'stub executor was told to fail' : null) };
+}
+
+/**
  * Deterministic placeholder executor: it performs no model call, it only records what the stage
  * WOULD have been asked to do and produces a report file. It exists so the whole pipeline —
  * sync, stage sequencing, logging, commit, tracker response — can be exercised end to end before
@@ -62,10 +78,22 @@ export class StubAgentExecutor extends AgentExecutor {
 
     const reportPath = `.agentiz/${task.externalId}/stage-${stage.order}-${stage.role}.md`;
     await context.log('debug', `writing report file ${reportPath} (${report.length} chars)`);
+
+    // See stubVerdictDirective's doc comment: only stages that asked for a verdict get a marker,
+    // same rule a real worker follows (VERDICT_PROMPT_INSTRUCTION only reaches those stages' prompt).
+    let verdictLine = '';
+    if (stage.verdict) {
+      const directive = stubVerdictDirective(task.description ?? null);
+      verdictLine = directive.verdict === 'fail'
+        ? `\n\nAGENTIZ_VERDICT: fail — ${directive.reason}`
+        : `\n\nAGENTIZ_VERDICT: pass`;
+      await context.log('debug', `stub verdict for stage ${stage.order}: ${directive.verdict}`);
+    }
+
     await context.log('info', `stub executor finished stage ${stage.order} (${stage.role})`);
 
     return {
-      summary: `[${stage.role}] executed by stub agent "${role.key}"`,
+      summary: `[${stage.role}] executed by stub agent "${role.key}"${verdictLine}`,
       output: {
         executor: this.kind,
         roleKey: role.key,
