@@ -10,7 +10,6 @@ import type { AgentWorkspaceProposalStatus } from '../types/agentiz';
   model: 'AgentWorkspaceProposal',
   title: 'Workspace Proposals',
   icon: 'rate_review',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: { visible: true, section: 'Agentiz' },
 })
 @Table({ tableName: 'agentiz_workspace_proposals', timestamps: true })

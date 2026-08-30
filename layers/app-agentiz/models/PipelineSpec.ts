@@ -19,7 +19,6 @@ import { assertWorkspaceOwnership } from '../lib/workspaceOwnership';
   model: 'PipelineSpec',
   title: 'Pipeline Specs',
   icon: 'schema',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

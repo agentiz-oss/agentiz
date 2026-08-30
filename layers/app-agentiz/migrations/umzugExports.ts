@@ -86,6 +86,10 @@ import {
   up as upWorkflowRuns,
   down as downWorkflowRuns,
 } from './umzug/1788000800000_workflow_runs';
+import {
+  up as upProjectMembers,
+  down as downProjectMembers,
+} from './umzug/1788000900000_project_members';
 
 export const umzugExports: Migration[] = [
   {
@@ -268,5 +272,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000800000,
     up: upWorkflowRuns,
     down: downWorkflowRuns,
+  },
+  {
+    name: 'project_members',
+    timestamp: 1788000900000,
+    up: upProjectMembers,
+    down: downProjectMembers,
   },
 ];

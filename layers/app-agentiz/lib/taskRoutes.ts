@@ -18,6 +18,11 @@ import {
 } from './taskAttachments';
 import { maskTaskSourceForUI, restoreMaskedTaskSourceSecrets } from './secrets';
 import { describeRunOverride, normalizeRunOverride } from './harnessCatalog';
+import { guardProject, requirePanelUser, panelActor, requestAccessCache } from './access/panelGuard';
+import { projectIdsForUser } from './access/projectAccess';
+import { PROJECT_TOKENS } from './access/tokens';
+import { AgentRun } from '../models/AgentRun';
+import { AgentTaskComment } from '../models/AgentTaskComment';
 import type { AgentRunExecutorOverride } from '../types/agentiz';
 
 /** Whoever is driving the admin panel — recorded as the author of manual changes. */
@@ -42,17 +47,25 @@ function isInlineSafe(mimeType: string | null): boolean {
 }
 
 /**
- * The attachment endpoints check the panel session themselves: the `adminizerMiddlewares`
- * dispatcher runs before Adminizer's auth policies, which for JSON endpoints means "no check at
- * all". That is the standing posture of every route in this file — tolerable for reads and
- * tracker writes, but an endpoint that writes files to the server's disk (and one that serves
- * them back) must not be open. Skipped when the panel itself runs with auth disabled.
+ * Every endpoint in this file checks the session and the project itself: the
+ * `adminizerMiddlewares` dispatcher runs **before** Adminizer's auth and permission policies, so
+ * without these calls a JSON route under `/dashboard` decides nothing at all. `requirePanelUser`
+ * is the authentication half, `guardProject` the authorisation half — both in
+ * `lib/access/panelGuard.ts`, so the panel and the mobile API cannot drift apart.
+ *
+ * A task, a comment, an attachment and a source are all reached through their project: the id the
+ * caller sent is resolved to a project first, and the right is checked on that. Which token an
+ * endpoint names is written out per endpoint rather than derived, so a new one has to choose.
  */
-function requirePanelUser(req: any, res: any): boolean {
-  if (req.adminizer?.config?.auth?.enable === false) return true;
-  if (req.session?.UserAP?.id || typeof req.user?.id === 'number') return true;
-  res.status(401).json({ message: 'Sign in to the admin panel first' });
-  return false;
+async function guardTask(req: any, res: any, taskId: string, token: string): Promise<AgentTask | null> {
+  const task = await AgentTask.findByPk(taskId);
+  // A task in a project the caller cannot see answers 404 through `guardProject`, which is the
+  // same answer a task that does not exist gets — the API never confirms an id.
+  if (!task) {
+    res.status(404).json({ message: 'Task not found' });
+    return null;
+  }
+  return (await guardProject(req, res, task.projectId, token)) ? task : null;
 }
 
 function str(value: unknown): string {
@@ -103,11 +116,11 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
     method: 'post',
     handler: async (req, res) => {
       try {
-        if (!requirePanelUser(req, res)) return undefined;
         const taskId = str(req.query?.taskId);
         const fileName = str(req.query?.fileName);
         if (!taskId) return res.status(400).json({ message: 'taskId query parameter is required' });
         if (!fileName) return res.status(400).json({ message: 'fileName query parameter is required' });
+        if (!await guardTask(req, res, taskId, PROJECT_TOKENS.taskWrite)) return undefined;
         const task = await AgentTask.findByPk(taskId);
         if (!task) return res.status(404).json({ message: 'Task not found' });
 
@@ -144,6 +157,7 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
     handler: async (req, res) => {
       try {
         const method = str(req.query._method);
+        if (!requirePanelUser(req, res)) return undefined;
 
         if (method === 'getFilters') {
           return res.json({ data: await AgentTaskService.filterOptions() });
@@ -151,8 +165,16 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
 
         if (method === 'getTasks') {
           const assigneeRaw = req.query.assigneeId;
+          const requested = str(req.query.projectId);
+          if (requested && !await guardProject(req, res, requested, PROJECT_TOKENS.read)) return undefined;
           const result = await AgentTaskService.list({
-            projectId: str(req.query.projectId) || undefined,
+            projectId: requested || undefined,
+            // No project asked for means "everything I can see", not "everything": the panel's
+            // own generic CRUD is filtered by the access graph, but this endpoint reads Sequelize
+            // directly and the graph never sees it.
+            projectIds: requested
+              ? undefined
+              : await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req)),
             status: str(req.query.status) || undefined,
             priority: str(req.query.priority) || undefined,
             sourceType: str(req.query.sourceType) || undefined,
@@ -173,6 +195,7 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'getTask') {
           const taskId = str(req.query.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
+          if (!await guardTask(req, res, taskId, PROJECT_TOKENS.read)) return undefined;
           return res.json({ data: await AgentTaskService.details(taskId) });
         }
 
@@ -181,11 +204,11 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         }
 
         if (method === 'downloadAttachment') {
-          if (!requirePanelUser(req, res)) return undefined;
           const attachmentId = str(req.query.attachmentId);
           if (!attachmentId) return res.status(400).json({ message: 'attachmentId is required' });
           const attachment = await AgentTaskAttachment.findByPk(attachmentId);
           if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+          if (!await guardTask(req, res, attachment.taskId, PROJECT_TOKENS.read)) return undefined;
           const diskPath = attachmentDiskPath(attachment);
           if (!fs.existsSync(diskPath)) return res.status(404).json({ message: 'Attachment file is missing on disk' });
           // `inline=1` is how the UI shows thumbnails; anything not image/pdf still downloads.
@@ -203,8 +226,12 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
 
         if (method === 'getSources') {
           const projectId = str(req.query.projectId);
+          if (projectId && !await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
+          const visible = projectId
+            ? [projectId]
+            : await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req));
           const sources = await AgentTaskSource.findAll({
-            where: projectId ? { projectId } : {},
+            where: { projectId: visible },
             order: [['createdAt', 'ASC']],
           });
           return res.json({
@@ -235,8 +262,10 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
       try {
         const method = str(req.body?._method);
         const actor = actorOf(req);
+        if (!requirePanelUser(req, res)) return undefined;
 
         if (method === 'createTask') {
+          if (!await guardProject(req, res, str(req.body?.projectId), PROJECT_TOKENS.taskWrite)) return undefined;
           return res.json({
             data: await AgentTaskService.create(
               {
@@ -254,6 +283,7 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'updateTask') {
           const taskId = str(req.body?.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
+          if (!await guardTask(req, res, taskId, PROJECT_TOKENS.taskWrite)) return undefined;
           const patch: Record<string, unknown> = {};
           for (const key of ['status', 'priority', 'title', 'description'] as const) {
             if (req.body?.[key] !== undefined) patch[key] = str(req.body[key]);
@@ -272,6 +302,7 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'addComment') {
           const taskId = str(req.body?.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
+          if (!await guardTask(req, res, taskId, PROJECT_TOKENS.taskWrite)) return undefined;
           return res.json({
             data: await AgentTaskService.addComment(taskId, {
               // The UI can only ever post as a human; agent comments are written by runs.
@@ -284,11 +315,11 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         }
 
         if (method === 'deleteAttachment') {
-          if (!requirePanelUser(req, res)) return undefined;
           const attachmentId = str(req.body?.attachmentId);
           if (!attachmentId) return res.status(400).json({ message: 'attachmentId is required' });
           const attachment = await AgentTaskAttachment.findByPk(attachmentId);
           if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+          if (!await guardTask(req, res, attachment.taskId, PROJECT_TOKENS.taskWrite)) return undefined;
           const taskId = attachment.taskId;
           const fileName = attachment.fileName;
           await deleteAttachment(attachment);
@@ -305,18 +336,23 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'publishComment') {
           const commentId = str(req.body?.commentId);
           if (!commentId) return res.status(400).json({ message: 'commentId is required' });
+          const comment = await AgentTaskComment.findByPk(commentId);
+          if (!comment) return res.status(404).json({ message: 'Comment not found' });
+          if (!await guardTask(req, res, comment.taskId, PROJECT_TOKENS.taskWrite)) return undefined;
           return res.json({ data: await AgentTaskService.pushCommentUpstream(commentId) });
         }
 
         if (method === 'pullComments') {
           const taskId = str(req.body?.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
+          if (!await guardTask(req, res, taskId, PROJECT_TOKENS.taskWrite)) return undefined;
           return res.json({ data: await AgentTaskService.pullComments(taskId) });
         }
 
         if (method === 'runTask') {
           const taskId = str(req.body?.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
+          if (!await guardTask(req, res, taskId, PROJECT_TOKENS.runOperate)) return undefined;
           let override: AgentRunExecutorOverride | null;
           try {
             override = normalizeRunOverride(req.body);
@@ -338,6 +374,9 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'cancelRun') {
           const runId = str(req.body?.runId);
           if (!runId) return res.status(400).json({ message: 'runId is required' });
+          const run = await AgentRun.findByPk(runId);
+          if (!run) return res.status(404).json({ message: 'Run not found' });
+          if (!await guardProject(req, res, run.projectId, PROJECT_TOKENS.runOperate)) return undefined;
           return res.json({ data: (await AgentPipelineService.cancelRun(runId)).toJSON() });
         }
 
@@ -350,6 +389,7 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
           if (!projectId || !type || !name) {
             return res.status(400).json({ message: 'projectId, type and name are required' });
           }
+          if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           if (!(await AgentProject.findByPk(projectId))) {
             return res.status(404).json({ message: 'Project not found' });
           }
@@ -375,6 +415,7 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
           const sourceId = str(req.body?.sourceId);
           const source = await AgentTaskSource.findByPk(sourceId);
           if (!source) return res.status(404).json({ message: 'Source not found' });
+          if (!await guardProject(req, res, source.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           const { config, secrets } = splitByAdapterFields(source.type, req.body?.values ?? {});
           await source.update({
             name: str(req.body?.name) || source.name,
@@ -392,25 +433,30 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
           const sourceId = str(req.body?.sourceId);
           const source = await AgentTaskSource.findByPk(sourceId);
           if (!source) return res.status(404).json({ message: 'Source not found' });
+          if (!await guardProject(req, res, source.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           await source.destroy();
           return res.json({ data: { deleted: true } });
         }
 
         if (method === 'testSource') {
           const sourceId = str(req.body?.sourceId);
-          if (!sourceId) return res.status(400).json({ message: 'sourceId is required' });
+          const source = sourceId ? await AgentTaskSource.findByPk(sourceId) : null;
+          if (!source) return res.status(404).json({ message: 'Source not found' });
+          if (!await guardProject(req, res, source.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           return res.json({ data: { ok: await TaskSourceSyncService.testSource(sourceId) } });
         }
 
         if (method === 'syncSource') {
           const sourceId = str(req.body?.sourceId);
-          if (!sourceId) return res.status(400).json({ message: 'sourceId is required' });
+          const source = sourceId ? await AgentTaskSource.findByPk(sourceId) : null;
+          if (!source) return res.status(404).json({ message: 'Source not found' });
+          if (!await guardProject(req, res, source.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           return res.json({ data: await TaskSourceSyncService.syncSource(sourceId) });
         }
 
         if (method === 'syncProjectSources') {
           const projectId = str(req.body?.projectId);
-          if (!projectId) return res.status(400).json({ message: 'projectId is required' });
+          if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           return res.json({ data: await TaskSourceSyncService.syncProject(projectId) });
         }
 

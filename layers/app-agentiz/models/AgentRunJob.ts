@@ -11,7 +11,6 @@ import type { ActiveHoursSchedule } from '../lib/activeHours';
   model: 'AgentRunJob',
   title: 'Agent Run Jobs',
   icon: 'work_history',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

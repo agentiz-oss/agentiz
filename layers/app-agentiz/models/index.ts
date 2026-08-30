@@ -1,4 +1,5 @@
 export { AgentProject } from './AgentProject';
+export { AgentProjectMember } from './AgentProjectMember';
 export { AgentRole } from './AgentRole';
 export { PipelineSpec } from './PipelineSpec';
 export { AgentTask } from './AgentTask';

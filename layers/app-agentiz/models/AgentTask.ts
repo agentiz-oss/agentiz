@@ -30,7 +30,6 @@ const WORKFLOW_WATCHED_FIELDS = ['title', 'description', 'tags'];
   model: 'AgentTask',
   title: 'Agentiz Tasks',
   icon: 'task_alt',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

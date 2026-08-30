@@ -6,6 +6,9 @@ import { AgentRepository } from '../models/AgentRepository';
 import { getGitConnectionAuthority, listGitConnectionProviders, requireGitConnectionAuthority } from './git';
 import { maskConnectionForUI } from './secrets';
 import type { GitProviderType } from '../types/agentiz';
+import { guardGlobal, guardProject, panelActor, requirePanelUser, requestAccessCache } from './access/panelGuard';
+import { projectIdsForUser } from './access/projectAccess';
+import { GLOBAL_TOKENS, PROJECT_TOKENS } from './access/tokens';
 
 /**
  * The shared repositories screen: connections, their mirrored repositories and the links to
@@ -14,7 +17,17 @@ import type { GitProviderType } from '../types/agentiz';
  * It lives in the core rather than in a provider layer because all three are core models now. What
  * stays in a layer is only its OAuth application page, which is genuinely platform-shaped
  * (GitLab has an application id and PKCE, GitHub a client id and none).
+ *
+ * Two different boundaries meet on this screen and they are not the same one. Connections and
+ * mirrored repositories belong to nobody's project — they are an installation-wide asset behind
+ * the global `agentiz-connections-manage` token. The *link* between a repository and a project is
+ * a project fact, so it is `agentiz-project-configure` in that project.
  */
+
+/** Installation-wide: connections and their mirrors are not any project's property. */
+function mayManageConnections(req: any, res: any): boolean {
+  return guardGlobal(req, res, GLOBAL_TOKENS.connectionsManage, 'Недостаточно прав, чтобы управлять подключениями');
+}
 const ROUTE = '/agentiz-repos';
 
 function str(value: unknown): string {
@@ -32,8 +45,10 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
     method: 'get',
     handler: async (req, res) => {
       const method = str(req.query._method);
+      if (!requirePanelUser(req, res)) return undefined;
 
       if (method === 'getConnections') {
+        if (!mayManageConnections(req, res)) return undefined;
         const connections = await AgentGitConnection.findAll({ order: [['createdAt', 'DESC']] });
         const counts = new Map<string, number>();
         for (const repository of await AgentRepository.findAll({ attributes: ['connectionId'] })) {
@@ -52,6 +67,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
       }
 
       if (method === 'getRepositories') {
+        if (!mayManageConnections(req, res)) return undefined;
         const connectionId = str(req.query.connectionId);
         const search = str(req.query.search).toLowerCase();
         const repositories = await AgentRepository.findAll({
@@ -67,8 +83,12 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
 
       if (method === 'getProjectRepositories') {
         const projectId = str(req.query.projectId);
+        if (projectId && !await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
+        const visible = projectId
+          ? [projectId]
+          : await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req));
         const links = await AgentProjectRepository.findAll({
-          where: projectId ? { projectId } : {},
+          where: { projectId: visible },
           order: [['createdAt', 'ASC']],
           include: [
             { model: AgentRepository, as: 'repository' },
@@ -85,7 +105,10 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
       }
 
       if (method === 'getProjects') {
-        const projects = await AgentProject.findAll({ order: [['name', 'ASC']] });
+        const projects = await AgentProject.findAll({
+          where: { id: await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req)) },
+          order: [['name', 'ASC']],
+        });
         return res.json({
           data: projects.map((project) => ({ id: project.id, name: project.name, slug: project.slug, isActive: project.isActive })),
         });
@@ -103,8 +126,10 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
     handler: async (req, res) => {
       try {
         const method = str(req.body?._method);
+        if (!requirePanelUser(req, res)) return undefined;
 
         if (method === 'syncConnectionRepositories') {
+          if (!mayManageConnections(req, res)) return undefined;
           const connectionId = str(req.body?.connectionId);
           const connections = connectionId
             ? [await AgentGitConnection.findByPk(connectionId)]
@@ -119,6 +144,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         }
 
         if (method === 'disconnectConnection') {
+          if (!mayManageConnections(req, res)) return undefined;
           const connection = await AgentGitConnection.findByPk(str(req.body?.connectionId));
           if (!connection) return res.status(404).json({ message: 'Connection not found' });
           const authority = getGitConnectionAuthority(connection.provider);
@@ -131,6 +157,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         }
 
         if (method === 'deleteConnection') {
+          if (!mayManageConnections(req, res)) return undefined;
           const connection = await AgentGitConnection.findByPk(str(req.body?.connectionId));
           if (!connection) return res.status(404).json({ message: 'Connection not found' });
           await connection.destroy();
@@ -143,6 +170,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
           if (!projectId || !repositoryId) {
             return res.status(400).json({ message: 'projectId and repositoryId are required' });
           }
+          if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           const [project, repository] = await Promise.all([
             AgentProject.findByPk(projectId),
             AgentRepository.findByPk(repositoryId),
@@ -171,6 +199,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'updateProjectRepository') {
           const link = await AgentProjectRepository.findByPk(str(req.body?.linkId));
           if (!link) return res.status(404).json({ message: 'Link not found' });
+          if (!await guardProject(req, res, link.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           await link.update({
             role: req.body?.role ?? link.role,
             isPrimary: req.body?.isPrimary !== undefined ? Boolean(req.body.isPrimary) : link.isPrimary,
@@ -185,6 +214,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'unlinkRepository') {
           const link = await AgentProjectRepository.findByPk(str(req.body?.linkId));
           if (!link) return res.status(404).json({ message: 'Link not found' });
+          if (!await guardProject(req, res, link.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           await link.destroy();
           return res.json({ data: { ok: true } });
         }

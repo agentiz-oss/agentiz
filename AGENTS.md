@@ -55,11 +55,36 @@
   *local* interface has to restate one of these signatures (as `mobileAssistantWebviewRouter.ts`
   does), it must name the Adminizer version it was copied from: the compiler checks the call
   against the copy, so such an interface survives an upgrade in silence.
-  What this rule does **not** yet cover is that the panel routes decide nothing at all —
-  `adminizerMiddlewares` mounts before Adminizer's policies, and `requirePanelUser`
-  (`taskRoutes.ts`) is authentication only, so every logged-in panel user reaches every project.
-  Closing that is the members-and-roles work, and the token catalogue has to be registered before
-  the first guard is placed — an unregistered token is denied to everyone but the administrator.
+  What this rule does **not** cover is the *project* half of a decision, because Adminizer cannot
+  answer it: both pairs read `user.groups` — **global** groups — and a project role deliberately
+  never lands there. See the bullet below.
+- Access to anything belonging to a project is three separate mechanics and they must not be
+  confused (long form: [`docs/guides/project-access.md`](docs/guides/project-access.md)). **Which
+  rows** are visible is one `accessGraph` declaration in `config/adminizer.ts` — root `AgentProject`,
+  membership `AgentProjectMember` (project × person × role group), 15 models reaching it through
+  `parent` *association aliases*; it lives entirely inside adminizer's `DataAccessor`, so it covers
+  the panel's generic CRUD, its pickers and the assistant's skills, and covers our own routes, the
+  mobile API, MCP and the Worker API **not at all**. **Which actions** are allowed is ours and is
+  answered only by `lib/access/projectAccess.ts` (`can` / `assertCan` / `projectIdsForUser` /
+  `recipientsForProject` / `tokensInProject`); `checkPermission` stays for global tokens and cannot
+  answer a project question. **Whether the section opens at all** is the ordinary CRUD-token gate in
+  the person's own groups — the upper bound the graph narrows and never widens (symptom of missing
+  it: the section renders *without fields*; an empty list with live fields is missing membership
+  instead). Panel routes therefore guard themselves — `requirePanelUser` + `guardProject` from
+  `lib/access/panelGuard.ts` in every handler, list endpoints filtered by `projectIdsForUser` —
+  because `adminizerMiddlewares` mount before Adminizer's policies. Four things break silently here:
+  a token written in any but **lower case** passes the graph (case-insensitive) and fails the global
+  check (case-sensitive), giving "видит список, но не входит в раздел" with nothing logged; the graph
+  never reads `ownerId`, so every owner needs a membership row and `@AfterCreate` on `AgentProject`
+  writes it **in the creating transaction**; a model named in `include` but not registered by
+  `generateAdminizerModelConfig` is left outside with only a warning; and `grantsToken` in
+  `projectAccess.ts` is a hand copy of adminizer's (its `shared.ts` is outside the package `exports`)
+  whose divergence produces neither an error nor a failing test. The catalogue of tokens and the
+  role ladder — each step containing the previous one whole — live in `lib/access/tokens.ts` and
+  nowhere else (same discipline as `activityTypes.ts` / `hookEnv.ts`); the role groups and owner
+  rows are sown idempotently from `mount()` rather than the migration, because migrations do not run
+  in development. `AgentProjectMember` itself stays **outside** the graph, closed by the global
+  `agentiz-project-members` token: inside it, the row set would decide its own visibility.
 - A `PipelineSpec` is an entity of **its** project and never moves: `projectId` is refused on update
   (`@BeforeSave` on the model — the only place all four write paths pass through: MCP `agentiz.manage`,
   Adminizer CRUD, the panel editor, the assistant's `create_model_record`). Its stages already resolve

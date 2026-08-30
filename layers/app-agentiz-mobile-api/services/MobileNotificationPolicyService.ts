@@ -5,21 +5,46 @@ import { NotificationPolicyService } from '../../app-agentiz/services/Notificati
 import { activityTypes, builtinActivityDefaults } from '../../app-agentiz/lib/notifications/activityTypes';
 import { storedNotifyPolicy, type ActivityPolicyScope, type NotifyPolicyDocument } from '../../app-agentiz/lib/notifications/policySettings';
 import { MobileAuthError } from './MobileAuthService';
+import { canInProject, visibleProjectIds } from '../lib/mobileScope';
+import { PROJECT_TOKENS } from '../../app-agentiz/lib/access/tokens';
 
 /**
  * The notification policy as one phone owner sees it.
  *
  * The stored document is installation-wide (one settings slot), but a mobile caller must neither
- * see nor overwrite other owners' project entries. GET filters the document down to the caller's
- * projects and their pipelines; PUT merges: for each map the caller **sends** it replaces their own
- * entries and carries foreign ones through untouched, a map they omit is left as stored, and an id
- * they do not own is refused.
+ * see nor overwrite other people's project entries. GET filters the document down to the projects
+ * the caller takes part in and their pipelines; PUT merges: for each map the caller **sends** it
+ * replaces their own entries and carries foreign ones through untouched, a map they omit is left as
+ * stored, and an id they have no part in is refused.
  * Last-write-wins between two simultaneous editors — accepted for v1.
+ *
+ * Scope is membership, not ownership — the same rule as everywhere else in this layer — and the
+ * gate is `agentiz-project-configure`: deciding what a project's runs wake people up about is a
+ * project setting, not something every reader may change. That matters beyond this screen, because
+ * the inbox's per-row "не присылать такое" gesture writes through here; a member who could not
+ * reach it would see the gesture fail with no explanation.
+ *
+ * **Known hole, left as it was on purpose.** The `defaults` scope is the tail of every resolution
+ * in the whole installation, and any authenticated phone can still overwrite it — the panel now
+ * asks for `agentiz-notifications-manage` there, this endpoint asks for nothing. It is not closed
+ * here because the app's own settings screen posts the whole document back including `defaults`
+ * (NotificationsScreen.kt), so refusing it would break that screen for everybody, and a mobile
+ * caller is never an administrator — only a user id reaches this layer. Closing it needs the client
+ * to stop sending `defaults` (or to send it only when it changed) and ships together with that.
  */
 export class MobileNotificationPolicyService {
-  private static async ownedProjectIds(ownerId: number | string): Promise<string[]> {
-    const projects = await AgentProject.findAll({ where: { ownerId: ownerId as any }, attributes: ['id'] });
-    return projects.map((project) => project.id);
+  /** Projects whose notification rules this caller may see. */
+  private static async visibleProjects(userId: number | string): Promise<string[]> {
+    return visibleProjectIds(userId);
+  }
+
+  /** …and the narrower set they may change. */
+  private static async configurableProjects(userId: number | string): Promise<string[]> {
+    const visible = await this.visibleProjects(userId);
+    const decisions = await Promise.all(
+      visible.map((projectId) => canInProject(projectId, userId, PROJECT_TOKENS.projectConfigure)),
+    );
+    return visible.filter((_id, index) => decisions[index]);
   }
 
   private static async ownedPipelineIds(projectIds: string[]): Promise<string[]> {
@@ -30,7 +55,7 @@ export class MobileNotificationPolicyService {
 
   static async describe(ownerId: number | string) {
     const summary = NotificationPolicyService.describe();
-    const projectIds = await this.ownedProjectIds(ownerId);
+    const projectIds = await this.visibleProjects(ownerId);
     const pipelineIds = new Set(await this.ownedPipelineIds(projectIds));
     const owned = new Set(projectIds);
     return {
@@ -48,7 +73,7 @@ export class MobileNotificationPolicyService {
     ownerId: number | string,
     input: { defaults?: ActivityPolicyScope; projects?: Record<string, ActivityPolicyScope>; pipelines?: Record<string, ActivityPolicyScope> },
   ) {
-    const projectIds = await this.ownedProjectIds(ownerId);
+    const projectIds = await this.configurableProjects(ownerId);
     const owned = new Set(projectIds);
     const ownedPipelines = new Set(await this.ownedPipelineIds(projectIds));
 

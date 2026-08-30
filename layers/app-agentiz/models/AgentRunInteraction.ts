@@ -28,7 +28,6 @@ import type {
   model: 'AgentRunInteraction',
   title: 'Agent Run Interactions',
   icon: 'question_answer',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: { visible: false },
 })
 @Table({ tableName: 'agentiz_run_interactions', timestamps: true })

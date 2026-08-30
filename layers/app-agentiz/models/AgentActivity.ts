@@ -21,7 +21,6 @@ import type { ActivityKind } from '../lib/notifications/activityTypes';
   model: 'AgentActivity',
   title: 'Activities',
   icon: 'notifications',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: { visible: false, section: 'Agentiz' },
 })
 @Table({ tableName: 'agentiz_activities', timestamps: true })

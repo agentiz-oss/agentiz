@@ -21,7 +21,6 @@ import type { GitProviderType, ProjectRepositoryConfig, ProjectRepositoryRole } 
   model: 'AgentProjectRepository',
   title: 'Project Repositories',
   icon: 'hub',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

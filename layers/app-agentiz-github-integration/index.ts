@@ -11,6 +11,8 @@ import { GithubIssueSyncService } from './services/GithubIssueSyncService';
 import { maskModelForUI, restoreMaskedSecrets } from './lib/secrets';
 import { DEFAULT_GITHUB_BASE_URL, DEFAULT_GITHUB_SCOPES } from './types/github';
 import { GitSyncService } from '../app-agentiz/services/GitSyncService';
+import { guardGlobal } from '../app-agentiz/lib/access/panelGuard';
+import { GLOBAL_TOKENS } from '../app-agentiz/lib/access/tokens';
 import {
   registerGitConnectionAuthority,
   unregisterGitConnectionAuthority,
@@ -126,6 +128,14 @@ export class AppAgentizGithubIntegration extends AbstractApp {
       handler: async (req, res, next) => {
         if (req.path.endsWith('/oauth/callback')) return next();
 
+        // This page is the OAuth application of one platform: a client id, a secret and the
+        // buttons that start an authorisation. It belongs to no project, so the boundary is the
+        // global `agentiz-connections-manage` — the same token the shared repositories screen
+        // asks for, since these two are halves of one thing. `adminizerMiddlewares` mount before
+        // Adminizer's policies, so without this line the page and its writes are open to anyone
+        // who can reach the URL.
+        if (!guardGlobal(req, res, GLOBAL_TOKENS.connectionsManage, 'Недостаточно прав, чтобы настраивать подключения GitHub')) return undefined;
+
         const method = req.query._method as string | undefined;
 
         if (method === 'getOAuthApps') {
@@ -152,6 +162,7 @@ export class AppAgentizGithubIntegration extends AbstractApp {
       method: 'post',
       handler: async (req, res) => {
         try {
+          if (!guardGlobal(req, res, GLOBAL_TOKENS.connectionsManage, 'Недостаточно прав, чтобы настраивать подключения GitHub')) return undefined;
           const method = req.body?._method as string | undefined;
 
           if (method === 'createOAuthApp') {

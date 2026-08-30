@@ -13,7 +13,6 @@ import { AgentProject } from './AgentProject';
   model: 'AgentRole',
   title: 'Agent Roles',
   icon: 'badge',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

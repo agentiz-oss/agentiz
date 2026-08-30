@@ -26,7 +26,6 @@ export interface AgentRunDiffStats {
   model: 'AgentRunDiff',
   title: 'Run Diffs',
   icon: 'difference',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

@@ -18,7 +18,6 @@ import type { AgentJobDeferReason, AgentRunStatus, AgentRunTrigger, AgentRunExec
   model: 'AgentRun',
   title: 'Agent Runs',
   icon: 'directions_run',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

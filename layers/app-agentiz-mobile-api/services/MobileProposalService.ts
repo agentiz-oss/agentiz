@@ -6,6 +6,8 @@ import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
 import { AgentWorkspaceProposalService, WorkspaceProposalError } from '../../app-agentiz/services/AgentWorkspaceProposalService';
 import { MobileAuthError } from './MobileAuthService';
+import { canInProject, visibleProjectIds } from '../lib/mobileScope';
+import { PROJECT_TOKENS } from '../../app-agentiz/lib/access/tokens';
 
 /**
  * Workspace proposals from the phone: the missing half of the review loop. The push says
@@ -18,9 +20,12 @@ import { MobileAuthError } from './MobileAuthService';
  * the 409 that service throws, passed to the client as-is so it can offer a refresh.
  */
 export class MobileProposalService {
+  /**
+   * Projects the caller may look at — owned plus every project they hold a membership row in
+   * (`lib/mobileScope.ts`). Empty means "nothing to look at", never "everything".
+   */
   private static async ownedProjectIds(ownerId: number | string): Promise<string[]> {
-    const projects = await AgentProject.findAll({ where: { ownerId: ownerId as any }, attributes: ['id'] });
-    return projects.map((project) => project.id);
+    return visibleProjectIds(ownerId);
   }
 
   private static row(
@@ -148,7 +153,9 @@ export class MobileProposalService {
     const proposal = await AgentWorkspaceProposal.findByPk(proposalId);
     if (!proposal) throw new MobileAuthError(404, 'Proposal not found');
     const project = await AgentProject.findByPk(proposal.projectId);
-    if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
+    // Deciding a diff is `diff-review`, not plain read: a customer who can see the project must
+    // not be able to approve or reject what an agent wrote.
+    if (!project || !(await canInProject(project.id, ownerId, PROJECT_TOKENS.diffReview))) {
       throw new MobileAuthError(404, 'Proposal not found');
     }
     return proposal;

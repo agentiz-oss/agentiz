@@ -6,23 +6,27 @@ import { AgentRunLog } from '../../app-agentiz/models/AgentRunLog';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { runUsage } from '../../app-agentiz/lib/runUsage';
+import { visibleProjectIds } from '../lib/mobileScope';
 
 /** A run is "in flight" while it is in one of these states — including the paused `waiting_input`. */
 const ACTIVE_RUN_STATUSES = ['pending', 'running', 'waiting_input'];
 
 /**
- * Runs across every project the caller owns — the app's counterpart to the dashboard's "Запуски"
+ * Runs across every project the caller takes part in — the app's counterpart to the dashboard's "Запуски"
  * board. `MobileTaskService` already serves a run *within* a task; this one answers the question
  * that has no task in hand yet: what is running right now, anywhere.
  *
- * Scope is the same ownership rule the rest of the layer applies: the project ids are resolved
- * first and every query is bounded by them, so a run of somebody else's project is never read, let
- * alone reported.
+ * Scope is the same membership rule the rest of the layer applies: the project ids are resolved
+ * first and every query is bounded by them, so a run of a project the caller has no part in is
+ * never read, let alone reported.
  */
 export class MobileRunService {
+  /**
+   * Projects the caller may look at — owned plus every project they hold a membership row in
+   * (`lib/mobileScope.ts`). Empty means "nothing to look at", never "everything".
+   */
   private static async ownedProjectIds(ownerId: number | string): Promise<string[]> {
-    const projects = await AgentProject.findAll({ where: { ownerId: ownerId as any }, attributes: ['id'] });
-    return projects.map((project) => project.id);
+    return visibleProjectIds(ownerId);
   }
 
   /**

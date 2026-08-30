@@ -46,8 +46,17 @@ session cookies.
 | POST   | `/assistant/webview-session` | Bearer JWT | Creates a one-use URL for the embedded Assistant WebView. |
 
 `login` accepts whatever identifier the UserAP model stores (`login`, `email`, or `username`).
-Project scope mirrors the admin panel's `userAccessRelation: 'owner'`: a user sees only the projects
-whose `ownerId` is theirs. A project with no owner set is visible to nobody through this API.
+Project scope is membership, resolved by the one place that decides it —
+`app-agentiz/lib/access/projectAccess.ts`, through `lib/mobileScope.ts`. A user sees the projects
+they own **and** the projects they hold an `AgentProjectMember` row in; a project with neither is
+invisible through this API, and a foreign id answers 404 rather than 403. Which token an endpoint
+asks for is the endpoint's own decision: reads take `agentiz-project-read`, starting or cancelling a
+run takes `agentiz-run-operate`, editing a task or its files `agentiz-task-write`, and approving a
+diff `agentiz-diff-review`.
+
+The caller is a user id, not a loaded panel session, so there is no administrator bypass here —
+mobile scope is ownership plus membership, which is a subset of what the same person sees in the
+panel and never a superset.
 
 ## Task attachments
 

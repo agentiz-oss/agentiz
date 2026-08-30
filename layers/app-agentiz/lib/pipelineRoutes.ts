@@ -2,6 +2,8 @@ import type { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
 import { AgentRole } from '../models/AgentRole';
 import { PipelineSpec } from '../models/PipelineSpec';
 import { assertValidSpec, PipelineSpecError } from '../services/PipelineSpecResolver';
+import { guardProject, requirePanelUser } from './access/panelGuard';
+import { PROJECT_TOKENS } from './access/tokens';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -11,6 +13,11 @@ function str(value: unknown): string {
  * ACP-agent assignment and pipeline-spec editing for one project: which role runs which stage, in
  * what workspace, and what runs before/after. Split out of the project overview so editing a
  * pipeline is its own screen instead of a block buried in the middle of a long page.
+ *
+ * Reading the configuration is `project-read`; changing any of it is `project-configure`, the
+ * token the Мейнтейнер step of the role ladder is the first to carry. `validateSpec` needs no
+ * project at all — it is a pure schema check on a document the caller already holds — so it asks
+ * only for a session.
  */
 export const pipelineRoutes: AdminizerRouteMiddleware[] = [
   {
@@ -18,10 +25,11 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
     method: 'get',
     handler: async (req, res) => {
       const method = str(req.query._method);
+      if (!requirePanelUser(req, res)) return undefined;
 
       if (method === 'getPipelineConfiguration') {
         const projectId = str(req.query.projectId);
-        if (!projectId) return res.status(400).json({ message: 'projectId is required' });
+        if (!await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
         const [roles, specs] = await Promise.all([
           AgentRole.findAll({ where: { projectId }, order: [['key', 'ASC']] }),
           PipelineSpec.findAll({ where: { projectId }, order: [['updatedAt', 'DESC']] }),
@@ -49,6 +57,7 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
     handler: async (req, res) => {
       try {
         const method = str(req.body?._method);
+        if (!requirePanelUser(req, res)) return undefined;
 
         if (method === 'updatePipelineSpec') {
           const specId = str(req.body?.specId);
@@ -56,6 +65,7 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
           if (!specId) return res.status(400).json({ message: 'specId is required' });
           const pipelineSpec = await PipelineSpec.findByPk(specId);
           if (!pipelineSpec) return res.status(404).json({ message: 'Pipeline Spec not found' });
+          if (!await guardProject(req, res, pipelineSpec.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           await pipelineSpec.update({ spec });
           return res.json({ data: pipelineSpec.toJSON() });
         }
@@ -66,6 +76,7 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
           if (!roleId) return res.status(400).json({ message: 'roleId is required' });
           const role = await AgentRole.findByPk(roleId);
           if (!role) return res.status(404).json({ message: 'Agent role not found' });
+          if (!await guardProject(req, res, role.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
           const presets: Record<string, string[]> = {
             codex: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.14'],
             claude: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.66.0'],

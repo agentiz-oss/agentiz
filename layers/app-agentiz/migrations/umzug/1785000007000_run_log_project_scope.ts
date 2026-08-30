@@ -2,10 +2,10 @@ import { DataTypes, QueryTypes } from 'sequelize';
 
 /**
  * `AgentRunLog` becomes visible in the admin dashboard (previously `navbar: { visible: false }`),
- * scoped like every other Agentiz model: `userAccessRelation: { field: 'project', via: 'owner' }`.
- * That relation needs a direct `project` association, so this adds a denormalized `projectId`
- * (the log only ever points at a run today, one join away from its project) and backfills it from
- * `agentiz_runs.projectId`.
+ * scoped to a project like every other Agentiz model. That scope needs a direct `project`
+ * association, so this adds a denormalized `projectId` (the log only ever points at a run today,
+ * one join away from its project) and backfills it from `agentiz_runs.projectId`. It is the edge
+ * the `agentiz` access graph now walks — see config/adminizer.ts.
  */
 type QI = {
   sequelize: {

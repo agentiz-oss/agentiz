@@ -8,6 +8,8 @@ import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentStageExecution } from '../models/AgentStageExecution';
 import { AgentTask } from '../models/AgentTask';
 import { ActivityService } from './ActivityService';
+import { can } from '../lib/access/projectAccess';
+import { PROJECT_TOKENS } from '../lib/access/tokens';
 import type { AgentRunInteractionAction } from '../types/agentiz';
 import type { AgentTaskStatus } from '../types/agentiz';
 
@@ -260,7 +262,8 @@ export class AgentRunInteractionService {
 
   static async listPending(actor: InteractionActor): Promise<AgentRunInteraction[]> {
     const projects = await AgentProject.findAll();
-    const allowed = projects.filter((project) => this.canAccessProject(project, actor)).map((project) => project.id);
+    const decisions = await Promise.all(projects.map((project) => this.canAccessProject(project, actor)));
+    const allowed = projects.filter((_project, index) => decisions[index]).map((project) => project.id);
     if (allowed.length === 0) return [];
     return AgentRunInteraction.findAll({
       where: { projectId: { [Op.in]: allowed }, status: 'pending' },
@@ -332,14 +335,29 @@ export class AgentRunInteractionService {
     await this.setTaskStatusConsideringActiveRuns(run.taskId, 'running');
   }
 
-  private static canAccessProject(project: AgentProject, actor: InteractionActor): boolean {
-    return Boolean(actor.isAdmin || project.ownerId === null || (actor.id !== null && project.ownerId === actor.id));
+  /**
+   * Answering an agent is `agentiz-run-operate` in the project the interaction belongs to — the
+   * same decision `projectAccess.can()` makes everywhere else, so the panel, the phone and this
+   * service cannot disagree about who may speak to a running agent.
+   *
+   * The one branch kept from the old rule is a project with no owner at all: it predates
+   * membership entirely and used to be readable by everyone, so closing it here would silently
+   * break every unowned project's parked run. `roleSeed` gives owners rows; an ownerless project
+   * has nobody to give one to.
+   */
+  private static async canAccessProject(project: AgentProject, actor: InteractionActor): Promise<boolean> {
+    if (actor.isAdmin || project.ownerId === null) return true;
+    return can(
+      { id: actor.id, isAdministrator: actor.isAdmin ?? false },
+      project.id,
+      PROJECT_TOKENS.runOperate,
+    );
   }
 
   private static async assertProjectAccess(projectId: string, actor: InteractionActor, transaction: Transaction): Promise<void> {
     const project = await AgentProject.findByPk(projectId, { transaction });
     if (!project) throw new InteractionError(404, 'Project not found');
-    if (!this.canAccessProject(project, actor)) throw new InteractionError(403, 'You do not have access to this project');
+    if (!await this.canAccessProject(project, actor)) throw new InteractionError(403, 'You do not have access to this project');
   }
 
   private static async log(

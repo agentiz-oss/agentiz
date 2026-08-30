@@ -42,6 +42,13 @@ const PIPELINE_OWNED = new Set<AgentTaskStatus>(['queued', 'running', 'waiting_i
 
 export interface TaskListFilters {
   projectId?: string;
+  /**
+   * The projects the caller may see at all — the boundary, not a filter the user chose. Passed by
+   * every caller that answers a person (the panel, the assistant); `undefined` means "unscoped"
+   * and is for the machine-facing surfaces (MCP, the worker API) that authenticate differently.
+   * An empty array means "nothing", never "everything".
+   */
+  projectIds?: string[];
   status?: string;
   priority?: string;
   sourceType?: string;
@@ -104,6 +111,7 @@ export class AgentTaskService {
   static async list(filters: TaskListFilters): Promise<{ items: unknown[]; total: number }> {
     const where: Record<string, unknown> = {};
     if (filters.projectId) where.projectId = filters.projectId;
+    else if (filters.projectIds) where.projectId = { [Op.in]: filters.projectIds };
     if (filters.status) where.status = filters.status;
     if (filters.priority) where.priority = filters.priority;
     if (filters.sourceType) where.sourceType = filters.sourceType;

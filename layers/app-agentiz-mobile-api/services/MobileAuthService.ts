@@ -83,10 +83,20 @@ export class MobileAuthService {
     return { token, expiresAt: expiresAt.toISOString(), user: authUser };
   }
 
-  /** Re-loads the user a token points at; a deleted account invalidates its outstanding tokens. */
+  /**
+   * Re-loads the user a token points at; a deleted account invalidates its outstanding tokens.
+   *
+   * The global groups come with it, and that is not decoration: every token check reads
+   * `user.groups`, so a user row loaded without them makes each of those checks quietly false —
+   * the administrator flag and the graph's bypass token in particular. The association is
+   * `belongsToMany(..., { as: 'groups' })`, wired by app-adminizer; where it is missing (an older
+   * panel, a host that overrode UserAP) the include is skipped and the caller falls back to
+   * ownership and membership alone, which is the pre-existing behaviour rather than a new hole.
+   */
   static async requireUser(sequelize: Sequelize, userId: string | number): Promise<Model> {
     const UserAP = this.getUserModel(sequelize);
-    const user = await UserAP.findByPk(userId as any);
+    const hasGroups = Boolean((UserAP.associations as Record<string, unknown> | undefined)?.groups);
+    const user = await UserAP.findByPk(userId as any, hasGroups ? { include: [{ association: 'groups' }] } : undefined);
     if (!user) throw new MobileAuthError(401, 'User no longer exists');
     return user;
   }

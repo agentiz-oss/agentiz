@@ -15,12 +15,14 @@ function truncate(text: string, limit: number): string {
 }
 
 /**
- * Turns a feed event into a push on the project owner's phones.
+ * Turns a feed event into a push on the phones of everybody in the project.
  *
  * This is the layer's `activityNotifiers` contribution (app-agentiz owns the events, see
  * app-agentiz/lib/activityNotifiers.ts). The dispatcher has already resolved the policy — this is
- * only called when push for the type is not off — and already resolved owner/task context, so
- * nothing here loads a model beyond the device rows.
+ * only called when push for the type is not off — and already resolved the recipients and the task
+ * context, so nothing here loads a model beyond the device rows. Who the recipients are is not this
+ * layer's business: `context.recipientIds` is the project's owner plus its members, decided once in
+ * `lib/access/projectAccess.ts`.
  *
  * The payload's job is to be openable. For `interaction.created` it is **bit-for-bit the legacy
  * shape** (`type=interaction` + `interactionId` + task/project context): older app builds route
@@ -48,12 +50,10 @@ export class MobilePushService implements ActivityNotifier {
     if (!MobilePushService.configured()) return;
 
     const { activity, context } = event;
-    // No owner means nobody to notify — the same blind spot the API has by design: a project with
-    // no `ownerId` is invisible to every mobile user.
-    if (!context.ownerId) return;
-    const userId = Number(context.ownerId);
-    const devices = await MobileDeviceService.forUser(userId);
-    if (devices.length === 0) return;
+    // Nobody in the project, nobody to notify. A project with no owner and no members is still
+    // invisible to every mobile user, which is the same blind spot as before — it is just no
+    // longer the owner alone that closes it.
+    if (context.recipientIds.length === 0) return;
 
     const silent = event.delivery.push === 'silent';
     const def = activityTypeDef(activity.type);
@@ -65,10 +65,6 @@ export class MobilePushService implements ActivityNotifier {
       : activity.proposalId
         ? `agentiz-proposal-${activity.proposalId}`
         : `agentiz-activity-${activity.id}`;
-
-    // The icon badge counts what actually needs the person, honoring per-project mutes — not the
-    // raw pending-question count anymore (see MobileActivityService.badgeCount).
-    const badge = await MobileActivityService.badgeCount(userId);
 
     const data: Record<string, string> = activity.type === 'interaction.created'
       ? {
@@ -95,7 +91,7 @@ export class MobilePushService implements ActivityNotifier {
           ...(typeof activity.data?.prUrl === 'string' ? { prUrl: activity.data.prUrl } : {}),
         };
 
-    const message: PushMessage = {
+    const message = (badge: number): PushMessage => ({
       // Filled in per device — everything else about the message is the same for all of them.
       token: '',
       notification: {
@@ -123,9 +119,18 @@ export class MobilePushService implements ActivityNotifier {
           },
         },
       },
-    };
+    });
 
-    await MobilePushService.deliver(devices, message);
+    // One message per person, because the badge is per person: it counts what still needs *them*,
+    // honouring their own mutes (MobileActivityService.badgeCount). Recipients are handled in
+    // parallel and independently — a person with no device, or a provider failing for one of them,
+    // must not stop the rest.
+    await Promise.all(context.recipientIds.map(async (recipientId) => {
+      const userId = Number(recipientId);
+      const devices = await MobileDeviceService.forUser(userId);
+      if (devices.length === 0) return;
+      await MobilePushService.deliver(devices, message(await MobileActivityService.badgeCount(userId)));
+    }));
   }
 
   /**

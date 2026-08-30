@@ -10,6 +10,7 @@ import { buildAgentizAgentSkills } from './lib/ai/agentSkills';
 import cron, { type ScheduledTask } from 'node-cron';
 import { migrations } from './migrations';
 import { AgentProject } from './models/AgentProject';
+import { AgentProjectMember } from './models/AgentProjectMember';
 import { AgentRole } from './models/AgentRole';
 import { PipelineSpec } from './models/PipelineSpec';
 import { AgentTask } from './models/AgentTask';
@@ -72,6 +73,12 @@ import { githubIssuesTaskManagerAdapter } from './lib/taskManager/GitHubIssuesTa
 import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerCollection';
 import type { TaskManagerAdapter } from './lib/taskManager';
 import { maskProjectForUI, restoreMaskedSecrets } from './lib/secrets';
+import { GLOBAL_TOKENS, PROJECT_TOKENS, agentizAccessRightTokens } from './lib/access/tokens';
+import { guardGlobal, guardProject, panelActor, requirePanelUser, requestAccessCache } from './lib/access/panelGuard';
+import { projectIdsForUser } from './lib/access/projectAccess';
+import { installAgentizAccessRoles } from './lib/access/roleSeed';
+import { installAgentizAccessGraph } from './lib/access/accessGraph';
+import { memberRoutes } from './lib/memberRoutes';
 import { taskRoutes } from './lib/taskRoutes';
 import { repositoryRoutes } from './lib/repositoryRoutes';
 import { pipelineRoutes } from './lib/pipelineRoutes';
@@ -97,6 +104,7 @@ export class AppAgentiz extends AbstractApp {
     @Collection
     models: any[] = [
         AgentProject,
+        AgentProjectMember,
         AgentRole,
         PipelineSpec,
         AgentTask,
@@ -250,20 +258,29 @@ export class AppAgentiz extends AbstractApp {
         ...runRoutes,
         // The viewer's timezone, for client-side timestamp formatting in the modules.
         ...viewerRoutes,
+        // Who takes part in a project and in which role — the only editor of AgentProjectMember.
+        ...memberRoutes,
         {
             route: '/agentiz',
             method: 'get',
             handler: async (req, res) => {
                 const method = req.query._method as string | undefined;
+                if (!requirePanelUser(req, res)) return undefined;
 
                 if (method === 'getProjects') {
-                    const projects = await AgentProject.findAll({ order: [['createdAt', 'DESC']] });
+                    // The project picker every Agentiz screen opens with. It reads Sequelize
+                    // directly, so the access graph — which only covers the panel's generic CRUD —
+                    // never narrows it; this is where that narrowing happens instead.
+                    const projects = await AgentProject.findAll({
+                        where: { id: await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req)) },
+                        order: [['createdAt', 'DESC']],
+                    });
                     return res.json({ data: projects.map(maskProjectForUI) });
                 }
 
                 if (method === 'getProjectStats') {
                     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
-                    if (!projectId) return res.status(400).json({ message: 'projectId is required' });
+                    if (!await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
 
                     const [taskRows, runRows, pipelineCount, workers] = await Promise.all([
                         AgentTask.findAll({
@@ -323,9 +340,11 @@ export class AppAgentiz extends AbstractApp {
             handler: async (req, res) => {
                 try {
                     const method = req.body?._method as string | undefined;
+                    if (!requirePanelUser(req, res)) return undefined;
 
                     if (method === 'testConnection') {
                         const projectId = String(req.body?.projectId ?? '');
+                        if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
                         const project = await AgentProject.findByPk(projectId);
                         if (!project) return res.status(404).json({ message: 'Project not found' });
                         const provider = createGitProvider(project);
@@ -335,6 +354,7 @@ export class AppAgentiz extends AbstractApp {
 
                     if (method === 'updateProjectSecrets') {
                         const projectId = String(req.body?.projectId ?? '');
+                        if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
                         const project = await AgentProject.findByPk(projectId);
                         if (!project) return res.status(404).json({ message: 'Project not found' });
                         // Sending back SECRET_MASK means "keep what is stored" — see lib/secrets.ts.
@@ -345,7 +365,7 @@ export class AppAgentiz extends AbstractApp {
 
                     if (method === 'syncProject') {
                         const projectId = String(req.body?.projectId ?? '');
-                        if (!projectId) return res.status(400).json({ message: 'projectId is required' });
+                        if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
                         const result = await GitSyncService.syncProject(projectId);
                         // One "синхронизировать" action covers everything wired to the project:
                         // its own repository plus every configured task manager.
@@ -354,6 +374,9 @@ export class AppAgentiz extends AbstractApp {
                     }
 
                     if (method === 'syncAll') {
+                        // Across every project at once, so it is an installation-wide action and
+                        // not a project one: an administrator, or the graph's support token.
+                        if (!guardGlobal(req, res, GLOBAL_TOKENS.projectAdmin, 'Синхронизация всех проектов доступна администратору')) return undefined;
                         const results = await GitSyncService.syncAllActiveProjects();
                         return res.json({ data: results });
                     }
@@ -374,6 +397,9 @@ export class AppAgentiz extends AbstractApp {
         // Models are registered by _mount() after the constructor runs, so the UserAP
         // association and Adminizer configs are wired here.
         AgentProject.associate(this.appManager.sequelize);
+        // `membership: { via: 'user', group: 'group' }` in the access graph names these two
+        // aliases; without them the graph refuses to compile and every project-scoped list 500s.
+        AgentProjectMember.associate(this.appManager.sequelize);
 
         const configs = [
             generateAdminizerModelConfig(AgentProject),
@@ -394,6 +420,18 @@ export class AppAgentiz extends AbstractApp {
             generateAdminizerModelConfig(AgentRunDiff),
             generateAdminizerModelConfig(AgentRunInteraction),
             generateAdminizerModelConfig(AgentHarnessSubscription),
+            // Both carry @AdminizerModel and both are named by the `agentiz` access graph. A model
+            // the graph includes but the panel never registered is its one fail-soft branch — a
+            // boot warning and the model silently left unfiltered — so registration is what makes
+            // the declaration true. They earn their place on their own too: the activity feed is
+            // the project's journal, and a workspace proposal is what holds a worker's directory.
+            generateAdminizerModelConfig(AgentActivity),
+            generateAdminizerModelConfig(AgentWorkspaceProposal),
+            // The graph's membership model. It has to be a registered resource or `resolveMembership`
+            // cannot find it and every covered list answers 500 — and it stays *outside* the graph
+            // itself, closed by the global `agentiz-project-members` token, because whoever may read
+            // membership rows would otherwise read them in every project they belong to.
+            generateAdminizerModelConfig(AgentProjectMember),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 
@@ -455,6 +493,38 @@ export class AppAgentiz extends AbstractApp {
         useWorkflowEvents(this.appManager);
 
         if (adminizerApp) {
+            // The access graph, handed over now that this layer's models are registered resources.
+            // It cannot live in config/adminizer.ts: `Adminizer.init()` validates the declaration
+            // and throws on a root that is not registered, and every model here arrives after init
+            // through the `adminizerModelConfigs` collection above. See lib/access/accessGraph.ts.
+            const graph = installAgentizAccessGraph(adminizerApp.adminizer as any);
+            if (graph.blocking.length) {
+                console.error(`[AppAgentiz] access graph is inert: ${graph.blocking.join(', ')} not registered as panel resources`);
+            }
+            if (graph.missing.length) {
+                console.warn(`[AppAgentiz] access graph: ${graph.missing.join(', ')} not registered; those models stay outside the project boundary`);
+            }
+
+            // The token catalogue (lib/access/tokens.ts). Registering it does two things that
+            // nothing else does: it puts every token into the group editor, so a role can be
+            // handed out with a mouse, and it turns a typo into a token nobody carries rather than
+            // into silence — `bypassToken` in particular is matched as a plain string by adminizer
+            // and would otherwise fail without a word.
+            adminizerApp.adminizer.accessRightsHelper.registerTokens(agentizAccessRightTokens());
+
+            // The role groups and the owners' membership rows. Idempotent, and deliberately here
+            // rather than in the migration: migrations do not run in development, and an access
+            // boundary present on only one of the two setups is worse than none. See
+            // lib/access/roleSeed.ts for why the owner backfill only touches empty projects.
+            try {
+                const seeded = await installAgentizAccessRoles();
+                if (seeded.groupsCreated || seeded.ownersLinked) {
+                    console.log(`[AppAgentiz] access roles: ${seeded.groupsCreated} group(s) created, ${seeded.ownersLinked} owner membership(s) written`);
+                }
+            } catch (error) {
+                console.warn('[AppAgentiz] access roles were not seeded:', error instanceof Error ? error.message : error);
+            }
+
             // Second delivery channel for feed events: the panel's own bell. Registered here rather
             // than through the `activityNotifiers` collection because the notifier needs the
             // Adminizer instance — tying it to that instance being there is honest, and a panel

@@ -125,7 +125,7 @@ describe('MobilePushService', () => {
         data: { source: 'codex' },
         createdAt: new Date(),
       },
-      context: { ownerId, projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
+      context: { ownerId, recipientIds: ownerId === null ? [] : [ownerId], projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
       delivery: { push: 'on', dashboard: 'on' },
     };
   }
@@ -146,7 +146,7 @@ describe('MobilePushService', () => {
         data: {},
         createdAt: new Date(),
       },
-      context: { ownerId: OWNER, projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
+      context: { ownerId: OWNER, recipientIds: [OWNER], projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
       delivery: { push, dashboard: 'on' },
     };
   }

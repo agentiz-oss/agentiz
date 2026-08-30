@@ -242,6 +242,7 @@ const AgentizHome: React.FC = () => {
             />
             <NavCard title="Воркеры" description="Регистрация машин и доступы" href={`${PREFIX}/agentiz-workers`} />
             <NavCard title="Репозитории" description="Подключения и привязка к проекту" href={withProject("/agentiz-repos")} />
+            <NavCard title="Участники" description="Кто работает в проекте и в какой роли" href={withProject("/agentiz-members")} />
             <NavCard title="Уведомления" description="Общие правила и где они переопределены" href={`${PREFIX}/agentiz-notifications`} />
           </div>
 

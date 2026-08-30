@@ -12,6 +12,7 @@ import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentW
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
 import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileAuthError } from './MobileAuthService';
+import { canInProject, visibleProjectIds } from '../lib/mobileScope';
 import {
   applyDismissal,
   heldDiffItem,
@@ -54,10 +55,12 @@ export interface ActivityListPage {
  * held diffs), and duplicating it into feed rows is what the design ruled out.
  */
 export class MobileActivityService {
-  /** Ids of the projects the caller owns. Empty means "nothing to look at", never "everything". */
+  /**
+   * Projects the caller may look at — owned plus every project they hold a membership row in
+   * (`lib/mobileScope.ts`). Empty means "nothing to look at", never "everything".
+   */
   private static async ownedProjectIds(ownerId: number | string): Promise<string[]> {
-    const projects = await AgentProject.findAll({ where: { ownerId: ownerId as any }, attributes: ['id'] });
-    return projects.map((project) => project.id);
+    return visibleProjectIds(ownerId);
   }
 
   /**

@@ -15,6 +15,10 @@ import { AgentWorkspaceProposalService, WorkspaceProposalError } from '../servic
 import { adminizerModuleUrl } from './adminizerModuleUrl';
 import { listRunLogs, type RunLogPage } from './runLogs';
 import { runUsage } from './runUsage';
+import { guardProject, panelActor, requirePanelUser, requestAccessCache } from './access/panelGuard';
+import { projectIdsForUser } from './access/projectAccess';
+import { PROJECT_TOKENS } from './access/tokens';
+import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -60,8 +64,11 @@ const ACTIVE_RUN_STATUSES = ['pending', 'running', 'waiting_input'];
  * Each row carries what makes a running agent legible without opening it — its stages, the worker
  * that claimed the job, the newest log line and whether it is blocked on a question.
  */
-async function listRuns(projectId: string) {
-  const scope = projectId ? { projectId } : {};
+async function listRuns(projectId: string, visibleProjectIds?: string[]) {
+  // One project when the caller named one (its right has been checked), otherwise every project
+  // they may see. This endpoint reads Sequelize directly, so the panel's access graph — which
+  // only covers generic CRUD — never sees it.
+  const scope = projectId ? { projectId } : visibleProjectIds ? { projectId: visibleProjectIds } : {};
   const [active, recent] = await Promise.all([
     AgentRun.findAll({ where: { ...scope, status: { [Op.in]: ACTIVE_RUN_STATUSES } }, order: [['createdAt', 'DESC']], limit: 100 }),
     AgentRun.findAll({ where: { ...scope, status: { [Op.notIn]: ACTIVE_RUN_STATUSES } }, order: [['createdAt', 'DESC']], limit: 25 }),
@@ -143,6 +150,31 @@ async function listRuns(projectId: string) {
 }
 
 /**
+ * Resolves a run and the right to touch it. `adminizerMiddlewares` are mounted before Adminizer's
+ * policies, so these two calls are the whole check this route gets; the id is turned into a
+ * project and the token is checked there. A run of a project the caller cannot see answers 404 —
+ * the same answer a run that never existed gets.
+ */
+async function guardRun(req: any, res: any, runId: string, token: string): Promise<AgentRun | null> {
+  const run = await AgentRun.findByPk(runId);
+  if (!run) {
+    res.status(404).json({ message: 'Run not found' });
+    return null;
+  }
+  return (await guardProject(req, res, run.projectId, token)) ? run : null;
+}
+
+/** The same, for the four decisions taken on a workspace proposal. */
+async function guardProposal(req: any, res: any, proposalId: string, token: string): Promise<boolean> {
+  const proposal = proposalId ? await AgentWorkspaceProposal.findByPk(proposalId) : null;
+  if (!proposal) {
+    res.status(404).json({ message: 'Proposal not found' });
+    return false;
+  }
+  return guardProject(req, res, proposal.projectId, token);
+}
+
+/**
  * One run in full: its stages, its logs and — when the pipeline changed code — the diff, with a
  * button to apply it. Its own page rather than an inline panel on the task screen, because a run
  * with a large patch and a full log needs the room.
@@ -154,9 +186,17 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
     handler: async (req, res) => {
       try {
         const method = str(req.query._method);
+        if (!requirePanelUser(req, res)) return undefined;
 
         if (method === 'listRuns') {
-          return res.json({ data: await listRuns(str(req.query.projectId)) });
+          const requested = str(req.query.projectId);
+          if (requested && !await guardProject(req, res, requested, PROJECT_TOKENS.read)) return undefined;
+          return res.json({
+            data: await listRuns(
+              requested,
+              requested ? undefined : await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req)),
+            ),
+          });
         }
 
         // Just the log, for the run screen's polling tick and its "load earlier" button. The full
@@ -165,6 +205,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'getRunLogs') {
           const runId = str(req.query.runId);
           if (!runId) return res.status(400).json({ message: 'runId is required' });
+          if (!await guardRun(req, res, runId, PROJECT_TOKENS.read)) return undefined;
           return res.json({
             data: logPayload(await listRunLogs(runId, {
               after: str(req.query.after) || null,
@@ -177,8 +218,8 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'getRunDetails') {
           const runId = str(req.query.runId);
           if (!runId) return res.status(400).json({ message: 'runId is required' });
-          const run = await AgentRun.findByPk(runId);
-          if (!run) return res.status(404).json({ message: 'Run not found' });
+          const run = await guardRun(req, res, runId, PROJECT_TOKENS.read);
+          if (!run) return undefined;
           const stages = await AgentStageExecution.findAll({
             where: { runId },
             order: [['stageIndex', 'ASC']],
@@ -230,10 +271,12 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
     handler: async (req, res) => {
       try {
         const method = str(req.body?._method);
+        if (!requirePanelUser(req, res)) return undefined;
 
         if (method === 'applyRunDiff') {
           const runId = str(req.body?.runId);
           if (!runId) return res.status(400).json({ message: 'runId is required' });
+          if (!await guardRun(req, res, runId, PROJECT_TOKENS.diffReview)) return undefined;
           const actor = (req as any).session?.UserAP?.login ?? (req as any).user?.login ?? 'admin';
           const diff = await AgentPipelineService.applyStoredDiff(runId, String(actor));
           return res.json({ data: diff.toJSON() });
@@ -242,11 +285,13 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         if (method === 'cancelRun') {
           const runId = str(req.body?.runId);
           if (!runId) return res.status(400).json({ message: 'runId is required' });
+          if (!await guardRun(req, res, runId, PROJECT_TOKENS.runOperate)) return undefined;
           const run = await AgentPipelineService.cancelRun(runId);
           return res.json({ data: run.toJSON() });
         }
 
         if (method === 'approveWorkspaceProposal') {
+          if (!await guardProposal(req, res, str(req.body?.proposalId), PROJECT_TOKENS.diffReview)) return undefined;
           const proposal = await AgentWorkspaceProposalService.approve(
             str(req.body?.proposalId), Number(req.body?.revision), actorOf(req).name,
             { targetBranch: str(req.body?.targetBranch) || undefined, commitMessage: str(req.body?.commitMessage) || undefined },
@@ -255,6 +300,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         }
 
         if (method === 'continueWorkspaceProposal') {
+          if (!await guardProposal(req, res, str(req.body?.proposalId), PROJECT_TOKENS.diffReview)) return undefined;
           const run = await AgentWorkspaceProposalService.continueWork(
             str(req.body?.proposalId), Number(req.body?.revision), actorOf(req), str(req.body?.comment),
           );
@@ -262,6 +308,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         }
 
         if (method === 'rejectWorkspaceProposal') {
+          if (!await guardProposal(req, res, str(req.body?.proposalId), PROJECT_TOKENS.diffReview)) return undefined;
           const proposal = await AgentWorkspaceProposalService.reject(
             str(req.body?.proposalId), Number(req.body?.revision), actorOf(req).name,
           );
@@ -272,6 +319,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
         // reviewing anything, and refusing it over a stale revision would keep the directory locked
         // for the sake of an optimistic check on a decision that is not being made.
         if (method === 'releaseWorkspaceProposal') {
+          if (!await guardProposal(req, res, str(req.body?.proposalId), PROJECT_TOKENS.diffReview)) return undefined;
           const outcome = await AgentWorkspaceProposalService.release(
             str(req.body?.proposalId), actorOf(req).name,
             { force: req.body?.force === true || str(req.body?.force) === 'true' },

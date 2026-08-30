@@ -37,10 +37,22 @@ export interface ActivityRecord {
 
 /**
  * Context the dispatcher resolved once, so notifiers stop each loading project/run/task on
- * their own. `ownerId` is the addressee — the project's owner, the rule of the whole mobile API.
+ * their own.
+ *
+ * `recipientIds` is the addressee list — the project's owner plus everybody holding a membership
+ * row in it (`lib/access/projectAccess.ts`, `recipientsForProject`). It replaces "шлём владельцу",
+ * which was the rule of the whole mobile API before projects had members and which made every
+ * event invisible to the people actually doing the work.
  */
 export interface ActivityContext {
+  /**
+   * @deprecated The project's owner, kept for one release because notifiers are contributed by
+   * layers and a layer may lag the core by a deploy. Read `recipientIds` instead — it already
+   * contains the owner, and it is the only field that knows about anybody else.
+   */
   ownerId: number | null;
+  /** Everyone this event should reach in this project, owner first. */
+  recipientIds: number[];
   projectName: string;
   taskTitle: string | null;
   run: AgentRun | null;

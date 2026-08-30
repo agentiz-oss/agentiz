@@ -1,5 +1,4 @@
 import { AgentHarnessSubscription } from '../models/AgentHarnessSubscription';
-import { AgentProject } from '../models/AgentProject';
 import { AgentRun } from '../models/AgentRun';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
@@ -7,6 +6,7 @@ import { AgentWorkerHarness } from '../models/AgentWorkerHarness';
 import { classifyHarnessFailure } from '../lib/harnessLimits';
 import type { HarnessLimitSignal } from '../lib/harnessLimits';
 import { harnessKeyForStage } from '../lib/harness';
+import { recipientsForProject } from '../lib/access/projectAccess';
 import type { StageAgentRef } from '../lib/harness';
 import { sendDashboardNotification } from '../lib/notifications/dashboardNotifications';
 import { formatUserDeadline, userTimezoneById } from '../lib/userTime';
@@ -131,16 +131,25 @@ export class AgentRunDeferService {
       { jobId: job.id, deferredCount: job.deferredCount + 1, matched: classified.signal.matched, retryAt: retryAt.toISOString() });
 
     if (waitingUntil.getTime() - now.getTime() >= DEFER_NOTIFY_MIN_MS) {
-      const project = await AgentProject.findByPk(run.projectId);
-      // The notification is addressed to the project owner, so the deadline reads in *their* zone.
-      const ownerTimezone = await userTimezoneById(project?.ownerId);
-      void sendDashboardNotification({
-        channel: 'run-deferred',
-        title: `Run отложен: лимит ${classified.harnessKey}`,
-        message: `Воркер ${worker.name}, продолжение ~${formatUserDeadline(waitingUntil, ownerTimezone)}`,
-        userId: project?.ownerId ?? undefined,
-        metadata: { runId: run.id, jobId: job.id, harnessKey: classified.harnessKey },
-      });
+      // Everybody who takes part in the project, not just its owner — the same rule the activity
+      // dispatcher applies. This one does not go through `ActivityService.record()` because
+      // `run.deferred` is not in the event catalogue, so the recipients are resolved here by hand;
+      // if it ever becomes an activity type, this whole block goes away.
+      const recipients = await recipientsForProject(run.projectId);
+      for (const userId of recipients) {
+        // The deadline reads in the zone of the person being told, so it is formatted per recipient.
+        const timezone = await userTimezoneById(userId);
+        void sendDashboardNotification({
+          channel: 'run-deferred',
+          title: `Run отложен: лимит ${classified.harnessKey}`,
+          message: `Воркер ${worker.name}, продолжение ~${formatUserDeadline(waitingUntil, timezone)}`,
+          userId,
+          metadata: { runId: run.id, jobId: job.id, harnessKey: classified.harnessKey },
+        });
+      }
+      // Nobody in the project means nobody is told. Deliberately *not* the previous fallback of
+      // sending it with no `userId`: that goes to every holder of `notification-agentiz`, and one
+      // project's parked run is that project's business.
     }
     return { retryAt, exhaustedUntil };
   }

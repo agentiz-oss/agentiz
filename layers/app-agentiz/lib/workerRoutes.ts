@@ -6,6 +6,8 @@ import { AgentHarnessAdminService, HarnessAdminError } from '../services/AgentHa
 import { subscriptionView, usageHistory, workerHarnessView } from './capacityViews';
 import { WORKER_API_BASE } from './workerApiRouter';
 import { maskWorkerForUI } from './secrets';
+import { guardGlobal, requirePanelUser } from './access/panelGuard';
+import { GLOBAL_TOKENS } from './access/tokens';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -25,13 +27,25 @@ function workerApiUrl(req: any): string {
  * The workers screen: registering worker machines, watching whether they are still checking in,
  * and scoping what each one may claim. Split out of the project overview so a busy fleet does not
  * push the rest of the panel off screen.
+ *
+ * A worker belongs to no project — it is a machine the whole installation shares, which is why the
+ * access graph does not cover `AgentWorker` and why the boundary here is the **global**
+ * `agentiz-workers-manage` token rather than a project right. Reading the fleet needs only a panel
+ * session: an operator has to be able to see that a run is parked because no worker is online, and
+ * `maskWorkerForUI` already keeps the tokens out of the payload.
  */
+
+/** Installation-wide, like the fleet itself. Reads are not gated by it; every write is. */
+function mayManageWorkers(req: any, res: any): boolean {
+  return guardGlobal(req, res, GLOBAL_TOKENS.workersManage, 'Недостаточно прав, чтобы управлять воркерами');
+}
 export const workerRoutes: AdminizerRouteMiddleware[] = [
   {
     route: '/agentiz-workers',
     method: 'get',
     handler: async (req, res) => {
       const method = str(req.query._method);
+      if (!requirePanelUser(req, res)) return undefined;
 
       if (method === 'getWorkers') {
         const workers = await AgentWorkerRegistryService.list();
@@ -82,6 +96,7 @@ export const workerRoutes: AdminizerRouteMiddleware[] = [
     handler: async (req, res) => {
       try {
         const method = str(req.body?._method);
+        if (!mayManageWorkers(req, res)) return undefined;
 
         // Harness limits and capacity: everything funnels through AgentHarnessAdminService.
         if (['setWorkerHarnessBindings', 'setWorkerLimits', 'markHarnessExhausted', 'clearHarnessLimit',

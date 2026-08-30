@@ -20,6 +20,7 @@ import { runRoutes } from './runRoutes';
 describe('run routes: log paging', () => {
   let sequelize: Sequelize;
   let runId = '';
+  const OWNER = 1;
 
   const handler = runRoutes.find((route) => route.route === '/agentiz-runs' && route.method === 'get')!.handler as any;
 
@@ -31,9 +32,14 @@ describe('run routes: log paging', () => {
     return sent;
   };
 
+  /**
+   * The route checks the panel session and the project right itself (`adminizerMiddlewares` run
+   * before Adminizer's policies), so the fake request carries the project's owner — the person
+   * whose run this is.
+   */
   const call = async (query: Record<string, string>) => {
     const sent = response();
-    await handler({ query }, sent);
+    await handler({ query, session: { UserAP: { id: OWNER } }, user: { id: OWNER } }, sent);
     return sent;
   };
 
@@ -59,7 +65,7 @@ describe('run routes: log paging', () => {
 
   beforeEach(async () => {
     await sequelize.sync({ force: true });
-    const project = await AgentProject.create({ name: 'Logs', slug: 'logs', ownerId: 1 } as any);
+    const project = await AgentProject.create({ name: 'Logs', slug: 'logs', ownerId: OWNER } as any);
     const task = await AgentTask.create({
       projectId: project.id, externalId: 'local:1', title: 'Task', status: 'in_progress', priority: 'normal',
     } as any);

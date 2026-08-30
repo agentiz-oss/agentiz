@@ -6,6 +6,7 @@ import { dispatchActivity } from '../lib/activityNotifiers';
 import type { ActivityEvent } from '../lib/activityNotifiers';
 import { activityTypeDef } from '../lib/notifications/activityTypes';
 import { effectiveActivityPolicy } from '../lib/notifications/policySettings';
+import { recipientsForProject } from '../lib/access/projectAccess';
 
 /** `title` is STRING(255); `body`/`data` errors are cut so a stack trace cannot bloat the feed. */
 const MAX_TITLE = 250;
@@ -89,6 +90,10 @@ export class ActivityService {
         },
         context: {
           ownerId: project.ownerId ?? null,
+          // Everybody with a stake in this project, not just its owner. Resolved once, here, so
+          // no delivery layer has to know what a membership row is — and resolved from the live
+          // rows on every event, because a person added yesterday must hear about today's run.
+          recipientIds: await recipientsForProject(project.id),
           projectName: project.name ?? '',
           taskTitle: task?.title ?? null,
           run,

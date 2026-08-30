@@ -14,6 +14,8 @@ import { gitlabProviderAdapter } from './lib/GitLabProvider';
 import { gitlabIssuesTaskManagerAdapter } from './lib/GitlabIssuesTaskManager';
 import { DEFAULT_GITLAB_BASE_URL, DEFAULT_GITLAB_SCOPES } from './types/gitlab';
 import { GitSyncService } from '../app-agentiz/services/GitSyncService';
+import { guardGlobal } from '../app-agentiz/lib/access/panelGuard';
+import { GLOBAL_TOKENS } from '../app-agentiz/lib/access/tokens';
 import {
   registerGitConnectionAuthority,
   unregisterGitConnectionAuthority,
@@ -139,6 +141,14 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
       handler: async (req, res, next) => {
         if (req.path.endsWith('/oauth/callback')) return next();
 
+        // This page is the OAuth application of one platform: a client id, a secret and the
+        // buttons that start an authorisation. It belongs to no project, so the boundary is the
+        // global `agentiz-connections-manage` — the same token the shared repositories screen
+        // asks for, since these two are halves of one thing. `adminizerMiddlewares` mount before
+        // Adminizer's policies, so without this line the page and its writes are open to anyone
+        // who can reach the URL.
+        if (!guardGlobal(req, res, GLOBAL_TOKENS.connectionsManage, 'Недостаточно прав, чтобы настраивать подключения GitLab')) return undefined;
+
         const method = req.query._method as string | undefined;
 
         if (method === 'getOAuthApps') {
@@ -164,6 +174,7 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
       method: 'post',
       handler: async (req, res) => {
         try {
+          if (!guardGlobal(req, res, GLOBAL_TOKENS.connectionsManage, 'Недостаточно прав, чтобы настраивать подключения GitLab')) return undefined;
           const method = req.body?._method as string | undefined;
 
           if (method === 'createOAuthApp') {

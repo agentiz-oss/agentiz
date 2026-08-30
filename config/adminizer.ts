@@ -18,6 +18,14 @@ export const adminizerConfig: AdminizerConfig = {
     },
     models: {
     },
+    /**
+     * Record-level access for everything that belongs to a project is declared in
+     * `layers/app-agentiz/lib/access/accessGraph.ts` and installed from `AppAgentiz.mount()` —
+     * **not** here. `Adminizer.init()` validates `accessGraph` and throws on a root model that is
+     * not registered, and every Agentiz model reaches the panel after init through the
+     * `adminizerModelConfigs` collection; declared here, the graph kills the boot before any of
+     * them exists. That file explains the trade and is still the single place the graph lives.
+     */
     security: {
       csrf: false
     },
@@ -82,6 +90,15 @@ export const adminizerConfig: AdminizerConfig = {
                 type: 'self',
                 icon: 'live_help',
                 section: 'Agentiz',
+            },
+            {
+                id: 'agentiz-members',
+                title: 'Участники',
+                link: '/dashboard/agentiz-members',
+                type: 'self',
+                icon: 'group',
+                section: 'Agentiz',
+                accessRightsToken: 'agentiz-access',
             },
             {
                 id: 'workflows',

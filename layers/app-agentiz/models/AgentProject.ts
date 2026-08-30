@@ -1,5 +1,5 @@
-import { Table, Column, Model, DataType, HasMany, Default } from 'sequelize-typescript';
-import { InferAttributes, InferCreationAttributes, CreationOptional, Sequelize, ModelStatic, Model as SequelizeModel } from 'sequelize';
+import { Table, Column, Model, DataType, HasMany, Default, AfterCreate, AfterUpdate } from 'sequelize-typescript';
+import { InferAttributes, InferCreationAttributes, CreationOptional, Sequelize, ModelStatic, Model as SequelizeModel, Transaction } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentRole } from './AgentRole';
@@ -11,7 +11,6 @@ import type { GitProviderType, AgentProjectRepoConfig, AgentProjectTrackerConfig
   model: 'AgentProject',
   title: 'Agentiz Projects',
   icon: 'smart_toy',
-  userAccessRelation: 'owner',
   navbar: {
     visible: true,
     section: 'Agentiz',
@@ -101,6 +100,54 @@ export class AgentProject extends Model<InferAttributes<AgentProject>, InferCrea
 
   @HasMany(() => AgentTask, 'projectId')
   declare tasks: AgentTask[];
+
+  /**
+   * The owner's membership row, written in the transaction that set the owner.
+   *
+   * Not a convenience — a requirement. The access graph resolves project visibility through
+   * `AgentProjectMember` rows and never looks at `ownerId`, so a project without one is visible to
+   * nobody but an administrator, and that state cannot be fixed from the panel: the members screen
+   * itself lives behind `agentiz-project-read`. Sharing the transaction is what keeps the window in
+   * which the project exists and nobody can see it from existing at all.
+   *
+   * There are **two** hooks and both are needed, because in the panel the owner is usually not set
+   * at creation: adminizer 5.1.0-build.25 stopped stamping the access column for an administrator,
+   * so `/model/AgentProject/add` stores exactly what the form sent — an empty `ownerId` — and the
+   * owner is picked afterwards on the edit screen. Reacting only to `create` would therefore cover
+   * almost nothing that actually happens. `update` fires whenever `ownerId` changes, which also
+   * covers a transfer; the previous owner's row is deliberately left alone, since removing access
+   * silently is worse than leaving it to be removed on the members screen.
+   *
+   * The helper is imported lazily because it reaches AgentProjectMember, which points back here;
+   * the cycle is harmless at call time and awkward at module time.
+   */
+  @AfterCreate
+  static async grantOwnerMembership(project: AgentProject, options?: { transaction?: Transaction }) {
+    await AgentProject.linkOwner(project, options?.transaction);
+  }
+
+  @AfterUpdate
+  static async grantOwnerMembershipOnChange(project: AgentProject, options?: { transaction?: Transaction }) {
+    // Only when the owner actually moved: a project is updated on every sync, and the membership
+    // lookup is a query.
+    if (!project.changed || !(project.changed() || []).includes('ownerId')) return;
+    await AgentProject.linkOwner(project, options?.transaction);
+  }
+
+  private static async linkOwner(project: AgentProject, transaction?: Transaction) {
+    if (project.ownerId === null || project.ownerId === undefined) return;
+    try {
+      const { ensureOwnerMembership } = await import('../lib/access/roleSeed');
+      await ensureOwnerMembership({ id: project.id, ownerId: project.ownerId }, transaction);
+    } catch (error) {
+      // Never fail the write over it: the boot-time backfill covers a project that ends up with
+      // no membership row, and a project that cannot be saved at all is the worse outcome.
+      console.warn(
+        `[app-agentiz] owner membership for project ${project.id} was not created:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
 
   /** Cross-app association, wired in AppAgentiz.mount() after all models are registered. */
   static associate(sequelize: Sequelize) {

@@ -12,7 +12,6 @@ import type { AgentRunLogLevel } from '../types/agentiz';
   model: 'AgentRunLog',
   title: 'Agent Run Logs',
   icon: 'article',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

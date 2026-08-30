@@ -22,15 +22,23 @@ import {
 import { MobileActivityService } from './MobileActivityService';
 import { MobileAuthError } from './MobileAuthService';
 import { MobileInteractionService } from './MobileInteractionService';
+import { canInProject } from '../lib/mobileScope';
+import { PROJECT_TOKENS } from '../../app-agentiz/lib/access/tokens';
 
 /**
  * Task access for the mobile client: the built-in tracker reduced to what a phone-sized screen
  * needs — a task list per project, one task with the outcome of its latest run, and the comment
  * thread.
  *
- * Every method takes the caller's `ownerId` and resolves the task through its project, mirroring
- * the ownership rule `MobileProjectService` applies. A task belonging to someone else's project is
+ * Every method takes the caller's user id and resolves the task through its project, mirroring the
+ * membership rule `MobileProjectService` applies. A task in a project the caller has no part in is
  * reported as "not found" rather than "forbidden", so the API never confirms that an id exists.
+ *
+ * Reads need `agentiz-project-read`; the methods that change something name the token that
+ * actually covers them (`task-write` for tasks, comments and files, `run-operate` for starting or
+ * cancelling a run, `diff-review` for applying a diff). That is the whole difference between a
+ * customer, a tester and a developer on a phone, and it is spelled out per method rather than
+ * derived, so a new endpoint has to make the choice out loud.
  *
  * The admin panel's `AgentTaskService` stays the single writer: this service shapes payloads and
  * enforces scope, but creating tasks and appending comments goes through the same code path the
@@ -45,24 +53,33 @@ export class MobileTaskService {
   private static async ownedTaskWithProject(
     taskId: string,
     ownerId: number | string,
+    token: string = PROJECT_TOKENS.read,
   ): Promise<{ task: AgentTask; project: AgentProject }> {
     const task = await AgentTask.findByPk(taskId);
     if (!task) throw new MobileAuthError(404, 'Task not found');
     const project = await AgentProject.findByPk(task.projectId);
-    if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
+    if (!project || !(await canInProject(project.id, ownerId, token))) {
       throw new MobileAuthError(404, 'Task not found');
     }
     return { task, project };
   }
 
-  /** Resolves a task the caller is allowed to see, or throws 404. */
-  private static async ownedTask(taskId: string, ownerId: number | string): Promise<AgentTask> {
-    return (await this.ownedTaskWithProject(taskId, ownerId)).task;
+  /** Resolves a task the caller is allowed to act on with `token`, or throws 404. */
+  private static async ownedTask(
+    taskId: string,
+    ownerId: number | string,
+    token: string = PROJECT_TOKENS.read,
+  ): Promise<AgentTask> {
+    return (await this.ownedTaskWithProject(taskId, ownerId, token)).task;
   }
 
-  private static async ownedProject(projectId: string, ownerId: number | string): Promise<AgentProject> {
+  private static async ownedProject(
+    projectId: string,
+    ownerId: number | string,
+    token: string = PROJECT_TOKENS.read,
+  ): Promise<AgentProject> {
     const project = await AgentProject.findByPk(projectId);
-    if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
+    if (!project || !(await canInProject(project.id, ownerId, token))) {
       throw new MobileAuthError(404, 'Project not found');
     }
     return project;
@@ -224,7 +241,7 @@ export class MobileTaskService {
     input: { title: string; description?: string | null; tags?: string[] },
     actor: { id: number | null; name: string },
   ) {
-    await this.ownedProject(projectId, ownerId);
+    await this.ownedProject(projectId, ownerId, PROJECT_TOKENS.taskWrite);
     const created = await AgentTaskService.create(
       {
         projectId,
@@ -301,7 +318,7 @@ export class MobileTaskService {
    * detail endpoint rather than waiting on this call.
    */
   static async run(taskId: string, ownerId: number | string, choice?: unknown) {
-    await this.ownedTask(taskId, ownerId);
+    await this.ownedTask(taskId, ownerId, PROJECT_TOKENS.runOperate);
     let override;
     try {
       override = normalizeRunOverride(choice as Record<string, unknown> | null | undefined);
@@ -375,7 +392,9 @@ export class MobileTaskService {
     ownerId: number | string,
     actor: { id: number | null; name: string },
   ) {
-    await this.ownedTask(taskId, ownerId);
+    // Applying a diff is a review decision, not a launch: `diff-review`, the same token the
+    // proposal endpoints check.
+    await this.ownedTask(taskId, ownerId, PROJECT_TOKENS.diffReview);
     const run = await AgentRun.findOne({ where: { id: runId, taskId } });
     if (!run) throw new MobileAuthError(404, 'Run not found');
     try {
@@ -390,7 +409,7 @@ export class MobileTaskService {
 
   /** Cancellation is scoped through the task, so a known run id cannot cross project boundaries. */
   static async cancelRun(taskId: string, runId: string, ownerId: number | string) {
-    await this.ownedTask(taskId, ownerId);
+    await this.ownedTask(taskId, ownerId, PROJECT_TOKENS.runOperate);
     const run = await AgentRun.findOne({ where: { id: runId, taskId } });
     if (!run) throw new MobileAuthError(404, 'Run not found');
     await AgentPipelineService.cancelRun(run.id, 'Cancelled from mobile app');
@@ -425,7 +444,7 @@ export class MobileTaskService {
     input: { fileName: string; mimeType: string | null; content: Buffer },
     actor: { id: number | null; name: string },
   ) {
-    await this.ownedTask(taskId, ownerId);
+    await this.ownedTask(taskId, ownerId, PROJECT_TOKENS.taskWrite);
     const attachment = await storeAttachment({
       taskId,
       fileName: input.fileName,
@@ -468,7 +487,7 @@ export class MobileTaskService {
     ownerId: number | string,
     actor: { id: number | null; name: string },
   ) {
-    await this.ownedTask(taskId, ownerId);
+    await this.ownedTask(taskId, ownerId, PROJECT_TOKENS.taskWrite);
     const attachment = await AgentTaskAttachment.findOne({ where: { id: attachmentId, taskId } });
     if (!attachment) throw new MobileAuthError(404, 'Attachment not found');
     const fileName = attachment.fileName;
@@ -489,7 +508,7 @@ export class MobileTaskService {
     body: string,
     actor: { id: number | null; name: string },
   ) {
-    await this.ownedTask(taskId, ownerId);
+    await this.ownedTask(taskId, ownerId, PROJECT_TOKENS.taskWrite);
     const comment = await AgentTaskService.addComment(taskId, {
       authorKind: 'human',
       authorName: actor.name,

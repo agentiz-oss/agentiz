@@ -17,7 +17,6 @@ import { AgentProject } from './AgentProject';
   model: 'AgentTaskSource',
   title: 'Task Sources',
   icon: 'inbox',
-  userAccessRelation: { field: 'project', via: 'owner' },
   navbar: {
     visible: true,
     section: 'Agentiz',

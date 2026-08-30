@@ -55,7 +55,7 @@ function event(overrides: Partial<ActivityEvent['activity']> = {}, ownerId: numb
       createdAt: new Date(),
       ...overrides,
     },
-    context: { ownerId, projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
+    context: { ownerId, recipientIds: ownerId === null ? [] : [ownerId], projectName: 'Owned', taskTitle: 'Починить деплой', run: null },
     delivery: { push: 'on', dashboard: 'on' },
   };
 }

@@ -7,6 +7,8 @@ import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentRunInteractionService } from '../../app-agentiz/services/AgentRunInteractionService';
 import type { AgentRunInteractionAction } from '../../app-agentiz/types/agentiz';
 import { MobileAuthError } from './MobileAuthService';
+import { canInProject, visibleProjectIds } from '../lib/mobileScope';
+import { PROJECT_TOKENS } from '../../app-agentiz/lib/access/tokens';
 
 /**
  * The human-input side of a run on a phone: an agent that stopped mid-stage to ask a question
@@ -20,10 +22,12 @@ import { MobileAuthError } from './MobileAuthService';
  * stage back out of `waiting_input` and records who answered.
  */
 export class MobileInteractionService {
-  /** Ids of the projects the caller owns. Empty means "nothing to look at", never "everything". */
+  /**
+   * Projects the caller may look at — owned plus every project they hold a membership row in
+   * (`lib/mobileScope.ts`). Empty means "nothing to look at", never "everything".
+   */
   private static async ownedProjectIds(ownerId: number | string): Promise<string[]> {
-    const projects = await AgentProject.findAll({ where: { ownerId: ownerId as any }, attributes: ['id'] });
-    return projects.map((project) => project.id);
+    return visibleProjectIds(ownerId);
   }
 
   /**
@@ -133,7 +137,7 @@ export class MobileInteractionService {
     const interaction = await AgentRunInteraction.findByPk(interactionId);
     if (!interaction) throw new MobileAuthError(404, 'Interaction not found');
     const project = await AgentProject.findByPk(interaction.projectId);
-    if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
+    if (!project || !(await canInProject(project.id, ownerId, PROJECT_TOKENS.runOperate))) {
       throw new MobileAuthError(404, 'Interaction not found');
     }
     const [stage, run] = await Promise.all([
@@ -159,15 +163,17 @@ export class MobileInteractionService {
     const interaction = await AgentRunInteraction.findByPk(interactionId);
     if (!interaction) throw new MobileAuthError(404, 'Interaction not found');
     const project = await AgentProject.findByPk(interaction.projectId);
-    if (!project || String(project.ownerId ?? '') !== String(ownerId)) {
+    if (!project || !(await canInProject(project.id, ownerId, PROJECT_TOKENS.runOperate))) {
       throw new MobileAuthError(404, 'Interaction not found');
     }
 
-    // Ownership has just been proven against the project row itself, so the actor handed to the
-    // core service is the project's owner — not `isAdmin`, which would widen this beyond the one
-    // project the mobile caller was checked against.
+    // The caller, not the project's owner. Access has just been proven for *this* person against
+    // this project, the core service re-checks the same way (`projectAccess.can`), and the answer
+    // is recorded under the name of whoever actually gave it — under the owner's it would put words
+    // in the mouth of somebody who was not there. `isAdmin` is deliberately not passed: it would
+    // widen the core check beyond the one project checked here.
     const answered = await AgentRunInteractionService.answer(interactionId, action, content, {
-      id: project.ownerId ?? actor.id,
+      id: actor.id,
       name: actor.name,
     });
     const stage = await AgentStageExecution.findByPk(answered.stageExecutionId);
