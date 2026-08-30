@@ -38,6 +38,28 @@
 - `adminizerMiddlewares` routes are always prefixed with Adminizer's `routePrefix` (`/dashboard`).
   A machine-facing API must be mounted on `this.appManager.app` in `mount()` instead — that is why
   the Worker API lives in `layers/app-agentiz/lib/workerApiRouter.ts`.
+- A permission decision is written **only** as `await accessRightsHelper.checkPermission(token, user)`
+  (or `checkAnyPermission`). Adminizer froze the older `hasPermission`/`enoughPermissions` at a
+  synchronous, fail-closed signature *forever* and marked them `@deprecated`: they cannot await a
+  contextual token's `check`, so they deny it silently while compiling and type-checking fine —
+  which is why `layers/app-agentiz/lib/deprecatedAccessApi.test.ts` fails the build on either name
+  rather than trusting anyone to remember. (The pair was briefly `async` in `5.1.0-build.24`, and a
+  missing `await` made every such check return a truthy pending promise — three real holes here.
+  The freeze is the fix, so the names are not coming back.) `hasStaticPermission` /
+  `enoughStaticPermissions` are the legal escape where awaiting is genuinely impossible — there is
+  no such place in our layers today; choosing one means writing down why next to the call and that
+  a contextual token is denied there. The same pair lives on three surfaces and the rule covers all
+  three: `adminizer.accessRightsHelper`, `AppRuntimeAccessRights` (`runtime.accessRights`) and
+  `AppAiAssistantContext`. Note that `WorkflowHost.checkPermission` in
+  `layers/app-agentiz/lib/workflow/host.ts` is an unrelated method of the workflow engine. Where a
+  *local* interface has to restate one of these signatures (as `mobileAssistantWebviewRouter.ts`
+  does), it must name the Adminizer version it was copied from: the compiler checks the call
+  against the copy, so such an interface survives an upgrade in silence.
+  What this rule does **not** yet cover is that the panel routes decide nothing at all —
+  `adminizerMiddlewares` mounts before Adminizer's policies, and `requirePanelUser`
+  (`taskRoutes.ts`) is authentication only, so every logged-in panel user reaches every project.
+  Closing that is the members-and-roles work, and the token catalogue has to be registered before
+  the first guard is placed — an unregistered token is denied to everyone but the administrator.
 - A `PipelineSpec` is an entity of **its** project and never moves: `projectId` is refused on update
   (`@BeforeSave` on the model — the only place all four write paths pass through: MCP `agentiz.manage`,
   Adminizer CRUD, the panel editor, the assistant's `create_model_record`). Its stages already resolve
