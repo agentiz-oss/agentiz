@@ -75,6 +75,25 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @Column({ type: DataType.JSONB, allowNull: true })
   declare executorOverride: AgentRunExecutorOverride | null;
 
+  /**
+   * What the caller handed this run that is not the task — today, what a workflow knew and the
+   * task cannot say.
+   *
+   * A release run has to be told *which* branches it is assembling. That list belongs to the flow
+   * that counted them, not to the task (the release task is created after the count) and not to
+   * the spec (which is written once and reused). It reaches a hook script as the
+   * `AGENTIZ_WORKFLOW_INPUT` environment variable, json-encoded, and reaches nothing else: values
+   * from a workflow are data, and substituting them into a script or a prompt would make every
+   * branch name a command — the same rule the rest of `lib/hookEnv.ts` follows.
+   *
+   * Null for every run nobody passed anything to, which is every run that existed before this
+   * column: the env variable is then absent rather than empty, so an old pipeline's environment is
+   * byte-identical to what it was.
+   */
+  @AdminizerField({ title: 'Workflow input', type: 'jsoneditor', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare input: Record<string, unknown> | null;
+
   /** Human comment that caused this run, when it was event-triggered. */
   @ForeignKey(() => AgentTaskComment)
   @Column({ type: DataType.STRING, allowNull: true })

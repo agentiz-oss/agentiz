@@ -98,6 +98,10 @@ import {
   up as upWorkflowHumanGate,
   down as downWorkflowHumanGate,
 } from './umzug/1788001100000_workflow_human_gate';
+import {
+  up as upRunInput,
+  down as downRunInput,
+} from './umzug/1788001200000_run_input';
 
 export const umzugExports: Migration[] = [
   {
@@ -298,5 +302,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001100000,
     up: upWorkflowHumanGate,
     down: downWorkflowHumanGate,
+  },
+  {
+    name: 'run_input',
+    timestamp: 1788001200000,
+    up: upRunInput,
+    down: downRunInput,
   },
 ];

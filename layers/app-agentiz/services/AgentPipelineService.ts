@@ -123,6 +123,12 @@ export class AgentPipelineService {
        * pre-existing caller) keeps the resolution exactly as it was.
        */
       pipelineSpecId?: string | null;
+      /**
+       * What the caller knows and the task does not — see `AgentRun.input`. A release run is told
+       * which branches it is assembling this way; absent (every pre-existing caller) leaves the
+       * column null and the hook environment exactly as it was.
+       */
+      input?: Record<string, unknown> | null;
     } = {},
   ): Promise<AgentRun> {
     const task = await AgentTask.findByPk(taskId);
@@ -153,6 +159,7 @@ export class AgentPipelineService {
       triggerCommentId,
       previousRunId: previousRun?.id ?? null,
       executorOverride: options.executorOverride ?? null,
+      input: options.input ?? null,
       pipelineSnapshot: snapshot,
       // Kept on the run itself: task.pipelineSpecId below is overwritten by every later run, and
       // the notification policy's pipeline scope must see the spec *this* run came from.
@@ -328,6 +335,12 @@ export class AgentPipelineService {
       triggerCommentId?: string | null;
       executorOverride?: AgentRunExecutorOverride | null;
       pipelineSpecId?: string | null;
+      /**
+       * What the caller knows and the task does not — see `AgentRun.input`. A release run is told
+       * which branches it is assembling this way; absent (every pre-existing caller) leaves the
+       * column null and the hook environment exactly as it was.
+       */
+      input?: Record<string, unknown> | null;
     } = {},
   ): Promise<AgentRun> {
     const run = await this.createRun(taskId, trigger, options);

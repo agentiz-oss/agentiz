@@ -24,6 +24,9 @@ export default defineConfig({
       // app-adminizer is a package of its own, but it is developed from this checkout and carries
       // no test runner — run its tests with ours so `npm test` covers the seam the panel uses.
       'local_modules/app-adminizer/tests/**/*.{test,spec}.ts',
+      // Same reason for app-workflow: the engine is developed from this checkout and ships no
+      // runner of its own, so its tests run with ours.
+      'local_modules/app-workflow/tests/**/*.{test,spec}.ts',
     ],
   },
 });

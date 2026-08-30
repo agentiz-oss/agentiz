@@ -7,9 +7,11 @@ import type {
   WorkflowMsg,
 } from '@nodeknit/app-workflow';
 import { AgentTask } from '../../models/AgentTask';
+import { AgentWorkspaceProposal } from '../../models/AgentWorkspaceProposal';
 import { AgentTaskComment } from '../../models/AgentTaskComment';
 import { AgentWorkflowRun } from '../../models/AgentWorkflowRun';
 import { AgentPipelineService } from '../../services/AgentPipelineService';
+import { AgentTaskService } from '../../services/AgentTaskService';
 import { ApprovalService } from '../../services/ApprovalService';
 import { PROJECT_TOKENS } from '../access/tokens';
 import type { AgentRunTrigger, AgentTaskStatus } from '../../types/agentiz';
@@ -25,9 +27,11 @@ import {
   approvalDocs,
   pipelineDocs,
   taskCommentDocs,
+  taskCreateDocs,
   taskMatchDocs,
   taskRunDocs,
   taskStatusDocs,
+  tasksQueryDocs,
   taskTriggerDocs,
 } from './nodeDocs';
 
@@ -443,6 +447,14 @@ export const pipelineNode: NodeTypeDefinition = {
           + ' По умолчанию включено',
         default: true,
       },
+      passPayload: {
+        type: 'boolean',
+        title: 'Передать данные флоу в хуки',
+        description:
+          'Отдать msg.payload запуску: хук-скрипт получит его как переменную AGENTIZ_WORKFLOW_INPUT'
+          + ' (json). Нужно релизному пайплайну, чтобы узнать список веток. По умолчанию выключено',
+        default: false,
+      },
     },
   },
   /**
@@ -470,9 +482,13 @@ export const pipelineNode: NodeTypeDefinition = {
       const triggerCommentId = ctx.config.useTriggerComment === false
         ? null
         : (typeof payload.commentId === 'string' ? payload.commentId : null);
+      // Off unless asked for: a pipeline written before workflows could pass anything must get the
+      // environment it always got, and `payload` carries whatever every upstream node put there.
+      const input = ctx.config.passPayload === true ? { ...payload } : null;
       const run = await AgentPipelineService.runTask(payload.taskId, trigger, {
         ...(specId ? { pipelineSpecId: specId } : {}),
         ...(triggerCommentId ? { triggerCommentId } : {}),
+        ...(input ? { input } : {}),
       });
       ctx.logger.info(`[agentiz.pipeline] задача ${payload.taskId} → запуск ${run.id}, ждём результата`);
       return pipelineRunRef(run.id);
@@ -695,6 +711,205 @@ export const approvalNode: NodeTypeDefinition = {
   },
 };
 
+
+// ---------------------------------------------------------------------------
+// server: has enough work piled up to be worth a release?
+// ---------------------------------------------------------------------------
+
+/** How many accepted features a release waits for, when the node does not say. */
+const DEFAULT_RELEASE_MIN_COUNT = 3;
+
+/** Upper bound on one assembly, so a flow that has not run for a quarter does not merge a quarter. */
+const DEFAULT_RELEASE_LIMIT = 20;
+
+/**
+ * The branch a task's work actually reached, or `null` when it never reached one.
+ *
+ * Read off `AgentWorkspaceProposal` rather than off the run: the proposal is the record that knows
+ * a branch was *pushed*, and only a pushed branch can be merged. A task whose proposal is still
+ * waiting for review has a target branch too — and merging that would release work nobody applied.
+ */
+async function pushedBranchOf(taskId: string): Promise<string | null> {
+  const proposal = await AgentWorkspaceProposal.findOne({
+    where: { taskId, status: 'pushed' },
+    order: [['updatedAt', 'DESC']],
+  });
+  const branch = proposal?.targetBranch?.trim();
+  return branch ? branch : null;
+}
+
+export const tasksQueryNode: NodeTypeDefinition = {
+  type: 'agentiz.tasks.query',
+  name: 'Сколько накопилось задач',
+  description: 'Считает готовые к релизу задачи проекта; два выхода — набралось и ещё нет',
+  docs: tasksQueryDocs,
+  category: 'Agentiz',
+  kind: 'server',
+  ports: { inputs: 1, outputs: ['enough', 'notEnough'] },
+  configSchema: {
+    type: 'object',
+    properties: {
+      projectId: {
+        type: 'string',
+        title: 'Проект (id)',
+        description: 'Обязателен: считать «сколько накопилось» по всем проектам сразу нечего',
+      },
+      workflowStatus: {
+        type: 'string',
+        title: 'Текстовый статус',
+        description: 'Точное совпадение со статусом, который пишет узел «Статус задачи». Например: принято',
+      },
+      minCount: {
+        type: 'number',
+        title: 'Сколько ждать',
+        description: `Порог. По умолчанию ${DEFAULT_RELEASE_MIN_COUNT}`,
+      },
+      limit: {
+        type: 'number',
+        title: 'Не больше чем',
+        description: `Сколько задач максимум забрать в одну сборку. По умолчанию ${DEFAULT_RELEASE_LIMIT}`,
+      },
+    },
+  },
+  executor: {
+    async execute(ctx: NodeContext): Promise<NodeResult> {
+      const projectId = String(ctx.config.projectId ?? '').trim();
+      if (!projectId) throw new Error('agentiz.tasks.query: не указан проект');
+      const workflowStatus = String(ctx.config.workflowStatus ?? '').trim();
+      if (!workflowStatus) throw new Error('agentiz.tasks.query: не указан текстовый статус');
+      const configuredMin = Number(ctx.config.minCount ?? NaN);
+      const minCount = Number.isFinite(configuredMin) && configuredMin > 0
+        ? Math.floor(configuredMin)
+        : DEFAULT_RELEASE_MIN_COUNT;
+      const configuredLimit = Number(ctx.config.limit ?? NaN);
+      const limit = Number.isFinite(configuredLimit) && configuredLimit > 0
+        ? Math.floor(configuredLimit)
+        : DEFAULT_RELEASE_LIMIT;
+
+      // Oldest acceptance first: a release drains the queue, it does not skim it.
+      const candidates = await AgentTask.findAll({
+        where: { projectId, workflowStatus },
+        order: [['workflowStatusAt', 'ASC']],
+        limit,
+      });
+
+      const tasks: Array<{ taskId: string; title: string; branch: string }> = [];
+      for (const task of candidates) {
+        const branch = await pushedBranchOf(task.id);
+        // Accepted but never pushed is not "almost ready" — there is nothing to merge, and letting
+        // it into the count would make the release one feature short of what it promised.
+        if (!branch) {
+          ctx.logger.warn(`[agentiz.tasks.query] задача ${task.id} со статусом «${workflowStatus}» без запушенной ветки — пропущена`);
+          continue;
+        }
+        tasks.push({ taskId: task.id, title: task.title, branch });
+      }
+
+      const payload = {
+        ...(ctx.msg.payload as Record<string, unknown> | undefined),
+        projectId,
+        workflowStatus,
+        minCount,
+        count: tasks.length,
+        tasks,
+        taskIds: tasks.map((item) => item.taskId),
+        branches: tasks.map((item) => item.branch),
+      };
+      const enough = tasks.length >= minCount;
+      ctx.logger.info(
+        `[agentiz.tasks.query] проект ${projectId}, «${workflowStatus}»: ${tasks.length} из ${minCount}`,
+      );
+      // Not enough is an ordinary outcome, not a failure: the schedule wakes this flow far more
+      // often than work accumulates.
+      return { msg: { ...ctx.msg, payload }, output: enough ? 'enough' : 'notEnough' };
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// server: give a scheduled flow a task of its own
+// ---------------------------------------------------------------------------
+
+export const taskCreateNode: NodeTypeDefinition = {
+  type: 'agentiz.task.create',
+  name: 'Создать задачу',
+  description: 'Заводит задачу — то, к чему флоу по расписанию привяжет запуск, статус и заявку',
+  docs: taskCreateDocs,
+  category: 'Agentiz',
+  kind: 'server',
+  ports: { inputs: 1, outputs: ['out'] },
+  configSchema: {
+    type: 'object',
+    properties: {
+      projectId: {
+        type: 'string',
+        title: 'Проект (id)',
+        description: 'Пусто = проект из msg.payload.projectId',
+      },
+      title: {
+        type: 'string',
+        title: 'Название',
+        description: 'Шаблон. Подстановки: {{payload.count}}, {{payload.branches}}',
+      },
+      description: {
+        type: 'string',
+        title: 'Описание',
+        description:
+          'Шаблон. Попадает в промпт агента, поэтому список веток стоит выписать сюда:'
+          + ' {{payload.branches}}',
+      },
+      tags: {
+        type: 'string',
+        title: 'Теги',
+        description:
+          'Через запятую. Задайте теги, по которым основной граф проекта задачу НЕ подхватит —'
+          + ' иначе релизная задача запустит круг разработки',
+      },
+    },
+  },
+  executor: {
+    async execute(ctx: NodeContext): Promise<NodeResult> {
+      const previous = (ctx.msg.payload as Record<string, unknown> | undefined) ?? {};
+      const projectId = String(ctx.config.projectId ?? previous.projectId ?? '').trim();
+      if (!projectId) throw new Error('agentiz.task.create: не указан проект');
+      const title = renderTemplate(ctx.config.title, ctx.msg).trim();
+      if (!title) throw new Error('agentiz.task.create: название пусто');
+
+      const created = await AgentTaskService.create(
+        {
+          projectId,
+          title: title.slice(0, 250),
+          description: renderTemplate(ctx.config.description, ctx.msg).trim() || undefined,
+          tags: stringList(ctx.config.tags),
+        },
+        // The flow is the author. A workflow acting as a named person would put that person's name
+        // on work they never asked for.
+        { id: null, name: 'workflow' },
+      );
+      const taskId = String(created.id ?? '');
+      if (!taskId) throw new Error('agentiz.task.create: задача создана без id');
+
+      ctx.logger.info(`[agentiz.task.create] проект ${projectId}: задача ${taskId} «${title}»`);
+      return {
+        msg: {
+          ...ctx.msg,
+          payload: {
+            ...previous,
+            // Downstream nodes act on the new task — that is the whole point of creating it. The
+            // list the flow arrived with is kept beside it so the last node can still mark every
+            // task that went into this assembly.
+            taskId,
+            projectId,
+            title,
+            releaseTaskId: taskId,
+            sourceTaskIds: previous.taskIds ?? [],
+          },
+        },
+      };
+    },
+  },
+};
+
 export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   taskEventTriggerNode,
   taskMatchNode,
@@ -703,4 +918,6 @@ export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   taskStatusNode,
   taskCommentNode,
   approvalNode,
+  tasksQueryNode,
+  taskCreateNode,
 ];

@@ -68,6 +68,7 @@ export const HOOK_VARIABLES: HookVariableDef[] = [
   { name: 'AGENTIZ_TASK_TAGS', scope: 'always', description: 'Task tags, comma separated', example: 'bug,urgent' },
   { name: 'AGENTIZ_TASK_URL', scope: 'always', description: 'Link to the task in its tracker, empty when it has none', example: 'https://gitlab.com/…/issues/5' },
   { name: 'AGENTIZ_TASK_BRANCH', scope: 'always', description: 'Branch requested by the task itself, empty when it requested none', example: 'feature/login' },
+  { name: 'AGENTIZ_WORKFLOW_INPUT', scope: 'always', description: 'What the workflow that started this run passed it, as json — absent when nothing was passed', example: '{"branches":["agentiz/one"]}' },
   { name: 'AGENTIZ_TASK_FILES_DIR', scope: 'always', description: 'Directory with the task\'s attached files, laid out by the worker; empty when the task has none', example: '/home/worker/.local/share/agentiz-worker/workspace/<jobId>/task-files' },
 
   { name: 'AGENTIZ_REPO_PROVIDER', scope: 'repository', description: 'github or gitlab', example: 'gitlab' },
@@ -140,6 +141,11 @@ export function buildHookEnv(inputs: HookEnvInputs): Record<string, string> {
     AGENTIZ_TASK_URL: text(task.externalUrl),
     AGENTIZ_TASK_BRANCH: text(task.branchRef),
   };
+  // Only when something was actually passed. An absent variable — rather than an empty one — is
+  // what keeps a pipeline written before workflows could pass input byte-identical to what it was.
+  if (run.input && typeof run.input === 'object' && Object.keys(run.input).length > 0) {
+    env.AGENTIZ_WORKFLOW_INPUT = JSON.stringify(run.input);
+  }
   if (repository) {
     const owner = text(repository.owner);
     const repo = text(repository.repo);
