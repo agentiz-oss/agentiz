@@ -552,7 +552,12 @@
   layer's cache key; a new local module needs an entry in the workflow's `base` map or it inherits
   the same silent staleness. When prod runs code that does not match the submodule, check the
   installed package version (`window.adminizerVersion` on any panel page) before reading anything
-  else.
+  else. The lockfile that install reads is `yarn.lock` in **berry** format (`__metadata: version 9`)
+  — the image runs `corepack prepare yarn@4.14.1`, and `packageManager` in `package.json` says the
+  same. A stray `yarn` from `PATH` (classic 1.x) rewrites the whole file into the v1 format without
+  a word, which looks like an 18k-line diff and hands the build a lockfile its yarn will silently
+  re-resolve from scratch. Update it with `corepack yarn install --mode=update-lockfile`, and treat
+  a `# yarn lockfile v1` header at the top of the file as damage to revert, never to commit.
 - A panel module that lives in a **package** (`vite.config.ts` builds
   `node_modules/@nodeknit/app-workflow/adminizer/modules/*` next to the layers' own) is built from a
   different place than a layer's module, and a stylesheet a dependency ships is where that bites:
