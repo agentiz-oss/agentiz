@@ -59,6 +59,13 @@ export type AgentRunStatus = 'pending' | 'running' | 'waiting_input' | 'succeede
 
 export type AgentRunTrigger = 'sync' | 'manual' | 'webhook' | 'schedule' | 'human_comment';
 
+/**
+ * Machine-readable pass/fail read off a verdict stage's own output (see lib/runVerdict.ts).
+ * `null` covers two cases on purpose, indistinguishable to every consumer: no stage asked for a
+ * verdict, or one did and never produced a usable marker.
+ */
+export type AgentRunVerdict = 'pass' | 'fail';
+
 export type AgentStageStatus = 'pending' | 'running' | 'waiting_input' | 'succeeded' | 'failed' | 'skipped';
 
 export type AgentRunInteractionKind = 'elicitation';
@@ -250,6 +257,13 @@ export interface PipelineStageDef {
    */
   model?: string;
   onFail: StageFailurePolicy;
+  /**
+   * Ask this stage's agent for a machine-readable `AGENTIZ_VERDICT: pass|fail — reason` marker
+   * (see `lib/runVerdict.ts`) instead of relying on prose. Absent/false = unchanged behaviour:
+   * nothing is added to the prompt, the worker makes no fallback attempt, and `AgentRun.verdict`
+   * stays `null` — the same "not asked" value as a stage that never sets this field.
+   */
+  verdict?: boolean;
   /** Selects the workspace used by the worker. */
   runtime: PipelineStageRuntimeDef;
 }

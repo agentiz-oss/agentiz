@@ -106,6 +106,10 @@ export class MobileTaskService {
       trigger: run.trigger,
       resultSummary: run.resultSummary,
       errorMessage: run.errorMessage,
+      // Machine-readable pass/fail off a verdict stage's own output; null covers both "no stage
+      // asked" and "asked but got nothing usable back" — see lib/runVerdict.ts (app-agentiz).
+      verdict: run.verdict,
+      verdictReason: run.verdictReason,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
       // Token spend accumulated across attempts; null until a worker result reports usage.

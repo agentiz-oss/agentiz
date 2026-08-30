@@ -265,6 +265,37 @@ describe('agentiz workflow nodes', () => {
     expect((workflowRun.msg as any).payload.error).toBe('воркер умер');
   });
 
+  it('a run that carries a verdict routes on "pass"/"fail" instead of "succeeded", never "failed"', async () => {
+    await AgentWorkflowSpec.update({
+      spec: {
+        nodes: [
+          { id: 'arrived', type: 'agentiz.task.trigger', config: { event: 'agentiz.task.created' } },
+          { id: 'pipe', type: 'agentiz.pipeline', config: {} },
+          { id: 'after', type: 'agentiz.task.run', config: {} },
+        ],
+        edges: [
+          { from: 'arrived', to: 'pipe' },
+          { from: 'pipe', fromPort: 'fail', to: 'after' },
+        ],
+      },
+    }, { where: {} });
+    await engine.rebindTriggers();
+
+    const task = await AgentTask.create({ projectId, externalId: 'local:8', title: 'Проверь', status: 'new', priority: 'normal' } as any);
+    await settled();
+
+    const run = await AgentRun.findByPk(pipelineRuns[0]);
+    // Succeeded infra-wise, but the agent's own verdict was negative — must take "fail", not
+    // "succeeded" (verdict present) and not "failed" (that port is infra-only).
+    await run!.update({ status: 'succeeded', resultSummary: 'готово', verdict: 'fail', verdictReason: 'тесты красные' });
+    await settled();
+
+    expect(started).toEqual([task.id]);
+    const workflowRun = (await AgentWorkflowRun.findAll()).at(0)!;
+    expect(workflowRun.status).toBe('succeeded');
+    expect((workflowRun.msg as any).payload.verdict).toBe('fail');
+  });
+
   it('the match node takes the "no" branch and reports what it looked at', async () => {
     const result = await taskMatchNode.executor!.execute(
       nodeContext({ taskId: 't1', title: 'Обсудить', description: null, tags: [] }, { keywords: 'выполни', tags: 'todo' }),
@@ -290,7 +321,7 @@ describe('agentiz workflow nodes', () => {
 
       const schema = await callTool('agentiz.workflowSchema');
       const pipeline = schema.nodeTypes.find((type: any) => type.type === 'agentiz.pipeline');
-      expect(pipeline.ports).toEqual({ inputs: 1, outputs: ['succeeded', 'failed'] });
+      expect(pipeline.ports).toEqual({ inputs: 1, outputs: ['succeeded', 'failed', 'pass', 'fail'] });
       // The executor must never cross this boundary — a palette entry is schema and ports only.
       expect(pipeline.external).toBeUndefined();
     });

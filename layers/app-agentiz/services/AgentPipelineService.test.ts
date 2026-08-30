@@ -10,7 +10,9 @@ import { AgentRun } from '../models/AgentRun';
 import { AgentTask } from '../models/AgentTask';
 import { AgentWorker } from '../models/AgentWorker';
 import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
+import { AgentRole } from '../models/AgentRole';
 import { AgentWorkerJobBuilder } from './AgentPipelineService';
+import { VERDICT_PROMPT_INSTRUCTION } from '../lib/runVerdict';
 
 /**
  * The reservation guard in `buildSnapshot`. A workspace is one directory on one worker, but a spec
@@ -111,5 +113,51 @@ describe('AgentWorkerJobBuilder workspace reservation', () => {
     await expect(AgentWorkerJobBuilder.buildSnapshot(run)).resolves.toMatchObject({
       workspace: { path: '/srv/repo' },
     });
+  });
+});
+
+/**
+ * `stage.verdict` is a flow property carried into the job snapshot beside `onFail`, and only a
+ * verdict stage's prompt should carry the marker instruction.
+ */
+describe('AgentWorkerJobBuilder verdict stage', () => {
+  let sequelize: Sequelize;
+  let project: AgentProject;
+  let task: AgentTask;
+
+  beforeAll(async () => {
+    sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: Object.values(agentizModels) as any[] });
+  });
+
+  beforeEach(async () => {
+    await sequelize.sync({ force: true });
+    project = await AgentProject.create({ name: 'Test', slug: 'test', ownerId: 1 } as any);
+    task = await AgentTask.create({ projectId: project.id, externalId: 'local:1', title: 'Fix auth', status: 'queued', priority: 'normal' } as any);
+    await AgentRole.create({
+      projectId: project.id, key: 'tester', title: 'Tester', systemPrompt: 'You test things.',
+    } as any);
+    await AgentRole.create({
+      projectId: project.id, key: 'implementer', title: 'Implementer', systemPrompt: 'You implement things.',
+    } as any);
+  });
+
+  afterAll(async () => sequelize.close());
+
+  it('appends the marker instruction only to a stage with verdict: true', async () => {
+    const run = await AgentRun.create({
+      projectId: project.id, taskId: task.id, status: 'pending', trigger: 'manual', currentStageIndex: 0,
+      pipelineSnapshot: {
+        stages: [
+          { order: 1, role: 'implement', agentRoleKey: 'implementer', onFail: 'stop', runtime: { mode: 'host' } },
+          { order: 2, role: 'test', agentRoleKey: 'tester', onFail: 'stop', verdict: true, runtime: { mode: 'host' } },
+        ],
+        finalAction: { type: 'none' },
+      },
+    } as any);
+    const snapshot = await AgentWorkerJobBuilder.buildSnapshot(run) as any;
+    expect(snapshot.stages[0].verdict).toBe(false);
+    expect(snapshot.stages[0].systemPrompt).toBe('You implement things.');
+    expect(snapshot.stages[1].verdict).toBe(true);
+    expect(snapshot.stages[1].systemPrompt).toBe(`You test things.\n\n${VERDICT_PROMPT_INSTRUCTION}`);
   });
 });

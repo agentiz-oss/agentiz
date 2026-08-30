@@ -90,6 +90,10 @@ import {
   up as upProjectMembers,
   down as downProjectMembers,
 } from './umzug/1788000900000_project_members';
+import {
+  up as upRunVerdict,
+  down as downRunVerdict,
+} from './umzug/1788001000000_run_verdict';
 
 export const umzugExports: Migration[] = [
   {
@@ -278,5 +282,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788000900000,
     up: upProjectMembers,
     down: downProjectMembers,
+  },
+  {
+    name: 'run_verdict',
+    timestamp: 1788001000000,
+    up: upRunVerdict,
+    down: downRunVerdict,
   },
 ];

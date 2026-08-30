@@ -127,6 +127,7 @@ async function listRuns(projectId: string, visibleProjectIds?: string[]) {
       currentStageIndex: run.currentStageIndex,
       errorMessage: run.errorMessage,
       resultSummary: run.resultSummary,
+      verdict: run.verdict,
       task: taskMap.get(run.taskId) ? { id: run.taskId, title: taskMap.get(run.taskId)!.title } : null,
       project: projectMap.get(run.projectId) ? { id: run.projectId, name: projectMap.get(run.projectId)!.name } : null,
       stages: (stagesByRun.get(run.id) ?? []).map((stage) => ({

@@ -20,6 +20,7 @@ import type { FileChange, FileOp } from '../lib/git';
 import { DEFAULT_HOOK_TIMEOUT_SEC, MAX_HOOK_TIMEOUT_SEC, buildHookEnv } from '../lib/hookEnv';
 import { listTaskAttachments } from '../lib/taskAttachments';
 import { harnessColumnValue, harnessKeysForStages } from '../lib/harness';
+import { VERDICT_PROMPT_INSTRUCTION } from '../lib/runVerdict';
 import { nextScheduleOpen } from '../lib/activeHours';
 import { hasUpstreamThread } from '../lib/taskManager';
 import { generateWorkspaceBranch } from '../lib/workspaceBranch';
@@ -736,6 +737,11 @@ export class AgentWorkerJobBuilder {
     const stages = await Promise.all(orderedStages(run.pipelineSnapshot).map(async (stage, index) => {
       const role = await AgentRole.findOne({ where: { projectId: project.id, key: stage.agentRoleKey } });
       const execution = await AgentStageExecution.findOne({ where: { runId: run.id, stageIndex: index } });
+      // Only a verdict stage's prompt carries the marker instruction — a role that never asks for
+      // one must not be told a format it doesn't need.
+      const systemPrompt = stage.verdict
+        ? [role?.systemPrompt, VERDICT_PROMPT_INSTRUCTION].filter(Boolean).join('\n\n')
+        : role?.systemPrompt ?? null;
       return {
         executionId: execution?.id ?? null,
         stageIndex: index,
@@ -743,8 +749,11 @@ export class AgentWorkerJobBuilder {
         role: stage.role,
         agentRoleKey: stage.agentRoleKey,
         onFail: stage.onFail,
+        // A flow property, not agent config — same reasoning as onFail sitting beside it rather
+        // than under `agent`. Absent/false is the pre-existing shape (no such key in old snapshots).
+        verdict: !!stage.verdict,
         runtime: stage.runtime ?? null,
-        systemPrompt: role?.systemPrompt ?? null,
+        systemPrompt,
         agent: {
           kind: override ? 'openhands-acp' : String((role?.config as any)?.executor ?? 'stub'),
           // Most specific first: what a person picked for this launch, then the spec's own

@@ -78,6 +78,9 @@ function runTeaser(run: AgentRun, opts: { includeSummary?: boolean } = {}) {
     }),
     errorMessage: run.errorMessage, commitUrl: run.commitUrl,
     responseUrl: run.responseUrl, createdAt: run.createdAt,
+    // Machine-readable pass/fail off a verdict stage's own output; null covers both "no stage
+    // asked" and "asked but got nothing usable back" — see lib/runVerdict.ts.
+    verdict: run.verdict, verdictReason: run.verdictReason,
     // Set while the run is parked (harness limit / schedule window); the status itself stays
     // running/pending, so this pair is what distinguishes "waiting" from "hung".
     waitingReason: run.waitingReason, waitingUntil: run.waitingUntil,

@@ -194,6 +194,39 @@
   (`worker/src/agentiz_worker/main.py`): the ACP server applies it to the session after it starts
   (`set_config_option`/`set_session_model`), not via a CLI flag or env var — `claude-agent-acp`
   otherwise falls back to `ANTHROPIC_MODEL`/its own default.
+- A stage's `verdict` (`spec.stages[].verdict`, design: `.ai-notes/machine-verdict-plan.md`) asks
+  its agent for a machine-readable `AGENTIZ_VERDICT: pass` / `AGENTIZ_VERDICT: fail — reason`
+  marker, read into `AgentRun.verdict`/`verdictReason` (nullable `'pass'|'fail'`). Exactly three
+  states, no fourth: unset stage ⇒ nothing added to the prompt, nothing parsed, `verdict` stays
+  `null`; a valid marker found ⇒ `verdict` set; asked but never got a valid marker (both the main
+  answer and the worker's one fallback retry failed to produce one) ⇒ `verdict` stays `null` too —
+  same value as "never asked", deliberately indistinguishable to every consumer (only
+  `stage.verdict_retry` in the run log tells the two apart). The marker format and regex are
+  duplicated on purpose in `layers/app-agentiz/lib/runVerdict.ts` (TS) and
+  `worker/src/agentiz_worker/verdict.py` (Python, no shared package) — a format change touches both
+  in one commit. Parsing reads only the stage(s) actually marked `verdict: true`
+  (`AgentWorkerApiService.resolveRunVerdict`, matched via `AgentStageExecution.stageIndex`), never
+  the run's combined `resultSummary` — another stage's prose must not produce a false verdict. The
+  fallback retry lives in `run_openhands` (`worker/src/agentiz_worker/main.py`): one extra
+  `conversation.send_message`+`run()` on the same session before `close()`, never a loop. A pipeline
+  that asks for a verdict routes `agentiz.pipeline`'s workflow port on `pass`/`fail` instead of
+  `succeeded` (`completePipelineWait` in `lib/workflow/engineBridge.ts`); `failed` stays reserved
+  strictly for an infrastructure failure (the agent never produced a result), never for the agent's
+  own "fail" opinion — enabling the flag on a pipeline already wired into a graph silently orphans
+  its `succeeded` edge, which is why `nodeDocs.ts` says so on the node itself.
+- **Extending a pipeline spec/snapshot/prompt must prove old pipelines keep working, not just that
+  the new field works.** A spec written before the field existed has to come out the other end
+  byte-identical: same validation result, same prompt text, same job snapshot shape where the field
+  is absent, same workflow port. "It doesn't error" is not that proof — a legacy spec silently
+  getting a longer prompt, a new default value, or a different snapshot shape is exactly the kind of
+  break a schema-level test won't catch. `stage.verdict` is the worked example:
+  `services/pipelineVerdictBackwardCompat.test.ts` walks one legacy-shaped spec (the field absent
+  everywhere, not merely `false`) through validation, `buildSnapshot`, marker parsing and
+  `completePipelineWait` in one file, so the question "does this break yesterday's pipelines" has
+  one obvious answer instead of being inferred from four unrelated tests. Any divergence such a test
+  finds is a bug to raise and fix or explicitly document — never something to quietly absorb because
+  "it's probably fine". Write the equivalent test for the next field before merging it, not after
+  something reports a pipeline behaving differently.
 - Every "a person may care" event (a question asked, a review waiting, a run finished, a failed
   push — catalogue in `layers/app-agentiz/lib/notifications/activityTypes.ts`, the single source
   the policy schema, the built-in defaults and the UI hints all derive from) goes through **one

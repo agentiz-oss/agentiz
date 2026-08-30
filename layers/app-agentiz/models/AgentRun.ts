@@ -7,7 +7,7 @@ import { AgentTask } from './AgentTask';
 import { AgentTaskComment } from './AgentTaskComment';
 import { AgentStageExecution } from './AgentStageExecution';
 import { AgentRunLog } from './AgentRunLog';
-import type { AgentJobDeferReason, AgentRunStatus, AgentRunTrigger, AgentRunExecutorOverride, PipelineSpecDef } from '../types/agentiz';
+import type { AgentJobDeferReason, AgentRunStatus, AgentRunTrigger, AgentRunVerdict, AgentRunExecutorOverride, PipelineSpecDef } from '../types/agentiz';
 
 /**
  * "У каждой задачи будут запуски" - one row per pipeline execution attempt for an AgentTask.
@@ -109,6 +109,26 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @AdminizerField({ title: 'Result summary', type: 'longtext', views: { list: false, add: false, edit: false } })
   @Column({ type: DataType.TEXT, allowNull: true })
   declare resultSummary: string | null;
+
+  /**
+   * Machine-readable pass/fail read off a verdict stage's own output (lib/runVerdict.ts). `null`
+   * covers two cases on purpose: no stage in this run asked for a verdict (`stage.verdict` unset),
+   * or one did and neither the main attempt nor the worker's one fallback retry produced a usable
+   * `AGENTIZ_VERDICT:` marker — a consumer never needs to tell those apart, only the run log does
+   * (`stage.verdict_retry`).
+   */
+  @AdminizerField({
+    title: 'Verdict',
+    type: 'select',
+    isIn: { pass: 'Pass', fail: 'Fail' },
+    views: { list: true, add: false, edit: false },
+  })
+  @Column({ type: DataType.ENUM('pass', 'fail'), allowNull: true })
+  declare verdict: AgentRunVerdict | null;
+
+  @AdminizerField({ title: 'Verdict reason', type: 'longtext', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.TEXT, allowNull: true })
+  declare verdictReason: string | null;
 
   /**
    * Token spend, accumulated across every applied worker result (so a deferred/retried attempt's
@@ -265,6 +285,7 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
       error: instance.errorMessage,
       taskId: instance.taskId,
       projectId: instance.projectId,
+      verdict: instance.verdict,
     });
   }
 }

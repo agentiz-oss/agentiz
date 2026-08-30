@@ -39,6 +39,7 @@ from .live_events import LiveEventStream, SequenceCounter
 from .prompt import build_prompt
 from .redaction import Redactor
 from .repository import prepare_checkout
+from .verdict import VERDICT_RETRY_PROMPT, extract_verdict
 from .workspace_git import finalize_action, guard_workspace, preflight as workspace_git_preflight, record_tree, run_action
 
 SCHEMA_VERSION = 1
@@ -536,7 +537,8 @@ def stage_token_usage(agent: Any) -> dict[str, Any] | None:
 def run_openhands(mode: str, acp_command: list[str], model: str | None, message: str, settings: Settings, workdir: Path,
                   on_agent_message: Any, interaction_broker: HumanInteractionBroker,
                   collaboration_mode: str | None = None, on_tool_progress: Any = None,
-                  on_usage: Any = None) -> tuple[str, str | None]:
+                  on_usage: Any = None, verdict_expected: bool = False,
+                  on_verdict_retry: Any = None) -> tuple[str, str | None]:
     # Imports are deliberately here so `--help` and registration failures remain clear before a
     # virtualenv is installed. Both workspace choices use the same Conversation/ACPAgent flow.
     from openhands.sdk.agent import ACPAgent
@@ -585,6 +587,17 @@ def run_openhands(mode: str, acp_command: list[str], model: str | None, message:
             try:
                 conversation.send_message(message)
                 conversation.run()
+                # Exactly one fallback attempt (.ai-notes/machine-verdict-plan.md §3): a model that
+                # ignored the marker format once will ignore it a third time too, and every retry
+                # costs a turn. Same `Conversation`/`forward_event` — the retry's answer overwrites
+                # `final_message`, which is what we want, and `on_usage` keeps counting into the
+                # same stage's spend. A verdict that still doesn't show up is not a WorkerError: an
+                # unanswered question is "no opinion", not an infrastructure failure.
+                if verdict_expected and not extract_verdict(final_message).verdict:
+                    if on_verdict_retry:
+                        on_verdict_retry()
+                    conversation.send_message(VERDICT_RETRY_PROMPT)
+                    conversation.run()
                 return str(conversation.state.execution_status), final_message
             finally:
                 conversation.close()
@@ -797,6 +810,7 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                     raise heartbeat_failure[0]
                 stage_id = stage.get("executionId")
                 mode, kind, command, model, collaboration_mode, reasoning_level = stage_config(stage)
+                verdict_expected = bool(stage.get("verdict", False))
                 # A container gets its own filesystem, so it would not contain the prepared
                 # directory this pipeline exists for. The server rejects the combination too; this
                 # is the guard on the side that actually owns the path.
@@ -835,6 +849,10 @@ def execute_job(client: Client, job: dict[str, Any], settings: Settings) -> None
                                 interaction_broker, collaboration_mode,
                                 on_tool_progress=lambda line, stage_id=stage_id: live.emit("stage.tool", stage_id, line, level="debug"),
                                 on_usage=stage_usage.append,
+                                verdict_expected=verdict_expected,
+                                on_verdict_retry=lambda stage_id=stage_id: emit(
+                                    "stage.verdict_retry", stage_id,
+                                    "Первый ответ не содержал AGENTIZ_VERDICT — переспрашиваю ещё раз", level="warn"),
                             )
                 except Exception:
                     if stage_usage:

@@ -263,11 +263,13 @@ export const taskRunNode: NodeTypeDefinition = {
 export const pipelineNode: NodeTypeDefinition = {
   type: 'agentiz.pipeline',
   name: 'Пайплайн (с ожиданием)',
-  description: 'Запускает пайплайн и продолжает флоу, когда запуск завершился: выходы «успех» и «ошибка»',
+  description: 'Запускает пайплайн и продолжает флоу, когда запуск завершился: выходы «успех», «ошибка», «pass», «fail»',
   docs: pipelineDocs,
   category: 'Agentiz',
   kind: 'external',
-  ports: { inputs: 1, outputs: ['succeeded', 'failed'] },
+  // `pass`/`fail` fire only for a pipeline whose last stage has `verdict: true`; `succeeded` never
+  // fires for one — see completePipelineWait (engineBridge.ts) and pipelineDocs below.
+  ports: { inputs: 1, outputs: ['succeeded', 'failed', 'pass', 'fail'] },
   configSchema: {
     type: 'object',
     properties: {

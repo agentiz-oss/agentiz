@@ -37,15 +37,33 @@ export function pipelineRunRef(runId: string): string {
  */
 export async function completePipelineWait(
   runId: string,
-  outcome: { status: string; summary?: string | null; error?: string | null; taskId?: string; projectId?: string },
+  outcome: {
+    status: string;
+    summary?: string | null;
+    error?: string | null;
+    taskId?: string;
+    projectId?: string;
+    /**
+     * Machine-readable pass/fail off a verdict stage's own output (see lib/runVerdict.ts). Present
+     * only for a pipeline that asked for one — absent is the pre-existing shape, and keeps routing
+     * on `succeeded`/`failed` exactly as before this field existed.
+     */
+    verdict?: 'pass' | 'fail' | null;
+  },
 ): Promise<void> {
   const engine = workflowEngine();
   if (!engine) return;
   try {
     await engine.completeExternal(pipelineRunRef(runId), {
       // Not `error:` even for a failed pipeline: a failure is a *result* the graph routes on its
-      // `failed` port, not a broken workflow. Only an engine-level problem should fail the flow.
-      output: outcome.status === 'succeeded' ? 'succeeded' : 'failed',
+      // own port, not a broken workflow. Only an engine-level problem should fail the flow.
+      //
+      // A pipeline that asked for a verdict and actually finished routes on `pass`/`fail` instead
+      // of `succeeded` — the agent's opinion, not the infra outcome. `failed` stays reserved
+      // strictly for the agent never having produced a result at all (crash, cancellation): the
+      // agent's own "test failed" belongs on the `fail` port, never on `failed`. See nodeDocs on
+      // `agentiz.pipeline` (nodes.ts).
+      output: outcome.status === 'succeeded' ? (outcome.verdict ?? 'succeeded') : 'failed',
       msg: {
         payload: {
           runId,
@@ -54,6 +72,7 @@ export async function completePipelineWait(
           status: outcome.status,
           summary: outcome.summary ?? null,
           error: outcome.error ?? null,
+          verdict: outcome.verdict ?? null,
         },
       },
     });

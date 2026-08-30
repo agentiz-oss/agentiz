@@ -138,6 +138,14 @@ describe('rejection messages', () => {
       ],
     }).message).toContain('without gaps');
   });
+
+  it('accepts a verdict stage, and a spec without the field unchanged', () => {
+    expect(() => assertValidSpec({
+      ...repositoryExample,
+      stages: [{ order: 1, role: 'implement', agentRoleKey: 'developer', verdict: true, runtime: { mode: 'host' } }],
+    })).not.toThrow();
+    expect(() => assertValidSpec(repositoryExample)).not.toThrow();
+  });
 });
 
 describe('coerceSpec', () => {

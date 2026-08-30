@@ -216,6 +216,11 @@
           "default": "stop",
           "description": "stop = fail the whole run; continue = mark this stage failed and run the next one."
         },
+        "verdict": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask this stage's agent for a machine-readable pass/fail marker (AGENTIZ_VERDICT: pass|fail — reason) instead of only prose. Absent/false = unchanged behaviour: nothing is added to the prompt, nothing is searched for, AgentRun.verdict stays null."
+        },
         "runtime": {
           "type": "object",
           "additionalProperties": false,

@@ -10,13 +10,15 @@ import { AgentTask } from '../models/AgentTask';
 import { AgentTaskAttachment } from '../models/AgentTaskAttachment';
 import { AgentGitConnection } from '../models/AgentGitConnection';
 import { AgentRepository } from '../models/AgentRepository';
-import type { AgentRunLogLevel, AgentTaskStatus } from '../types/agentiz';
+import type { AgentRunLogLevel, AgentRunVerdict, AgentTaskStatus } from '../types/agentiz';
 import type { FileChange, FileOp } from '../lib/git';
 import { normalizeFileChanges, requireGitConnectionAuthority } from '../lib/git';
 import { attachmentDiskPath } from '../lib/taskAttachments';
 import { alignState } from '../lib/harnessAlign';
+import { extractVerdict } from '../lib/runVerdict';
 import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentPipelineService } from './AgentPipelineService';
+import { orderedStages } from './PipelineSpecResolver';
 import { AgentJobClaimService } from './AgentJobClaimService';
 import { AgentCapacityService } from './AgentCapacityService';
 import { AgentRunDeferService } from './AgentRunDeferService';
@@ -163,6 +165,44 @@ async function accumulateRunUsage(run: AgentRun, stageOutputs: WorkerResult['sta
   });
 }
 
+/**
+ * Reads the `AGENTIZ_VERDICT` marker off exactly the stages the spec asked one of
+ * (`stage.verdict === true`), never off any other stage's output — a review stage quoting a
+ * similar-looking line in a different stage must not produce a false verdict. `stageOutputs[i]`
+ * is matched to its `AgentStageExecution.stageIndex` (looked up by `executionId`, not the array
+ * position — the two happen to agree today but nothing enforces it) and from there to that
+ * stage's declaration in `orderedStages(run.pipelineSnapshot)`.
+ *
+ * When more than one stage in the pipeline asks for a verdict, the last one in pipeline order
+ * wins — same "more recent opinion wins" rule used when picking the last marker inside one
+ * stage's own answer.
+ */
+// Exported only for AgentWorkerApiService.verdict.test.ts — applyResult's own path to it goes
+// through worker auth + job leasing, which a unit test for the parsing itself shouldn't need.
+export async function resolveRunVerdict(
+  run: AgentRun,
+  stageOutputs: WorkerResult['stageOutputs'],
+): Promise<{ verdict: AgentRunVerdict | null; verdictReason: string | null }> {
+  let result: { verdict: AgentRunVerdict | null; verdictReason: string | null } = { verdict: null, verdictReason: null };
+  if (!stageOutputs?.length) return result;
+  const stages = orderedStages(run.pipelineSnapshot);
+  const executions = await AgentStageExecution.findAll({
+    where: { id: stageOutputs.map((stage) => stage.executionId), runId: run.id },
+  });
+  const stageIndexById = new Map(executions.map((execution) => [execution.id, execution.stageIndex]));
+  const ordered = stageOutputs
+    .map((stage) => ({ stage, stageIndex: stageIndexById.get(stage.executionId) }))
+    .filter((entry) => entry.stageIndex !== undefined)
+    .sort((a, b) => (a.stageIndex as number) - (b.stageIndex as number));
+  for (const { stage, stageIndex } of ordered) {
+    if (!stages[stageIndex as number]?.verdict) continue;
+    const text = (stage.output?.agentResponse as string | undefined) ?? stage.summary ?? '';
+    const extracted = extractVerdict(text);
+    if (extracted.verdict) result = { verdict: extracted.verdict, verdictReason: extracted.reason };
+  }
+  return result;
+}
+
 function renderCommitMessage(template: string, run: AgentRun, task: AgentTask, summary: string): string {
   const values: Record<string, string> = {
     taskId: task.id, externalId: task.externalId, title: task.title, summary,
@@ -301,6 +341,10 @@ export class AgentWorkerApiService {
     }
     // Before defer classification on purpose: a limit-deferred attempt spent its tokens too.
     await accumulateRunUsage(run, payload.stageOutputs);
+    // Computed once and carried into every terminal write below (both branches of this method and
+    // applyWorkspacePipelineResult) so success/fail/cancel paths cannot disagree on it. Not applied
+    // on the defer path just below: that one keeps the run's status, it never terminalizes.
+    const { verdict, verdictReason } = await resolveRunVerdict(run, payload.stageOutputs);
 
     // A failure that is really a harness limit is deferred, not terminalized: the run keeps its
     // status and waits, the subscription's gate closes, and one of the two automatic resume
@@ -322,7 +366,7 @@ export class AgentWorkerApiService {
 
     const summary = payload.summary ?? '';
     if (job.proposalId) {
-      return this.applyWorkspacePipelineResult(job, run, task, payload, summary);
+      return this.applyWorkspacePipelineResult(job, run, task, payload, summary, verdict, verdictReason);
     }
     if (payload.status === 'succeeded') {
       // Written before anything is pushed, and that ordering is the requirement: a failed push used
@@ -338,14 +382,14 @@ export class AgentWorkerApiService {
           summary,
           diff,
         });
-        await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null });
+        await run.update({ status: 'succeeded', finishedAt: new Date(), resultSummary: summary || null, errorMessage: null, verdict, verdictReason });
         const finalTaskStatus: AgentTaskStatus = AgentPipelineService.taskStatusAfter(run.pipelineSnapshot.finalAction);
         await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, finalTaskStatus);
         await job.update({ status: 'succeeded', result: payload as unknown as Record<string, unknown>, lockedUntil: null });
         await AgentPipelineService.log(run.id, run.projectId, null, 'info', `Worker job succeeded, task moved to "${finalTaskStatus}"`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message });
+        await run.update({ status: 'failed', finishedAt: new Date(), resultSummary: summary || null, errorMessage: message, verdict, verdictReason });
         await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, 'failed');
         await job.update({ status: 'failed', result: payload as unknown as Record<string, unknown>, lastError: message, lockedUntil: null });
         await AgentPipelineService.log(run.id, run.projectId, null, 'error', `Final action failed: ${message}`);
@@ -353,7 +397,7 @@ export class AgentWorkerApiService {
     } else {
       const terminal = payload.status === 'cancelled' ? 'cancelled' : 'failed';
       const taskStatus: AgentTaskStatus = terminal === 'cancelled' ? 'cancelled' : 'failed';
-      await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
+      await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null, verdict, verdictReason });
       await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, taskStatus);
       await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await AgentPipelineService.log(run.id, run.projectId, null, terminal === 'cancelled' ? 'warn' : 'error', `Worker job ${terminal}: ${payload.errorMessage ?? summary}`);
@@ -506,6 +550,8 @@ export class AgentWorkerApiService {
     task: AgentTask,
     payload: WorkerResult,
     summary: string,
+    verdict: AgentRunVerdict | null,
+    verdictReason: string | null,
   ): Promise<Record<string, unknown>> {
     const proposal = await AgentWorkspaceProposal.findByPk(job.proposalId!);
     if (!proposal || proposal.latestRunId !== run.id || proposal.revision !== run.workspaceRevision) {
@@ -522,7 +568,7 @@ export class AgentWorkerApiService {
     if (payload.workspaceUntouched) {
       await proposal.update({ status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: payload.errorMessage ?? 'Git preflight failed' });
       const terminal = payload.status === 'cancelled' ? 'cancelled' : 'failed';
-      await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
+      await run.update({ status: terminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null, verdict, verdictReason });
       await job.update({ status: terminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await task.update({ status: terminal });
       return { schemaVersion: SCHEMA_VERSION, deduplicated: false, terminalRunStatus: terminal, proposalStatus: 'rejected' };
@@ -533,7 +579,7 @@ export class AgentWorkerApiService {
       // before creating it.  Keep the reservation until a pinned reset job has removed that marker,
       // otherwise the database says the path is free while every later worker run rejects it.
       const cleanupProposal = await AgentWorkspaceProposalService.resetAfterUnreviewableFailure(proposal, failureReason);
-      await run.update({ status: payload.status, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null });
+      await run.update({ status: payload.status, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null, verdict, verdictReason });
       await job.update({ status: payload.status, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
       await AgentRunInteractionService.setTaskStatusConsideringActiveRuns(task.id, payload.status);
       await AgentPipelineService.reportToTaskThread(
@@ -569,7 +615,7 @@ export class AgentWorkerApiService {
 
     const runTerminal = payload.status;
     await run.update({ status: runTerminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null,
-      baseSha: proposal.baseSha, baseRef: proposal.baseBranch });
+      baseSha: proposal.baseSha, baseRef: proposal.baseBranch, verdict, verdictReason });
     await job.update({ status: runTerminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
     await task.update({ status: 'waiting_review' });
     await AgentPipelineService.reportToTaskThread(run, task,
