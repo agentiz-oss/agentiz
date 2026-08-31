@@ -302,6 +302,7 @@ export class MobileActivityService {
           ...contextOf(item.projectId, item.taskId, run?.pipelineSpecId),
           verdict: run?.verdict ?? null,
           verdictReason: run?.verdictReason ?? null,
+          branch: run?.branch ?? null,
         });
       }),
       ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId, run.pipelineSpecId))),
@@ -587,6 +588,7 @@ export class MobileActivityService {
           ...context(run?.pipelineSpecId),
           verdict: run?.verdict ?? null,
           verdictReason: run?.verdictReason ?? null,
+          branch: run?.branch ?? null,
         });
       })),
       ...held.filter(({ run }) => run.taskId === task.id)

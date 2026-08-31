@@ -150,6 +150,11 @@ Three rules hold it together, and breaking any of them puts the client back to g
   `approve`/`reject` → `POST /proposals/:id/…`, `rerun` → `POST /tasks/:id/run`, `apply_diff` →
   `POST /tasks/:taskId/runs/:runId/apply`, and `open_run`/`open_url` are navigation. The inbox is a
   projection for reading; nothing is written through it.
+- **A decision comes with a way to look at what is being decided.** An `approval` row carries the
+  run's branch in `facts` and offers `open_run` («Посмотреть изменения» — the run screen already
+  renders the diff) plus `open_url` for the first link the graph attached. Both were missing for
+  the whole first release of the human gate, and `url` travelled on the row with nothing to open
+  it: the request reached the phone and the work behind it did not.
 - **Blocking rows and reminders are different things.** A row that *holds* something — a parked
   agent, a reserved worker directory, a diff waiting to be applied — must be resolvable from the
   phone (that is why `held_diff` got `/apply`), is counted by `actionableCount` and the app badge,

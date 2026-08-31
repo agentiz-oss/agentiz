@@ -656,7 +656,8 @@ export const approvalNode: NodeTypeDefinition = {
       message: {
         type: 'string',
         title: 'Текст',
-        description: 'Что проверить и на что смотреть. {{payload.summary}}, {{payload.verdict}}',
+        description: 'Что проверить и на что смотреть. {{payload.verdict}}, {{payload.verdictReason}},'
+          + ' {{payload.branch}}, {{payload.filesChanged}}. Не {{payload.summary}} — это экраны прозы',
       },
       assigneeToken: {
         type: 'string',
@@ -671,7 +672,8 @@ export const approvalNode: NodeTypeDefinition = {
       links: {
         type: 'string',
         title: 'Ссылки',
-        description: 'По одной в строке, в виде «Название|https://…». По ним человек и проверяет',
+        description: 'По одной в строке, в виде «Название|https://…». Диф и так открывается кнопкой;'
+          + ' сюда — превью и внешнее. Подстановки: {{payload.branchSlug}}, {{payload.commitUrl}}',
       },
     },
   },

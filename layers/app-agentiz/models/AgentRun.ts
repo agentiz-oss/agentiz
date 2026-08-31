@@ -194,6 +194,22 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
   @Column({ type: DataType.STRING, allowNull: true })
   declare baseSha: string | null;
 
+  /**
+   * The branch this run's work ended up on, once it is known.
+   *
+   * Written by whichever final action produced it — the repository one computes it from the spec
+   * and the task, the workspace one takes it from the proposal it created — so that everything
+   * downstream reads **one** field instead of re-deriving the name. Three places ask: the approval
+   * a person decides on (`{{payload.branch}}`), the result card, and the release query. Null for a
+   * run that never targeted a branch, and for every run that finished before this column existed.
+   *
+   * Not a substitute for `AgentWorkspaceProposal.targetBranch`: that row also knows whether the
+   * branch was actually *pushed*, which this field deliberately says nothing about.
+   */
+  @AdminizerField({ title: 'Branch', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare branch: string | null;
+
   @Column({ type: DataType.STRING, allowNull: true })
   declare commitSha: string | null;
 
@@ -298,6 +314,17 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
     if (!terminal.includes(instance.status) || previous === undefined || terminal.includes(String(previous))) return;
     // Dynamic import for the same reason as above: the bridge pulls in the engine package.
     const { completePipelineWait } = await import('../lib/workflow/engineBridge');
+    const { collectRunFacts } = await import('../lib/workflow/runPayload');
+    // What the run *produced* (branch, commit, counts), so a graph can name the work to the person
+    // it is about to ask. Collected here rather than inside the bridge to keep that file free of
+    // model imports, and swallowed on failure: a template rendering an empty branch is a much
+    // smaller problem than a flow that never continues because one row could not be read.
+    let facts = null;
+    try {
+      facts = await collectRunFacts(instance);
+    } catch (error) {
+      console.warn(`[AppAgentiz] could not collect run facts for ${instance.id}:`, error);
+    }
     await completePipelineWait(instance.id, {
       status: instance.status,
       summary: instance.resultSummary,
@@ -306,6 +333,7 @@ export class AgentRun extends Model<InferAttributes<AgentRun>, InferCreationAttr
       projectId: instance.projectId,
       verdict: instance.verdict,
       verdictReason: instance.verdictReason,
+      facts,
     });
   }
 }

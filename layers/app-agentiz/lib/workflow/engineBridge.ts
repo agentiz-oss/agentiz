@@ -1,5 +1,6 @@
 import { getWorkflowEngine, WorkflowAdminApi } from '@nodeknit/app-workflow';
 import type { WorkflowEngine } from '@nodeknit/app-workflow';
+import type { RunFacts } from './runPayload';
 
 /**
  * The one place app-agentiz reaches *into* the running engine, rather than contributing data to it.
@@ -104,6 +105,15 @@ export async function completePipelineWait(
     verdict?: 'pass' | 'fail' | null;
     /** The agent's own words for a `fail` — what the round-ending remark node puts in the thread. */
     verdictReason?: string | null;
+    /**
+     * What the run produced — branch, commit, counts (see lib/workflow/runPayload.ts).
+     *
+     * Optional, and absent means **absent**: with no facts the payload carries exactly the eight
+     * keys it carried before this existed, byte for byte. That is what keeps a graph written
+     * yesterday rendering the same text today, and it is why the collector's failure is allowed to
+     * degrade to `undefined` instead of failing the continuation.
+     */
+    facts?: RunFacts | null;
   },
 ): Promise<void> {
   const engine = workflowEngine();
@@ -129,6 +139,9 @@ export async function completePipelineWait(
           error: outcome.error ?? null,
           verdict: outcome.verdict ?? null,
           verdictReason: outcome.verdictReason ?? null,
+          // Spread last and only when collected: a graph reads `{{payload.branch}}`, and the shape
+          // of what it may read is spelled in `RunFacts` rather than assembled key by key here.
+          ...(outcome.facts ?? {}),
         },
       },
     });

@@ -38,3 +38,21 @@ export function assertWorkspaceBranch(branch: string, configuredPrefix?: string)
     throw new Error('Workspace branch must contain 1–3 lowercase slug words after its prefix');
   }
 }
+
+/**
+ * A branch name as a single DNS label — `agentiz/fix-login-3f1a` → `agentiz-fix-login-3f1a`.
+ *
+ * This is what a preview deployment's hostname is built from, so the only transformation allowed
+ * here is one that cannot produce a different *host* for two different branches: slashes and any
+ * remaining separator become a dash, and nothing is truncated silently — a name that cannot be a
+ * label answers `null` rather than a shortened string that would collide with another branch.
+ *
+ * Safe to interpolate into a URL because of where the input comes from: a generated branch has
+ * already passed `assertWorkspaceBranch`, and a hand-written one is checked here against the label
+ * rules rather than trusted.
+ */
+export function branchToHostLabel(branch: string | null | undefined): string | null {
+  const label = String(branch ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!label || label.length > 63) return null;
+  return label;
+}

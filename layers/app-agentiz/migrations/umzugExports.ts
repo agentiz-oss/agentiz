@@ -102,6 +102,10 @@ import {
   up as upRunInput,
   down as downRunInput,
 } from './umzug/1788001200000_run_input';
+import {
+  up as upRunBranch,
+  down as downRunBranch,
+} from './umzug/1788001300000_run_branch';
 
 export const umzugExports: Migration[] = [
   {
@@ -308,5 +312,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001200000,
     up: upRunInput,
     down: downRunInput,
+  },
+  {
+    name: 'run_branch',
+    timestamp: 1788001300000,
+    up: upRunBranch,
+    down: downRunBranch,
   },
 ];

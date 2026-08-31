@@ -224,6 +224,11 @@ export class ApprovalService {
       runStatus: run?.status ?? null,
       runVerdict: run?.verdict ?? null,
       runVerdictReason: run?.verdictReason ?? null,
+      // Facts about the work, so a surface showing this request does not have to send the reader
+      // looking for them: the branch it went to and the commit it produced.
+      runBranch: run?.branch ?? null,
+      runCommitSha: run?.commitSha ?? null,
+      runCommitUrl: run?.commitUrl ?? null,
       assigneeUserId: approval.assigneeUserId,
       assigneeToken: approval.assigneeToken,
       title: approval.title,

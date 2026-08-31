@@ -536,7 +536,10 @@ export class AgentPipelineService {
     );
 
     const commit = await provider.commitChanges({ branch, baseBranch, message, changes });
-    await run.update({ commitSha: commit.sha, commitUrl: commit.url });
+    // The branch is recorded on the run, not just in the log line below: it is computed here from
+    // the spec and the task, so without this the only place it survived was prose, and a workflow
+    // asking «на какой ветке работа» would have to re-derive it from the snapshot.
+    await run.update({ branch, commitSha: commit.sha, commitUrl: commit.url });
     if (diff) await diff.update({ appliedAt: new Date(), appliedCommitSha: commit.sha });
     await writeLog(run.id, run.projectId, null, 'info', `Committed ${changes.length} operation(s) to ${branch}: ${commit.url}`);
 

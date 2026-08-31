@@ -265,6 +265,22 @@
   `can(actor, projectId, approval.assigneeToken)`; the mobile inbox filters **per row**
   (`decidableApprovals`), because a blocking row shown to somebody who cannot act on it never goes
   away for them.
+- **What a finished run produced is a property of the run, not of the graph that asked for it.**
+  `msg.payload` after `agentiz.pipeline` carries the outcome (status/summary/verdict) *and* the
+  facts — branch, commit, PR, base, diff counts, task title, project slug — collected by
+  `collectRunFacts` (`lib/workflow/runPayload.ts`) and spread in `completePipelineWait`; that is
+  what `{{payload.branch}}` / `{{payload.branchSlug}}` in an approval's links read. Absent facts
+  mean the payload keeps exactly its eight pre-existing keys, so a graph saved earlier renders the
+  same text (`lib/workflow/runFacts.test.ts`). The branch itself lives in **one** column,
+  `AgentRun.branch`, written by whichever final action produced it — the repository one computes it
+  from the spec and the task (`applyRepositoryFinalAction`), the workspace one copies the proposal's
+  `targetBranch`/`baseBranch` in the same update that flips the run to a terminal status, because
+  that write is what wakes the workflow hook. Re-deriving it from the pipeline snapshot anywhere
+  else is how the three consumers (approval, result card, release query) start disagreeing.
+  `pushed` is a fact about **that instant**, never a promise: for a `worker_workspace` run delivery
+  is a separate job that starts after the run is already `succeeded`, so a template may name the
+  branch and build a preview host from it (`branchToHostLabel` — refuses rather than truncates, or
+  two branches would map onto one host) and must not claim the branch is in the remote yet.
 - `AgentTask.workflowStatus` is free text written by a **workflow** in the customer's language
   («ждём тестировщика»), deliberately beside `AgentTask.status` and never instead of it: that ENUM
   belongs to the pipeline and moves on every run. It must stay out of `WORKFLOW_WATCHED_FIELDS`, or

@@ -129,6 +129,8 @@ export interface InboxItem {
   runId: string | null;
   interactionId: string | null;
   proposalId: string | null;
+  /** The decision behind an `approval` row — what `/approvals/:id/approve|reject` is called with. */
+  approvalId: string | null;
   revision: number | null;
   url: string | null;
   /** When this started waiting — the "ждёт 2 ч" label and the within-group order. */
@@ -278,6 +280,7 @@ function base(kind: InboxItemKind, activityType: string, context: InboxContext, 
     priority: PRIORITY[kind],
     interactionId: null as string | null,
     proposalId: null as string | null,
+    approvalId: null as string | null,
     revision: null as number | null,
     url: null as string | null,
     expiresAt: null as Date | null,
@@ -429,7 +432,12 @@ export function heldDiffItem(diff: AgentRunDiff, run: AgentRun, context: InboxCo
  */
 export function approvalItem(
   approval: AgentApprovalRequest,
-  context: InboxContext & { verdict?: 'pass' | 'fail' | null; verdictReason?: string | null },
+  context: InboxContext & {
+    verdict?: 'pass' | 'fail' | null;
+    verdictReason?: string | null;
+    /** The run being decided on, when the request names one — its branch is a fact, its prose is not. */
+    branch?: string | null;
+  },
 ): InboxItem {
   const linkCount = approval.links?.length ?? 0;
   const verdict = context.verdict
@@ -438,13 +446,15 @@ export function approvalItem(
   return {
     ...base('approval', 'approval.requested', context, approval.projectId),
     id: `approval:${approval.id}`,
+    approvalId: approval.id,
     headline: approval.title,
     facts: join([
       verdict,
       context.verdict === 'fail' ? firstLine(context.verdictReason, 120) : null,
+      context.branch ? `ветка ${context.branch}` : null,
       linkCount > 0 ? `${linkCount} ссыл${linkCount === 1 ? 'ка' : 'ок'} для проверки` : null,
     ]),
-    explain: 'Работа дошла до вас: посмотрите по ссылкам и решите.'
+    explain: 'Работа дошла до вас: посмотрите, что сделано, и решите.'
       + ' «Принять» — задача считается принятой и воркфлоу идёт дальше.'
       + ' «Отклонить» — нужен текст: он уедет разработчику как задание на доработку, и по задаче'
       + ' начнётся новый круг. Пока решения нет, воркфлоу стоит.',
@@ -453,9 +463,19 @@ export function approvalItem(
     runId: approval.runId,
     url: approval.links?.[0]?.url ?? null,
     waitingSince: approval.createdAt ?? null,
+    // Deciding without looking is the failure mode this row is supposed to prevent, so the two ways
+    // of looking are actions rather than text: the run screen (which already renders the diff) and
+    // the first of whatever links the graph attached. Both keys are ones the client has handled
+    // since the inbox shipped — without them `url` was carried on the row and opened by nobody.
     actions: [
       { key: 'approve', label: 'Принять', style: 'primary' },
       { key: 'reject', label: 'Отклонить…', style: 'danger' },
+      ...(approval.runId
+        ? [{ key: 'open_run' as const, label: 'Посмотреть изменения', style: 'default' as const }]
+        : []),
+      ...(approval.links?.[0]
+        ? [{ key: 'open_url' as const, label: approval.links[0].label || 'Открыть ссылку', style: 'default' as const }]
+        : []),
     ],
   };
 }

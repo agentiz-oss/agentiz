@@ -615,6 +615,10 @@ export class AgentWorkerApiService {
 
     const runTerminal = payload.status;
     await run.update({ status: runTerminal, finishedAt: new Date(), resultSummary: summary || null, errorMessage: payload.errorMessage ?? null,
+      // Written in the same update that flips the status, because that write is what wakes the
+      // workflow hook: the branch has to be on the row *before* a graph is handed the run's facts.
+      // `targetBranch` for a proposal that opens a new branch, the checkout's own branch otherwise.
+      branch: proposal.targetBranch ?? proposal.baseBranch ?? null,
       baseSha: proposal.baseSha, baseRef: proposal.baseBranch, verdict, verdictReason });
     await job.update({ status: runTerminal, result: payload as unknown as Record<string, unknown>, lastError: payload.errorMessage ?? null, lockedUntil: null });
     await task.update({ status: 'waiting_review' });

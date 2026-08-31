@@ -123,6 +123,10 @@ interface TaskWorkflow {
     title: string;
     message?: string | null;
     links?: Array<{ label: string; url: string }>;
+    runId?: string | null;
+    runBranch?: string | null;
+    runCommitSha?: string | null;
+    runCommitUrl?: string | null;
     decisionComment?: string | null;
     decidedAt?: string | null;
     createdAt?: string;
@@ -1245,15 +1249,33 @@ const AgentizTasks: React.FC = () => {
                         {approval.message && (
                           <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{approval.message}</p>
                         )}
-                        {(approval.links ?? []).length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-2 text-xs">
-                            {(approval.links ?? []).map((link) => (
-                              <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="underline">
-                                {link.label}
-                              </a>
-                            ))}
+                        {/* Facts before links: what the work is (branch, commit) is answerable from
+                            the row itself, while the links are whatever the graph's author typed. */}
+                        {(approval.runBranch || approval.runCommitSha) && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {approval.runBranch && <span>ветка <code>{approval.runBranch}</code></span>}
+                            {approval.runBranch && approval.runCommitSha && " · "}
+                            {approval.runCommitSha && (
+                              approval.runCommitUrl
+                                ? <a href={approval.runCommitUrl} target="_blank" rel="noreferrer" className="underline">
+                                    коммит {approval.runCommitSha.slice(0, 12)}
+                                  </a>
+                                : <span>коммит <code>{approval.runCommitSha.slice(0, 12)}</code></span>
+                            )}
                           </div>
                         )}
+                        <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                          {approval.runId && (
+                            <a href={`/dashboard/agentiz-runs?runId=${approval.runId}`} className="underline">
+                              Посмотреть изменения
+                            </a>
+                          )}
+                          {(approval.links ?? []).map((link) => (
+                            <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="underline">
+                              {link.label}
+                            </a>
+                          ))}
+                        </div>
                         <div className="mt-2 flex gap-2">
                           <button
                             onClick={() => decideApproval(approval.id, "approved")}

@@ -84,15 +84,25 @@ describe('mobile approvals', () => {
     expect(await MobileApprovalService.list(STRANGER)).toEqual([]);
   });
 
-  it('во «Входящих» это блокирующая строка с двумя кнопками, и она считается', async () => {
+  it('во «Входящих» это блокирующая строка с решением и способом посмотреть, и она считается', async () => {
     const summary = await MobileActivityService.summary(TESTER, TESTER);
     const row = summary.items.find((item) => item.kind === 'approval')!;
 
     expect(row.id).toBe(`approval:${approval.id}`);
+    // The id the phone decides with: without it the client can load the request behind the row
+    // only by parsing `approval:<uuid>` out of the row id, and until it existed the two buttons
+    // led to a panel that could load neither an interaction nor a proposal and said «уже решено».
+    expect(row.approvalId).toBe(approval.id);
     expect(row.badge).toBe('решение');
     expect(row.headline).toBe('Примите работу: Кнопка выхода');
     expect(row.facts).toContain('ссылка');
-    expect(row.actions.map((action) => action.key)).toEqual(['approve', 'reject']);
+    // Two decisions and a way to look before making one. `open_url` is here because the request
+    // carries a link: without it the link travelled on the row and was opened by nobody, which is
+    // what "уведомление пришло, а результат посмотреть негде" actually was. `open_run` is absent
+    // only because this request names no run.
+    expect(row.actions.map((action) => action.key)).toEqual(['approve', 'reject', 'open_url']);
+    expect(row.actions.find((action) => action.key === 'open_url')?.label).toBe('Превью');
+    expect(row.url).toBe('https://preview.example/logout');
     // Blocking: it holds a whole workflow, so it is counted and cannot be waved away.
     expect(row.dismissible).toBe(false);
     expect(summary.actionableCount).toBe(1);
