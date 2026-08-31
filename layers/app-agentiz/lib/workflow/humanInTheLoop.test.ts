@@ -95,7 +95,13 @@ function referenceFlow(devSpecId: string, qaSpecId: string) {
       {
         id: 'gate',
         type: 'agentiz.approval',
-        config: { title: 'Примите работу: {{payload.taskId}}', message: 'Вердикт агента: {{payload.verdict}}' },
+        config: {
+          title: 'Примите работу: {{payload.taskId}}',
+          message: 'Вердикт агента: {{payload.verdict}}',
+          // Substituted like the two above — which they were not until 2026-08-31: the links field
+          // was parsed straight from the config, so a person received a link to `?runId={{payload.runId}}`.
+          links: 'Запуск|https://panel.example/runs?runId={{payload.runId}}',
+        },
       },
       { id: 'accepted', type: 'agentiz.task.status', config: { text: 'Принято' } },
       { id: 'remark', type: 'agentiz.task.comment', config: { body: 'Замечания: {{payload.verdictReason}}{{payload.comment}}{{payload.error}}' } },
@@ -272,6 +278,10 @@ describe('human-in-the-loop: разработчик → тестировщик �
     expect(approval!.status).toBe('pending');
     expect(approval!.title).toContain(task.id);
     expect(approval!.message).toContain('pass');
+    // The whole point of the field: it must name *this* run, not the template that describes it.
+    expect(approval!.links).toEqual([
+      { label: 'Запуск', url: `https://panel.example/runs?runId=${launches[launches.length - 1].runId}` },
+    ]);
     expect(approval!.assigneeToken).toBe('agentiz-approval-decide');
 
     // Флоу стоит и ждёт — durable, в базе, а не в памяти процесса.

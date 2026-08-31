@@ -93,7 +93,19 @@ function renderTemplate(template: unknown, msg: WorkflowMsg): string {
   });
 }
 
-/** `Название|https://…` per line — the array-free shape the generated form can still render. */
+/**
+ * `Название|https://…` per line — the array-free shape the generated form can still render.
+ *
+ * Takes the text **after** substitution, not the raw config: a link is the one field of an approval
+ * whose whole purpose is to point at what this particular run produced, so a literal
+ * `{{payload.branch}}` in it is the only outcome that is certainly wrong. It went unsubstituted from
+ * the day the node shipped — the title and the message were rendered and this was not — and the
+ * symptom was a person tapping a link to `…?taskId={{payload.taskId}}`.
+ *
+ * A substituted value is a single line by construction here: anything containing a newline would
+ * otherwise turn one link into two, so line breaks inside a value are folded to spaces before the
+ * text is split.
+ */
 function parseLinks(value: unknown): Array<{ label: string; url: string }> {
   return String(value ?? '')
     .split(/\n/)
@@ -105,6 +117,21 @@ function parseLinks(value: unknown): Array<{ label: string; url: string }> {
       return { label: line.slice(0, separator).trim(), url: line.slice(separator + 1).trim() };
     })
     .filter((link) => link.url.length > 0);
+}
+
+/**
+ * `renderTemplate` for the links field: same substitution, with every value folded onto one line.
+ *
+ * The folding is what makes it safe to substitute into a list whose separator is the newline. It is
+ * not a security boundary — nothing here is executed, and the URL is stored and shown, never run —
+ * but a value with a line break in it (an agent's summary, a rejection text) would silently produce
+ * a second, malformed link, and a malformed link in a decision is worse than no link.
+ */
+function renderLinkTemplate(template: unknown, msg: WorkflowMsg): string {
+  return String(template ?? '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (match, path: string) => {
+    const value = renderTemplate(`{{${path}}}`, msg);
+    return value.replace(/[\r\n]+/g, ' ').trim();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -702,7 +729,7 @@ export const approvalNode: NodeTypeDefinition = {
         assigneeToken: String(ctx.config.assigneeToken ?? '').trim() || null,
         title: renderTemplate(ctx.config.title, ctx.msg).trim() || `Примите работу: ${task.title}`,
         message: renderTemplate(ctx.config.message, ctx.msg).trim() || null,
-        links: parseLinks(ctx.config.links),
+        links: parseLinks(renderLinkTemplate(ctx.config.links, ctx.msg)),
       });
 
       ctx.logger.info(
