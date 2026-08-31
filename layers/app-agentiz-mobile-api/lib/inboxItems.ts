@@ -265,6 +265,20 @@ function notifyOf(activityType: string, projectId: string, context: InboxContext
   return { ...notify, label: notifyLabel(notify) };
 }
 
+/**
+ * Russian counting, because «2 ссылок» in a row a person reads before deciding something reads as
+ * a machine talking. Three forms, chosen by the last digits: 1 (but not 11), 2–4 (but not 12–14),
+ * everything else.
+ */
+function plural(count: number, one: string, few: string, many: string): string {
+  const mod100 = Math.abs(count) % 100;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  const mod10 = mod100 % 10;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
 function base(kind: InboxItemKind, activityType: string, context: InboxContext, projectId: string) {
   const def = activityTypeDef(activityType);
   return {
@@ -452,7 +466,7 @@ export function approvalItem(
       verdict,
       context.verdict === 'fail' ? firstLine(context.verdictReason, 120) : null,
       context.branch ? `ветка ${context.branch}` : null,
-      linkCount > 0 ? `${linkCount} ссыл${linkCount === 1 ? 'ка' : 'ок'} для проверки` : null,
+      linkCount > 0 ? `${linkCount} ${plural(linkCount, 'ссылка', 'ссылки', 'ссылок')} для проверки` : null,
     ]),
     explain: 'Работа дошла до вас: посмотрите, что сделано, и решите.'
       + ' «Принять» — задача считается принятой и воркфлоу идёт дальше.'
