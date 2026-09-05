@@ -434,7 +434,8 @@
   worker release and is rejected by validation) and in `AgentWorker.activeHours` — the first is a
   job property and lands in `availableAt`, the second is a claim-side gate and must never touch
   `availableAt`.
-- Daily reset alignment (`AgentHarnessSubscription.alignReset*`, logic in `lib/harnessAlign.ts`) is
+- Daily reset alignment (`AgentHarnessSubscription.alignReset*`, logic in `lib/harnessAlign.ts`,
+  long form: [`docs/guides/harness-reset-alignment.md`](docs/guides/harness-reset-alignment.md)) is
   **best-effort discipline over when a session window opens**, never enforcement: it reads the same
   advisory `windows` telemetry the UI shows, does nothing when telemetry is stale or absent, and
   never touches `exhaustedUntil`. Two arms, both derived from the next anchor `A`, window length
@@ -447,7 +448,26 @@
   trade: under continuous load the reset lands within ±1h of the anchor and the daily pause costs
   up to ~`W−2T` (≈3h — 24h does not divide evenly by 5h, so some gap is mathematically
   unavoidable); an idle night still ends in a poke at exactly `A−W` and a reset at the anchor to
-  the minute.
+  the minute. The poke is the one thing here that runs an **external binary** — everything else in
+  that module reads the credential itself or goes through `npx` — so it is the only part with a
+  requirement on the service's environment, closed from both sides: `claude_cli_path()` resolves
+  the CLI (`AGENTIZ_CLAUDE_BIN` → `PATH` → the usual install locations) and `install-service` writes
+  `Environment=PATH=` (`service_path_value()`, `~/.local/bin` first, before `EnvironmentFile=` so a
+  profile can still override). Both exist because systemd hands a service its own minimal `PATH`
+  without `~/.local/bin`, which is exactly where the CLI installs itself: a bare `claude` then fails
+  with `[Errno 2]` every throttle interval while the stages keep working (`node`/`npx` live in
+  `/usr/bin`) — that is how it went unnoticed on prod from 2026-08-19 until 2026-09-05, 175 attempts
+  and not one window opened by the mechanism. A unit written before that fix has no `PATH` line and
+  an upgrade does not rewrite it: such a machine needs `install-service` run again. What the poke
+  did is answered on the **next** telemetry report (`poke: {ok, at, error?}` beside `raw`, never
+  inside it) and stored as `AgentHarnessSubscription.lastPoke` with `failedSince` (the streak's
+  start, so a reader sees «не работает с 04:01» rather than the latest of twenty-nine); it is shown
+  by `subscriptionView` and the panel's harness card. `lastPoke: null` therefore means either
+  "never asked" or "worker older than the field" — the journal separates those, and nothing else
+  reports a poke, because it happens outside any run. And the
+  session window belongs to the **account**, not the machine: a person working in Claude Code under
+  the same `accountUuid` opens the very window the alignment meant to open, so on such a deployment
+  it can only win on a day nobody touched the account before the anchor.
 - Usage telemetry is **pushed, never pulled**: the numbers live behind a credential on the worker
   machine (Claude's OAuth token), so `claudeLimitProvider` declares no `refresh()` and the server's
   refresh cycle is a no-op with only that provider registered. The worker reports every 120s from
