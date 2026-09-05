@@ -36,6 +36,7 @@ export interface SubscriptionInput {
   alignResetEnabled?: boolean;
   alignResetHour?: number | null;
   alignResetTimezone?: string | null;
+  keepWindowsOpen?: boolean;
 }
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -219,6 +220,7 @@ export class AgentHarnessAdminService {
       alignResetEnabled: values.alignResetEnabled ?? false,
       alignResetHour: values.alignResetHour ?? null,
       alignResetTimezone: values.alignResetTimezone ?? null,
+      keepWindowsOpen: values.keepWindowsOpen ?? false,
     });
   }
 

@@ -110,6 +110,10 @@ import {
   up as upHarnessLastPoke,
   down as downHarnessLastPoke,
 } from './umzug/1788001400000_harness_last_poke';
+import {
+  up as upSubscriptionKeepWindowsOpen,
+  down as downSubscriptionKeepWindowsOpen,
+} from './umzug/1788001500000_subscription_keep_windows_open';
 
 export const umzugExports: Migration[] = [
   {
@@ -328,5 +332,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001400000,
     up: upHarnessLastPoke,
     down: downHarnessLastPoke,
+  },
+  {
+    name: 'subscription_keep_windows_open',
+    timestamp: 1788001500000,
+    up: upSubscriptionKeepWindowsOpen,
+    down: downSubscriptionKeepWindowsOpen,
   },
 ];

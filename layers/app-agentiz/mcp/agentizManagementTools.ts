@@ -124,7 +124,7 @@ export const manageBusinessDataTool: IMcpTool = {
     type: 'object',
     required: ['entity', 'operation'],
     properties: {
-      entity: { type: 'string', enum: [...Object.keys(definitions), HARNESS_SUBSCRIPTION_ENTITY], description: `Writable fields per entity: ${Object.entries(definitions).map(([key, value]) => `${key}(${value.fields.join(', ')})`).join('; ')}; ${HARNESS_SUBSCRIPTION_ENTITY}(name, provider anthropic|openai|other, authKind subscription|api-key, notes, resetSchedule {kind:"weekly",day,time,timezone}, stopPolicy {"<window>":{pauseAtUsedPercent}}).` },
+      entity: { type: 'string', enum: [...Object.keys(definitions), HARNESS_SUBSCRIPTION_ENTITY], description: `Writable fields per entity: ${Object.entries(definitions).map(([key, value]) => `${key}(${value.fields.join(', ')})`).join('; ')}; ${HARNESS_SUBSCRIPTION_ENTITY}(name, provider anthropic|openai|other, authKind subscription|api-key, notes, resetSchedule {kind:"weekly",day,time,timezone}, stopPolicy {"<window>":{pauseAtUsedPercent}}, alignResetEnabled+alignResetHour 0-23+alignResetTimezone (land the session window's reset on that local hour), keepWindowsOpen (open the next session window as soon as the previous closes; with alignment on it waits only for the moment that lands the chain on the hour)).` },
       operation: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'] },
       id: { type: 'string' }, projectId: { type: 'string' },
       values: { type: 'object', description: `Field values keyed by field name. For entity pipelineSpec, "spec" is a JSON object whose shape comes from ${PIPELINE_SPEC_SCHEMA_TOOL}.` },

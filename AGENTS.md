@@ -464,7 +464,14 @@
   start, so a reader sees «не работает с 04:01» rather than the latest of twenty-nine); it is shown
   by `subscriptionView` and the panel's harness card. `lastPoke: null` therefore means either
   "never asked" or "worker older than the field" — the journal separates those, and nothing else
-  reports a poke, because it happens outside any run. And the
+  reports a poke, because it happens outside any run. A second field, `keepWindowsOpen`
+  («Открывать окна подряд»), opens windows back to back — no window open ⇒ `poke` — and with
+  alignment on holds only the exact `(A−2W, A−W)`, no tolerance, since the moment is then chosen
+  by the mechanism rather than by a random claim; it is a fourth argument to `alignState`, so a
+  subscription without it answers byte-identically to before the column, and the worker does not
+  participate in the decision at all (no `worker` tag release). Its one guard outside that
+  function: an **exhausted** subscription is never asked to poke, or a weekly limit would have the
+  worker running `claude` every throttle interval for days. And the
   session window belongs to the **account**, not the machine: a person working in Claude Code under
   the same `accountUuid` opens the very window the alignment meant to open, so on such a deployment
   it can only win on a day nobody touched the account before the anchor.

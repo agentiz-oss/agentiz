@@ -133,8 +133,11 @@ export class AgentCapacityService {
       }
       // Reset alignment: while the next window must not open yet (see lib/harnessAlign.ts),
       // the subscription is paused exactly like an operator-disabled binding — a claim-side
-      // gate that touches no job's availableAt and lifts by itself at A−W.
-      if (subscription && alignState(subscription.alignConfig(), subscription.windows, now) === 'hold') {
+      // gate that touches no job's availableAt and lifts by itself at A−W. With `keepWindowsOpen`
+      // the band is the exact (A−2W, A−W) instead of the tolerated one; without alignment it is
+      // empty, because a chain with no anchor never has a reason to wait.
+      if (subscription
+        && alignState(subscription.alignConfig(), subscription.windows, now, subscription.keepWindowsOpen) === 'hold') {
         keys.push(binding.harnessKey);
       }
     }

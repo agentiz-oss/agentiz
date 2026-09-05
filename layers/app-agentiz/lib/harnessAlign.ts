@@ -24,6 +24,15 @@ import type { HarnessWindowState } from '../types/agentiz';
  *  - `none`  — everywhere else — including [A−W−T, A−W), the early edge of the band, where a
  *    claim is welcome to open a slightly-early window but an idle machine keeps waiting for the
  *    exact moment — and always while a window is open or telemetry is silent.
+ *
+ * `keepWindowsOpen` (the `chain` argument) replaces those three bands with one rule and one
+ * exception: no window open means open one, unless it would close later than A−W — the moment an
+ * aligned window has to start. The tolerance is what a mechanism pays for not choosing the moment
+ * itself; when it does choose, the hold band is exactly (A−2W, A−W) and the poke lands on A−W to
+ * the minute. Whatever closed a window in that band — the flag switched on mid-day, a person
+ * working under the same account, a worker that was offline — runs into the hold and the chain is
+ * back on the anchor within a day, with no catch-up code. Without an anchor (alignment off or its
+ * config broken) the flag simply always opens: it does not depend on alignment.
  */
 
 /** Length of the session window this feature aligns. Claude's 5h; good enough for all of today's providers. */
@@ -62,18 +71,32 @@ export function sessionWindowOpen(windows: HarnessWindowState[] | null | undefin
   return fresh ? false : null;
 }
 
+/** The next moment the reset should land on, or null when the alignment config says nothing. */
+function nextAnchor(config: AlignConfig | null, now: Date): Date | null {
+  if (!config) return null;
+  if (!Number.isInteger(config.hour) || config.hour < 0 || config.hour > 23) return null;
+  if (!config.timezone || !isValidTimezone(config.timezone)) return null;
+  return nextDailyMoment(config.hour * 60, config.timezone, now);
+}
+
 export function alignState(
   config: AlignConfig | null,
   windows: HarnessWindowState[] | null | undefined,
   now: Date = new Date(),
+  chain = false,
 ): AlignState {
-  if (!config) return 'none';
-  if (!Number.isInteger(config.hour) || config.hour < 0 || config.hour > 23) return 'none';
-  if (!config.timezone || !isValidTimezone(config.timezone)) return 'none';
   // An open window is never gated (work inside it does not move the reset), and unknown state
-  // must not pause anything — best-effort means erring toward doing nothing.
+  // must not pause anything — best-effort means erring toward doing nothing. First in both modes:
+  // the chain flag opens windows, never opens one blind.
   if (sessionWindowOpen(windows, now) !== false) return 'none';
-  const anchor = nextDailyMoment(config.hour * 60, config.timezone, now);
+  const anchor = nextAnchor(config, now);
+  if (chain) {
+    if (!anchor) return 'poke';
+    const untilAnchor = anchor.getTime() - now.getTime();
+    // The one exception: a window opened here closes after A−W, so the aligned one could not
+    // start on time. Waiting out that band is what makes the chain land on the anchor itself.
+    return untilAnchor > SESSION_WINDOW_MS && untilAnchor < 2 * SESSION_WINDOW_MS ? 'hold' : 'poke';
+  }
   if (!anchor) return 'none';
   const untilAnchor = anchor.getTime() - now.getTime();
   if (untilAnchor <= SESSION_WINDOW_MS) return 'poke';

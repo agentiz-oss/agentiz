@@ -17,6 +17,8 @@ import { AgentWorkerHarness } from '../models/AgentWorkerHarness';
 import { registerHarnessLimitProvider, unregisterHarnessLimitProvider } from '../lib/harnessLimits';
 import { AgentCapacityService } from './AgentCapacityService';
 import { AgentJobClaimService } from './AgentJobClaimService';
+import { AgentWorkerApiService } from './AgentWorkerApiService';
+import { hashWorkerToken } from './AgentWorkerRegistryService';
 import { AgentRunDeferService } from './AgentRunDeferService';
 
 const CLAUDE_STAGE_AGENT = { kind: 'openhands-acp', config: { acpCommand: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.66.0'] } };
@@ -272,5 +274,30 @@ describe('harness capacity: gates, deferral and recovery', () => {
       workerId: worker.id, harnessKey: 'claude', snapshot, poke: { error: 'half a payload' },
     });
     expect(garbage.subscription?.lastPoke).toMatchObject({ ok: true });
+  });
+
+  it('asks a keepWindowsOpen subscription to open the next window, but never a spent one', async () => {
+    const worker = await makeWorker('reporter', { tokenHash: hashWorkerToken('worker-secret'), tokenPrefix: 'worker-s' });
+    // Fresh telemetry showing no session window open: only a weekly reset days away.
+    const snapshot = {
+      windows: [{ key: 'weekly', label: 'weekly', usedPercent: 10, resetsAt: new Date(Date.now() + 3 * 24 * 60 * 60_000).toISOString() }],
+    };
+    const report = () => AgentWorkerApiService.reportHarnessUsage(
+      { schemaVersion: 1, harnessKey: 'claude', snapshot },
+      'Bearer worker-secret',
+    );
+
+    // Without the flag and without alignment there is no reason to spend a request.
+    const first = await report();
+    expect(first.openWindow).toBe(false);
+
+    const subscription = await AgentHarnessSubscription.findByPk(String(first.subscriptionId));
+    await subscription!.update({ keepWindowsOpen: true });
+    expect((await report()).openWindow).toBe(true);
+
+    // A spent subscription has no window to open, and the ask would otherwise repeat every
+    // throttle interval for the whole limit — filing a refusal in lastPoke as if it were a fault.
+    await subscription!.update({ exhaustedUntil: new Date(Date.now() + 60 * 60_000), exhaustedReason: 'limit' });
+    expect((await report()).openWindow).toBe(false);
   });
 });

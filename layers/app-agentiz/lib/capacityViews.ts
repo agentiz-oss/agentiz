@@ -27,6 +27,7 @@ export function subscriptionView(subscription: AgentHarnessSubscription) {
     alignResetEnabled: subscription.alignResetEnabled,
     alignResetHour: subscription.alignResetHour,
     alignResetTimezone: subscription.alignResetTimezone,
+    keepWindowsOpen: subscription.keepWindowsOpen,
     windows: subscription.windows ?? [],
     exhaustedUntil: subscription.exhaustedUntil,
     exhaustedReason: subscription.exhaustedReason,

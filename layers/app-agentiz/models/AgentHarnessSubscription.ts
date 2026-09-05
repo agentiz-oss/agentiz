@@ -135,6 +135,22 @@ export class AgentHarnessSubscription extends Model<
   @Column({ type: DataType.STRING, allowNull: true })
   declare alignResetTimezone: string | null;
 
+  /**
+   * Open session windows back to back: as soon as telemetry shows no window is open, ask the
+   * worker to open the next one. With alignment on, the only exception is a window that would
+   * close later than the aligned moment A−W — holding there is what puts the chain back on the
+   * anchor by itself. Off by default: it spends a live request on the account ~5 times a day.
+   */
+  @AdminizerField({
+    title: 'Keep windows open',
+    type: 'boolean',
+    tooltip: 'Open the next session window as soon as the previous one closes. With alignment on, pauses only between A−2W and A−W so the chain lands on the hour exactly.',
+    views: { list: true, add: true, edit: true },
+  })
+  @Default(false)
+  @Column({ type: DataType.BOOLEAN, allowNull: false, defaultValue: false })
+  declare keepWindowsOpen: CreationOptional<boolean>;
+
   /** The enforcement field: the subscription is closed to the claim gate until this moment. */
   @AdminizerField({ title: 'Exhausted until', type: 'datetime', views: { list: true, add: false, edit: false } })
   @Column({ type: DataType.DATE, allowNull: true })

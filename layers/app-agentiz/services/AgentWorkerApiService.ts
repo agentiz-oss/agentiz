@@ -861,9 +861,13 @@ export class AgentWorkerApiService {
       // purpose — it is made on telemetry this very report just refreshed, and the worker that
       // reported is by definition reachable and holds the credential. Best-effort: the worker may
       // ignore it, and once its poke opens a window the next report stops asking.
+      // Never poke an exhausted subscription: there is nothing to open, and with
+      // `keepWindowsOpen` the ask would otherwise repeat every throttle interval for as long as
+      // the limit lasts, painting `lastPoke` red with a refusal that is not a breakage.
       const subscription = result.subscription;
       const openWindow = Boolean(subscription
-        && alignState(subscription.alignConfig(), subscription.windows) === 'poke');
+        && !subscription.isExhausted()
+        && alignState(subscription.alignConfig(), subscription.windows, new Date(), subscription.keepWindowsOpen) === 'poke');
       return {
         schemaVersion: SCHEMA_VERSION,
         sampleId: result.sample.id,

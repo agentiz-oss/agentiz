@@ -75,6 +75,7 @@ interface HarnessSubscription {
   alignResetEnabled?: boolean;
   alignResetHour?: number | null;
   alignResetTimezone?: string | null;
+  keepWindowsOpen?: boolean;
   windows: HarnessWindowState[];
   exhaustedUntil?: string | null;
   exhaustedReason?: string | null;
@@ -720,6 +721,7 @@ const SubscriptionSettingsForm: React.FC<{
   const [alignOn, setAlignOn] = useState(Boolean(subscription.alignResetEnabled));
   const [alignHour, setAlignHour] = useState(subscription.alignResetHour != null ? String(subscription.alignResetHour) : "9");
   const [alignTz, setAlignTz] = useState(subscription.alignResetTimezone ?? viewerTz);
+  const [chainOn, setChainOn] = useState(Boolean(subscription.keepWindowsOpen));
 
   const alignHourValue = Number(alignHour);
   const alignValid = !alignOn || (Number.isInteger(alignHourValue) && alignHourValue >= 0 && alignHourValue <= 23 && Boolean(alignTz.trim()));
@@ -741,6 +743,7 @@ const SubscriptionSettingsForm: React.FC<{
       alignResetEnabled: alignOn,
       alignResetHour: alignHour.trim() ? alignHourValue : null,
       alignResetTimezone: alignTz.trim() || null,
+      keepWindowsOpen: chainOn,
     };
     if (weeklyOn) values.resetSchedule = { kind: "weekly", day, time, timezone: weeklyTz.trim() };
     else if (!isCron) values.resetSchedule = null;
@@ -817,6 +820,18 @@ const SubscriptionSettingsForm: React.FC<{
         )}
         <span className="text-muted-foreground">
           Best-effort: сброс 5-часового окна попадёт в ±1 час от этого часа, при простое — ровно в него.
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 font-medium">
+          <input type="checkbox" checked={chainOn} onChange={(event) => setChainOn(event.target.checked)} />
+          Открывать окна подряд
+        </label>
+        <span className="text-muted-foreground">
+          {alignOn
+            ? "Закрылось окно — сразу открываем следующее, кроме паузы ровно в 4 часа перед выровненным окном: сброс встаёт на выбранный час минута в минуту."
+            : "Закрылось окно — сразу открываем следующее. Около 5 запросов в сутки на этот аккаунт, включая ночи без работы."}
         </span>
       </div>
 

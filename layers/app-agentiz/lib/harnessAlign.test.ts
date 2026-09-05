@@ -87,3 +87,59 @@ describe('alignState', () => {
     expect(SESSION_WINDOW_MS).toBe(5 * HOUR_MS);
   });
 });
+
+/**
+ * `keepWindowsOpen`: open a window whenever none is open, with one exception — a window that
+ * would close later than A−W, the moment the aligned one has to start. Because the mechanism now
+ * picks the moment itself, the tolerance is not spent: the hold band is the exact (A−2W, A−W).
+ * Anchor 09:00 Belgrade = 08:00 UTC, so hold is (22:00, 03:00) UTC and the poke resumes at 03:00.
+ */
+describe('alignState with keepWindowsOpen', () => {
+  const closed = (now: Date) => [window({ resetsAt: new Date(now.getTime() - HOUR_MS).toISOString() }, now)];
+  const chained = (now: Date) => alignState(CONFIG, closed(now), now, true);
+
+  it('holds strictly inside (A−2W, A−W) and opens on both boundaries', () => {
+    // d = W exactly: this window closes precisely at the anchor, so it is the aligned one.
+    expect(chained(utc(3))).toBe('poke');
+    // d = 2W exactly: it closes at A−W, handing over to the aligned window on time.
+    expect(chained(utc(22))).toBe('poke');
+    // A minute inside either boundary and the chain would miss A−W.
+    expect(chained(utc(2, 59))).toBe('hold');
+    expect(chained(utc(22, 1))).toBe('hold');
+  });
+
+  it('opens everywhere outside that band, including right after the anchor', () => {
+    expect(chained(utc(8, 30))).toBe('poke');
+    expect(chained(utc(12))).toBe('poke');
+    expect(chained(utc(21))).toBe('poke');
+  });
+
+  it('does not depend on alignment: with no anchor it always opens', () => {
+    const now = utc(23, 30);
+    expect(alignState(null, closed(now), now, true)).toBe('poke');
+    expect(alignState({ hour: 24, timezone: 'Europe/Belgrade' }, closed(now), now, true)).toBe('poke');
+    expect(alignState({ hour: 9, timezone: 'No/Such_Zone' }, closed(now), now, true)).toBe('poke');
+  });
+
+  it('never opens one blind: an open window or silent telemetry is still nothing', () => {
+    const now = utc(12);
+    const open = [window({ resetsAt: new Date(now.getTime() + 2 * HOUR_MS).toISOString() }, now)];
+    expect(alignState(CONFIG, open, now, true)).toBe('none');
+    expect(alignState(CONFIG, null, now, true)).toBe('none');
+    expect(alignState(null, null, now, true)).toBe('none');
+  });
+
+  it('leaves the flagless answer exactly as it was where the two modes disagree', () => {
+    // 22:30 = d 9h30m: outside the tolerated hold band, inside the exact one.
+    expect(alignState(CONFIG, closed(utc(22, 30)), utc(22, 30))).toBe('none');
+    expect(alignState(CONFIG, closed(utc(22, 30)), utc(22, 30), false)).toBe('none');
+    expect(chained(utc(22, 30))).toBe('hold');
+    // 02:30 = the free early edge of the tolerance, which the exact band still holds.
+    expect(alignState(CONFIG, closed(utc(2, 30)), utc(2, 30))).toBe('none');
+    expect(alignState(CONFIG, closed(utc(2, 30)), utc(2, 30), false)).toBe('none');
+    expect(chained(utc(2, 30))).toBe('hold');
+    // 12:00 = idle mid-day: the old mode waits for A−W, the chain opens now.
+    expect(alignState(CONFIG, closed(utc(12)), utc(12))).toBe('none');
+    expect(chained(utc(12))).toBe('poke');
+  });
+});
