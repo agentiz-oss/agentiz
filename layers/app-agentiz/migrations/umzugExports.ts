@@ -106,6 +106,10 @@ import {
   up as upRunBranch,
   down as downRunBranch,
 } from './umzug/1788001300000_run_branch';
+import {
+  up as upHarnessLastPoke,
+  down as downHarnessLastPoke,
+} from './umzug/1788001400000_harness_last_poke';
 
 export const umzugExports: Migration[] = [
   {
@@ -318,5 +322,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001300000,
     up: upRunBranch,
     down: downRunBranch,
+  },
+  {
+    name: 'harness_last_poke',
+    timestamp: 1788001400000,
+    up: upHarnessLastPoke,
+    down: downHarnessLastPoke,
   },
 ];

@@ -57,6 +57,12 @@ const reportHarnessUsageTool: IMcpTool = {
         },
       },
       observedAt: { type: 'string', description: 'ISO time of the measurement; defaults to now.' },
+      poke: {
+        type: 'object',
+        description: 'Outcome of the window poke this worker was last asked for (reset alignment): {ok:boolean, at?:ISO, error?:string}. Stored on the subscription as lastPoke — without it a failing poke is invisible outside the worker\'s journal.',
+        required: ['ok'],
+        properties: { ok: { type: 'boolean' }, at: { type: 'string' }, error: { type: 'string' } },
+      },
     },
   },
   async handler(params) {
@@ -75,6 +81,7 @@ const reportHarnessUsageTool: IMcpTool = {
       raw: payload.raw,
       snapshot: payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined,
       observedAt: observedAtText ? new Date(observedAtText) : undefined,
+      poke: payload.poke,
     });
     return {
       sampleId: result.sample.id,

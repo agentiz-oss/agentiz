@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from agentiz_worker import harness_usage
+from agentiz_worker import harness_usage, main
 from agentiz_worker.harness_usage import UsageReporter, claude_access_token
 
 
@@ -112,21 +113,22 @@ class UsageReporterTest(unittest.TestCase):
         raw = {"five_hour": {"utilization": 42, "resets_at": "2026-08-18T12:00:00Z"}}
         sent: list[tuple[str, dict]] = []
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: raw}, clear=True):
-            reporter = UsageReporter(lambda key, payload: sent.append((key, payload)))
+            reporter = UsageReporter(lambda key, payload, poke=None: sent.append((key, payload, poke)))
             self.assertEqual(reporter.report_once(), 1)
-        self.assertEqual(sent, [("claude", raw)])
+        # No poke has happened, so the body is what it always was — an older server sees no change.
+        self.assertEqual(sent, [("claude", raw, None)])
 
     def test_a_harness_absent_from_this_machine_reports_nothing(self) -> None:
         sent: list[tuple[str, dict]] = []
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: None}, clear=True):
-            self.assertEqual(UsageReporter(lambda key, payload: sent.append((key, payload))).report_once(), 0)
+            self.assertEqual(UsageReporter(lambda key, payload, poke=None: sent.append((key, payload))).report_once(), 0)
         self.assertEqual(sent, [])
 
     def test_starting_the_loop_reports_once_immediately(self) -> None:
         """main() starts the thread instead of also calling report_once — one report, not two."""
         sent: list[tuple[str, dict]] = []
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True):
-            reporter = UsageReporter(lambda key, payload: sent.append((key, payload)), interval_sec=3600)
+            reporter = UsageReporter(lambda key, payload, poke=None: sent.append((key, payload)), interval_sec=3600)
             reporter.start()
             for _ in range(50):
                 if sent:
@@ -140,13 +142,127 @@ class UsageReporterTest(unittest.TestCase):
             raise OSError("no network")
 
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": explode}, clear=True):
-            self.assertEqual(UsageReporter(lambda key, payload: None).report_once(), 0)
+            self.assertEqual(UsageReporter(lambda key, payload, poke=None: None).report_once(), 0)
 
-        def refuse(key: str, payload: dict) -> None:
+        def refuse(key: str, payload: dict, poke: dict | None = None) -> None:
             raise RuntimeError("HTTP 400")
 
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True):
             self.assertEqual(UsageReporter(refuse).report_once(), 0)
+
+
+class PokeReportingTest(unittest.TestCase):
+    """A poke the server asked for is answered on the next report — otherwise its failure lives in
+    this machine's journal and the server goes on believing the request was carried out."""
+
+    def _reporter(self, sent: list, open_window: bool = True) -> UsageReporter:
+        def send(key: str, payload: dict, poke: dict | None = None) -> dict:
+            sent.append((key, payload, poke))
+            return {"openWindow": open_window}
+
+        return UsageReporter(send)
+
+    def test_a_failed_poke_travels_with_the_following_report(self) -> None:
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True), \
+                mock.patch.dict(harness_usage.POKERS,
+                                {"claude": lambda: harness_usage.PokeOutcome(False, "no claude CLI found")},
+                                clear=True):
+            reporter = self._reporter(sent)
+            reporter.report_once()   # asks for the poke, which fails: nothing to re-report yet
+            reporter.report_once()   # …so the outcome rides this one
+        self.assertIsNone(sent[0][2])
+        self.assertEqual(sent[1][2]["ok"], False)
+        self.assertEqual(sent[1][2]["error"], "no claude CLI found")
+        self.assertTrue(sent[1][2]["at"].endswith("Z"))
+
+    def test_a_successful_poke_is_reported_with_its_own_re_report(self) -> None:
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True), \
+                mock.patch.dict(harness_usage.POKERS, {"claude": lambda: harness_usage.PokeOutcome(True)}, clear=True):
+            self._reporter(sent).report_once()
+        # The re-report that tells the server "the window you asked for is open" carries the result.
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[1][2], {"ok": True, "at": sent[1][2]["at"]})
+
+    def test_a_send_that_failed_does_not_lose_the_outcome(self) -> None:
+        sent: list = []
+
+        def send(key: str, payload: dict, poke: dict | None = None) -> dict:
+            sent.append((key, payload, poke))
+            if len(sent) == 2:
+                raise RuntimeError("HTTP 502")
+            return {"openWindow": True}
+
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True), \
+                mock.patch.dict(harness_usage.POKERS,
+                                {"claude": lambda: harness_usage.PokeOutcome(False, "boom")}, clear=True):
+            reporter = UsageReporter(send)
+            reporter.report_once()
+            reporter.report_once()   # carries the outcome and fails
+            reporter.report_once()   # so the outcome is still pending here
+        self.assertEqual(sent[1][2]["error"], "boom")
+        self.assertEqual(sent[2][2]["error"], "boom")
+
+
+class ClaudeCliLocationTest(unittest.TestCase):
+    """The poke is the only thing the worker runs by bare name, and a service's PATH is not the
+    installing shell's — see `claude_cli_path`."""
+
+    def _home_with_cli(self, root: Path) -> Path:
+        cli = root / ".local/bin/claude"
+        cli.parent.mkdir(parents=True)
+        cli.write_text("#!/bin/sh\nexit 0\n")
+        cli.chmod(0o755)
+        return cli
+
+    def test_path_wins_and_is_what_gets_executed(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(harness_usage.shutil, "which", return_value="/opt/x/bin/claude"), \
+                mock.patch.object(harness_usage.subprocess, "run", fake_run):
+            self.assertTrue(harness_usage.poke_claude().ok)
+        self.assertEqual(calls[0][0], "/opt/x/bin/claude")
+
+    def test_falls_back_to_the_home_install_a_service_cannot_see(self) -> None:
+        with TemporaryDirectory() as tmp:
+            cli = self._home_with_cli(Path(tmp))
+            with mock.patch.dict("os.environ", {"HOME": tmp}, clear=False), \
+                    mock.patch.object(harness_usage.shutil, "which", return_value=None), \
+                    mock.patch.object(harness_usage, "CLAUDE_BIN_FALLBACKS", ("~/.local/bin/claude",)):
+                self.assertEqual(harness_usage.claude_cli_path(), str(cli))
+
+    def test_an_explicit_setting_wins_over_both(self) -> None:
+        with mock.patch.dict("os.environ", {harness_usage.CLAUDE_BIN_ENV: "/srv/claude"}), \
+                mock.patch.object(harness_usage.shutil, "which", return_value="/usr/bin/claude"):
+            self.assertEqual(harness_usage.claude_cli_path(), "/srv/claude")
+
+    def test_a_machine_without_the_cli_refuses_instead_of_raising(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {"HOME": tmp}, clear=False), \
+                    mock.patch.object(harness_usage.shutil, "which", return_value=None), \
+                    mock.patch.object(harness_usage, "CLAUDE_BIN_FALLBACKS", ("~/.local/bin/claude",)):
+                self.assertIsNone(harness_usage.claude_cli_path())
+                outcome = harness_usage.poke_claude()
+                self.assertFalse(outcome.ok)
+                # The reason is what the server will show; it must name what was looked at.
+                self.assertIn("~/.local/bin/claude", outcome.error or "")
+
+
+class ServiceUnitTest(unittest.TestCase):
+    def test_the_unit_names_the_user_bin_directory(self) -> None:
+        """`~/.local/bin` is where the CLI installs itself; systemd's own PATH does not have it."""
+        value = main.service_path_value()
+        self.assertIn(str(Path.home() / ".local/bin"), value.split(":"))
+        self.assertIn("/usr/bin", value.split(":"))
+
+    def test_an_exotic_install_is_added_from_the_installing_shell(self) -> None:
+        with mock.patch.object(main.shutil, "which", return_value="/opt/mise/shims/claude"):
+            self.assertEqual(main.service_path_value().split(":")[0], "/opt/mise/shims")
 
 
 if __name__ == "__main__":

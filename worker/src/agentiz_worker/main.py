@@ -211,6 +211,27 @@ def configure(config_path: Path) -> None:
     print("Запустите `agentiz-worker install-service` для постоянного запуска.")
 
 
+def service_path_value() -> str:
+    """PATH written into the unit.
+
+    A systemd service inherits nothing from the shell it was installed from and starts with a
+    minimal PATH, which does not contain `~/.local/bin` — where Claude Code and friends install
+    themselves. Everything the worker runs during a job goes through an absolute path or `npx`,
+    so this matters for exactly one thing: the reset-alignment poke, which calls `claude` by bare
+    name (`harness_usage.poke_claude`). Whatever `claude` resolves to for the installing user is
+    added as well, so an exotic install (nvm, mise, homebrew) is picked up too.
+    """
+    home = Path.home()
+    directories = [home / ".local/bin", home / "bin", Path("/usr/local/bin"), Path("/usr/bin"),
+                   Path("/bin"), Path("/usr/local/sbin"), Path("/usr/sbin"), Path("/sbin")]
+    found = shutil.which("claude")
+    if found:
+        parent = Path(found).parent
+        if parent not in directories:
+            directories.insert(0, parent)
+    return ":".join(str(directory) for directory in directories)
+
+
 def install_service(config_path: Path, no_start: bool) -> None:
     if not config_path.is_file():
         raise WorkerError(f"Worker profile not found: {config_path}. Run `agentiz-worker configure` first.")
@@ -220,7 +241,8 @@ def install_service(config_path: Path, no_start: bool) -> None:
     executable = Path(sys.executable)
     environment_path = config_path.with_suffix('.env')
     unit_path.parent.mkdir(parents=True, exist_ok=True)
-    unit_path.write_text(f"""[Unit]\nDescription=Agentiz OpenHands worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-{environment_path}\nExecStart={executable} -m agentiz_worker.main run --config {config_path}\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n""")
+    # PATH first, EnvironmentFile after it: an operator's own PATH= in the profile .env still wins.
+    unit_path.write_text(f"""[Unit]\nDescription=Agentiz OpenHands worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=PATH={service_path_value()}\nEnvironmentFile=-{environment_path}\nExecStart={executable} -m agentiz_worker.main run --config {config_path}\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n""")
     unit_path.chmod(0o644)
     systemd_environment = os.environ.copy()
     # A terminal launched outside the graphical login/SSH PAM session may not export these even
@@ -275,10 +297,17 @@ class Client:
     def heartbeat(self, job: dict[str, Any]) -> Any:
         return self.post(f"/jobs/{job['jobId']}/heartbeat", job, {})
 
-    def report_harness_usage(self, harness_key: str, raw: dict[str, Any]) -> Any:
-        """Pushes one harness's usage payload. Outside any job lease — see the server endpoint."""
-        return self.request("POST", "/harness-usage", {"schemaVersion": SCHEMA_VERSION,
-            "harnessKey": harness_key, "raw": raw})[1]
+    def report_harness_usage(self, harness_key: str, raw: dict[str, Any],
+                             poke: dict[str, Any] | None = None) -> Any:
+        """Pushes one harness's usage payload. Outside any job lease — see the server endpoint.
+
+        `poke` travels beside `raw`, never inside it: `raw` is the provider's own payload verbatim,
+        while the poke result is this worker answering something the server asked for.
+        """
+        body: dict[str, Any] = {"schemaVersion": SCHEMA_VERSION, "harnessKey": harness_key, "raw": raw}
+        if poke is not None:
+            body["poke"] = poke
+        return self.request("POST", "/harness-usage", body)[1]
 
     def secrets(self, job: dict[str, Any]) -> Any:
         """Repository credentials for this job. Never part of the job payload — see the server's

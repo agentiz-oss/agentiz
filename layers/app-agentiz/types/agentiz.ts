@@ -161,6 +161,24 @@ export interface HarnessWindowState {
   source?: HarnessSignalSource;
 }
 
+/**
+ * Outcome of the one thing the server ever asks a worker to *do* about limits: open a session
+ * window (`openWindow` on a usage report — see `lib/harnessAlign.ts`). The worker reports it back
+ * on its next report, because a poke that fails silently is otherwise visible only in that
+ * machine's journal, while the server keeps believing the request was carried out.
+ */
+export interface HarnessPokeResult {
+  /** ISO moment of the attempt, as the worker saw it. */
+  at: string;
+  ok: boolean;
+  /** One already-truncated line; absent when the attempt worked. */
+  error?: string | null;
+  /** Which machine tried — one subscription can be bound to several workers. */
+  workerId?: string | null;
+  /** ISO start of the current failure streak; null while the last attempt succeeded. */
+  failedSince?: string | null;
+}
+
 /** Per-window preventive stop: close the gate when a window reaches the threshold. */
 export type HarnessStopPolicy = Record<string, { pauseAtUsedPercent: number }>;
 

@@ -11,9 +11,11 @@ import { alignState } from '../lib/harnessAlign';
 import { MIXED_HARNESS_KEY } from '../lib/harness';
 import { sendDashboardNotification } from '../lib/notifications/dashboardNotifications';
 import { formatUserDeadline } from '../lib/userTime';
-import type { HarnessSignalSource, HarnessWindowState } from '../types/agentiz';
+import type { HarnessPokeResult, HarnessSignalSource, HarnessWindowState } from '../types/agentiz';
 
 /** How often the capacity sweep runs (schedule windows, declared resets). */
+/** A poke error is a diagnosis, not a log: one line is enough and the column is not a sink. */
+const POKE_ERROR_MAX_LENGTH = 300;
 const SWEEP_INTERVAL_MS = Number(process.env.AGENTIZ_CAPACITY_SWEEP_MS ?? 30_000);
 /** How often the provider refresh cycle and sample retention run, inside the sweep. */
 const USAGE_POLL_MS = Number(process.env.AGENTIZ_USAGE_POLL_MS ?? 300_000);
@@ -254,6 +256,8 @@ export class AgentCapacityService {
     raw?: unknown;
     snapshot?: { windows?: unknown[]; meta?: unknown; accountId?: string };
     observedAt?: Date;
+    /** What came of the window poke this worker was last asked for; see normalizePoke. */
+    poke?: unknown;
   }): Promise<AppliedSnapshotOutcome> {
     let snapshot = params.snapshot;
     if (!snapshot && params.raw !== undefined) {
@@ -288,7 +292,26 @@ export class AgentCapacityService {
       },
       source: 'report',
       observedAt: params.observedAt,
+      poke: this.normalizePoke(params.poke),
     });
+  }
+
+  /**
+   * Reads a worker's report of the window poke it was asked for. Shaped defensively because it
+   * arrives from a machine that may be older than this field: anything unrecognizable is simply
+   * not a report, and the subscription keeps whatever it knew.
+   */
+  private static normalizePoke(value: unknown): { at: string; ok: boolean; error?: string | null } | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const payload = value as Record<string, unknown>;
+    if (typeof payload.ok !== 'boolean') return undefined;
+    const at = typeof payload.at === 'string' ? new Date(payload.at) : new Date();
+    const error = typeof payload.error === 'string' ? payload.error.trim().slice(0, POKE_ERROR_MAX_LENGTH) : null;
+    return {
+      at: (Number.isNaN(at.getTime()) ? new Date() : at).toISOString(),
+      ok: payload.ok,
+      error: error || null,
+    };
   }
 
   /**
@@ -304,6 +327,7 @@ export class AgentCapacityService {
     snapshot: HarnessLimitSnapshot;
     source: HarnessSignalSource;
     observedAt?: Date;
+    poke?: { at: string; ok: boolean; error?: string | null };
   }): Promise<AppliedSnapshotOutcome> {
     const now = new Date();
     const observedAt = params.observedAt ?? now;
@@ -352,11 +376,26 @@ export class AgentCapacityService {
         accountId: string | null;
         lastSignalAt: Date;
         lastSignalSource: HarnessSignalSource;
+        lastPoke: HarnessPokeResult | null;
       }> = {
         windows: [...merged.values()],
         lastSignalAt: now,
         lastSignalSource: params.source,
       };
+      if (params.poke) {
+        const previous = subscription.lastPoke;
+        updates.lastPoke = {
+          at: params.poke.at,
+          ok: params.poke.ok,
+          error: params.poke.ok ? null : params.poke.error ?? null,
+          workerId,
+          // The streak's start survives every repeat, so a reader learns "broken since 04:01"
+          // rather than only the latest of twenty-nine identical failures.
+          failedSince: params.poke.ok
+            ? null
+            : (previous && !previous.ok && previous.failedSince ? previous.failedSince : params.poke.at),
+        };
+      }
       if (params.snapshot.accountId) {
         if (!subscription.accountId) {
           updates.accountId = params.snapshot.accountId;

@@ -236,4 +236,41 @@ describe('harness capacity: gates, deferral and recovery', () => {
       unregisterHarnessLimitProvider('test:claude');
     }
   });
+
+  it('records what came of the window poke it asked for, and since when it has been failing', async () => {
+    const worker = await makeWorker('w');
+    const snapshot = { windows: [{ key: '5h', label: '5h', usedPercent: 10, resetsAt: new Date(Date.now() + 60 * 60_000).toISOString() }] };
+
+    // A worker built before this field simply sends no poke, and the subscription keeps its shape:
+    // "nothing reported" and "reported that nothing happened" must not look the same.
+    const first = await AgentCapacityService.applyReport({ workerId: worker.id, harnessKey: 'claude', snapshot });
+    expect(first.subscription?.lastPoke ?? null).toBeNull();
+
+    const brokeAt = new Date(Date.now() - 40 * 60_000).toISOString();
+    const failed = await AgentCapacityService.applyReport({
+      workerId: worker.id, harnessKey: 'claude', snapshot,
+      poke: { ok: false, at: brokeAt, error: 'no claude CLI found' },
+    });
+    expect(failed.subscription?.lastPoke).toMatchObject({
+      ok: false, at: brokeAt, error: 'no claude CLI found', failedSince: brokeAt, workerId: worker.id,
+    });
+
+    // Every repeat keeps the streak's start: a reader needs "broken since", not the latest of many.
+    const again = new Date().toISOString();
+    const repeated = await AgentCapacityService.applyReport({
+      workerId: worker.id, harnessKey: 'claude', snapshot, poke: { ok: false, at: again, error: 'no claude CLI found' },
+    });
+    expect(repeated.subscription?.lastPoke).toMatchObject({ at: again, failedSince: brokeAt });
+
+    const recovered = await AgentCapacityService.applyReport({
+      workerId: worker.id, harnessKey: 'claude', snapshot, poke: { ok: true, at: again },
+    });
+    expect(recovered.subscription?.lastPoke).toMatchObject({ ok: true, error: null, failedSince: null });
+
+    // Anything unrecognizable is not a report about a poke, and must not erase what is known.
+    const garbage = await AgentCapacityService.applyReport({
+      workerId: worker.id, harnessKey: 'claude', snapshot, poke: { error: 'half a payload' },
+    });
+    expect(garbage.subscription?.lastPoke).toMatchObject({ ok: true });
+  });
 });

@@ -81,6 +81,14 @@ interface HarnessSubscription {
   exhausted: boolean;
   lastSignalAt?: string | null;
   lastSignalSource?: string | null;
+  /** Outcome of the last window poke asked for by reset alignment; null = never asked/never answered. */
+  lastPoke?: {
+    at: string;
+    ok: boolean;
+    error?: string | null;
+    failedSince?: string | null;
+    workerId?: string | null;
+  } | null;
 }
 
 interface WorkerHarnessBinding {
@@ -587,6 +595,21 @@ const WorkerHarnessEditor: React.FC<{
                   измерено на этом воркере: {new Date(binding.latestSample.observedAt).toLocaleString()} ({binding.latestSample.source})
                   {binding.latestSample.accountId ? ` · аккаунт: ${binding.latestSample.accountId}` : ""}
                 </div>
+              )}
+              {/* The one thing the server asks a worker to do about limits — and the only place
+                  its failure is visible, since it happens outside any run. */}
+              {subscription?.lastPoke && (
+                subscription.lastPoke.ok ? (
+                  <div className="mt-1 text-muted-foreground">
+                    побудка окна: успешно {formatDateTime(subscription.lastPoke.at)}
+                  </div>
+                ) : (
+                  <div className="mt-1" style={{ color: "#b91c1c" }}>
+                    ⚠ побудка окна не работает
+                    {subscription.lastPoke.failedSince ? ` с ${formatDateTime(subscription.lastPoke.failedSince)}` : ""}
+                    {`: ${subscription.lastPoke.error || "воркер не назвал причину"}`}
+                  </div>
+                )
               )}
               {metaOpen === binding.harnessKey && binding.latestSample?.meta != null && (
                 <pre className="mt-1 overflow-auto rounded border p-2" style={{ maxHeight: 200 }}>

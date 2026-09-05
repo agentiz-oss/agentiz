@@ -853,6 +853,9 @@ export class AgentWorkerApiService {
         raw: payload.raw,
         snapshot: payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined,
         observedAt,
+        // Beside `raw`, never inside it: `raw` is the provider's own payload, verbatim, while this
+        // is the worker answering a request the server made (openWindow below).
+        poke: payload.poke,
       });
       // Reset alignment (lib/harnessAlign.ts): the poke decision rides the report's response on
       // purpose — it is made on telemetry this very report just refreshed, and the worker that

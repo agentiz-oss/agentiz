@@ -33,6 +33,7 @@ export function subscriptionView(subscription: AgentHarnessSubscription) {
     exhausted: subscription.isExhausted(),
     lastSignalAt: subscription.lastSignalAt,
     lastSignalSource: subscription.lastSignalSource,
+    lastPoke: subscription.lastPoke ?? null,
     createdAt: subscription.createdAt,
     updatedAt: subscription.updatedAt,
   };

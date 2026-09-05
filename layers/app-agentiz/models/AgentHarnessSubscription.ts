@@ -3,6 +3,7 @@ import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequ
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import type {
+  HarnessPokeResult,
   HarnessResetSchedule,
   HarnessSignalSource,
   HarnessStopPolicy,
@@ -148,6 +149,16 @@ export class AgentHarnessSubscription extends Model<
 
   @Column({ type: DataType.STRING, allowNull: true })
   declare lastSignalSource: HarnessSignalSource | null;
+
+  /**
+   * Result of the last window poke this subscription's worker was asked for (reset alignment,
+   * `lib/harnessAlign.ts`). The server asks through the response of a usage report and cannot
+   * observe the outcome any other way — an unreported failure looks exactly like a machine that
+   * simply has nothing to open. Written by `AgentCapacityService.applySnapshot` from what the
+   * worker attaches to its next report; a worker too old to report anything leaves it null.
+   */
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare lastPoke: HarnessPokeResult | null;
 
   @Column({ type: DataType.DATE, defaultValue: DataType.NOW })
   declare createdAt: CreationOptional<Date>;

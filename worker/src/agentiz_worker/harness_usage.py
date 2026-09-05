@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -202,36 +205,86 @@ COLLECTORS: dict[str, Callable[[], dict[str, Any] | None]] = {
 #: fails to open one.
 POKE_TIMEOUT_SEC = 180
 POKE_MIN_INTERVAL_SEC = 600
+#: The server stores the reason as a diagnosis, not as a log — see AgentCapacityService.
+POKE_ERROR_MAX_LENGTH = 300
+
+#: Explicit location of the Claude Code CLI, for an installation none of the guesses below finds.
+CLAUDE_BIN_ENV = "AGENTIZ_CLAUDE_BIN"
+#: Where that CLI actually lands when a person installs it the usual way. Looked at only after
+#: PATH, and it exists because PATH is the wrong question for a daemon: systemd hands a service a
+#: minimal PATH of its own, so `~/.local/bin` — the CLI's own default target — is invisible to the
+#: worker even on a machine where `claude` works perfectly for its owner. That is exactly how the
+#: poke failed with `[Errno 2] No such file or directory: 'claude'` every throttle interval while
+#: nothing else on the worker noticed (the ACP stages reach their harness through `npx`).
+CLAUDE_BIN_FALLBACKS = (
+    "~/.local/bin/claude",
+    "~/bin/claude",
+    "~/.claude/local/claude",
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+)
 
 
-def poke_claude() -> bool:
+def claude_cli_path() -> str | None:
+    """Absolute path of the Claude Code CLI, or None if this machine has none."""
+    override = os.environ.get(CLAUDE_BIN_ENV, "").strip()
+    # An explicit setting is used as given: a wrong one has to fail loudly, not be guessed around.
+    if override:
+        return override
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in CLAUDE_BIN_FALLBACKS:
+        path = Path(candidate).expanduser()
+        if os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
+@dataclass(frozen=True)
+class PokeOutcome:
+    """What came of one poke. The reason travels back to the server on the next report, so it has
+    to be one short human line rather than a traceback — see `UsageReporter._send_report`."""
+
+    ok: bool
+    error: str | None = None
+
+
+def poke_claude() -> PokeOutcome:
     """Opens a session window with the cheapest possible request: one word to the smallest model,
     through the CLI that owns the credential. Sent when the server answers a usage report with
     `openWindow` — its reset-alignment logic wants the window's 5 hours to start now (see the
     server's `lib/harnessAlign.ts`). Best-effort like everything in this module: a failure is one
     warning line and the server simply asks again on a later report.
     """
+    cli = claude_cli_path()
+    if cli is None:
+        message = ("no claude CLI found — looked at PATH, "
+                   f"${CLAUDE_BIN_ENV} and {', '.join(CLAUDE_BIN_FALLBACKS)}")
+        print(f"usage: window poke {message}", flush=True)
+        return PokeOutcome(False, message)
     try:
         result = subprocess.run(
-            ["claude", "-p", "ok", "--model", "haiku"],
+            [cli, "-p", "ok", "--model", "haiku"],
             cwd=str(Path.home()),
             capture_output=True,
             text=True,
             timeout=POKE_TIMEOUT_SEC,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        print(f"usage: window poke could not run claude: {error}", flush=True)
-        return False
+        print(f"usage: window poke could not run {cli}: {error}", flush=True)
+        return PokeOutcome(False, f"could not run {cli}: {error}")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
-        print(f"usage: window poke exited {result.returncode}: {detail[-1] if detail else ''}", flush=True)
-        return False
-    return True
+        last = detail[-1] if detail else ""
+        print(f"usage: window poke exited {result.returncode}: {last}", flush=True)
+        return PokeOutcome(False, f"{cli} exited {result.returncode}: {last}"[:POKE_ERROR_MAX_LENGTH])
+    return PokeOutcome(True)
 
 
 #: Harness key → the request that opens its session window. Only harnesses with a poker can be
 #: reset-aligned when idle; the rest ignore `openWindow` and lose nothing else.
-POKERS: dict[str, Callable[[], bool]] = {
+POKERS: dict[str, Callable[[], PokeOutcome]] = {
     "claude": poke_claude,
 }
 
@@ -243,12 +296,30 @@ class UsageReporter:
     worker is claiming nothing because its subscription is spent.
     """
 
-    def __init__(self, send: Callable[[str, dict[str, Any]], Any], interval_sec: int = USAGE_REPORT_INTERVAL_SEC) -> None:
+    def __init__(self, send: Callable[..., Any], interval_sec: int = USAGE_REPORT_INTERVAL_SEC) -> None:
         self._send = send
         self._interval = max(int(interval_sec), 10)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_poke_at: dict[str, float] = {}
+        self._pending_poke: dict[str, dict[str, Any]] = {}
+
+    def _send_report(self, harness_key: str, raw: dict[str, Any]) -> Any:
+        """One report, carrying what the last poke did.
+
+        The outcome rides the next report instead of a channel of its own: the server asked for the
+        poke through a report's response, so this is the same conversation, and a machine that
+        cannot open a window is exactly a machine whose telemetry keeps arriving. A send that fails
+        re-arms the outcome for the following tick — the server must not lose the only evidence
+        that its request was carried out or refused.
+        """
+        poke = self._pending_poke.pop(harness_key, None)
+        try:
+            return self._send(harness_key, raw, poke)
+        except Exception:
+            if poke is not None:
+                self._pending_poke[harness_key] = poke
+            raise
 
     def report_once(self) -> int:
         """Collects and sends every harness this machine can report on. Returns how many went out."""
@@ -262,7 +333,7 @@ class UsageReporter:
             if not raw:
                 continue
             try:
-                response = self._send(harness_key, raw)
+                response = self._send_report(harness_key, raw)
                 sent += 1
             except Exception as error:  # noqa: BLE001 - telemetry must never break the worker
                 print(f"usage: could not report {harness_key} usage: {error}", flush=True)
@@ -284,14 +355,20 @@ class UsageReporter:
         if last is not None and now - last < POKE_MIN_INTERVAL_SEC:
             return
         self._last_poke_at[harness_key] = now
-        if not poker():
+        outcome = poker()
+        self._pending_poke[harness_key] = {
+            "ok": outcome.ok,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            **({"error": outcome.error} if outcome.error else {}),
+        }
+        if not outcome.ok:
             return
         print(f"usage: opened a {harness_key} session window on server request", flush=True)
         collect = COLLECTORS.get(harness_key)
         try:
             raw = collect() if collect else None
             if raw:
-                self._send(harness_key, raw)
+                self._send_report(harness_key, raw)
         except Exception as error:  # noqa: BLE001 - telemetry must never break the worker
             print(f"usage: could not re-report {harness_key} usage after poke: {error}", flush=True)
 
