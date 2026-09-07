@@ -230,6 +230,35 @@ describe('harness capacity: gates, deferral and recovery', () => {
     expect(first.subscription!.lastLimitChangeAt?.toISOString()).toBe(changedAt.toISOString());
   });
 
+  it('carries a provider\'s display hints into storage without changing what the number means', async () => {
+    const worker = await makeWorker('display-hints');
+    const subscription = await AgentHarnessSubscription.create({
+      name: 'Codex', provider: 'openai', stopPolicy: { 'codex:primary': { pauseAtUsedPercent: 80 } },
+    } as any);
+    await AgentWorkerHarness.create({ workerId: worker.id, harnessKey: 'codex', subscriptionId: subscription.id } as any);
+    const resetsAt = new Date(Date.now() + 3 * 60 * 60_000);
+
+    const { sample } = await AgentCapacityService.applySnapshot({
+      workerId: worker.id, harnessKey: 'codex', source: 'report',
+      snapshot: { windows: [
+        // Codex: a person reads what is left, and the plan has no session window.
+        { key: 'codex:primary', label: 'Codex', usedPercent: 85, resetsAt, meter: 'remaining' },
+        // Claude-shaped: no reading hint at all, plus the length of its session window.
+        { key: '5h', label: '5h', usedPercent: 20, resetsAt, sessionWindowMinutes: 300 },
+      ] },
+    });
+
+    expect(sample.windows[0]).toMatchObject({ usedPercent: 85, meter: 'remaining' });
+    expect('sessionWindowMinutes' in sample.windows[0]).toBe(false);
+    expect(sample.windows[1].sessionWindowMinutes).toBe(300);
+    // A window the provider said nothing about keeps exactly the shape it had before the fields
+    // existed: no `meter: undefined` key appears in what is stored.
+    expect('meter' in sample.windows[1]).toBe(false);
+    // And the hint decides nothing: 85 is still 85 % *spent*, so the threshold closes the gate.
+    await subscription.reload();
+    expect(subscription.isExhausted()).toBe(true);
+  });
+
   it('interprets a raw report through the harness provider and rejects one nobody understands', async () => {
     const worker = await makeWorker('w');
     registerHarnessLimitProvider({

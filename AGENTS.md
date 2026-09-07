@@ -424,7 +424,14 @@
   usage-report shapes) never enter the core: they come through the `harnessLimitProviders`
   collection — `layers/app-agentiz-claude-limits` is the first provider — and with an empty
   collection everything still works manually (`agentiz.manageWorker markHarnessExhausted` /
-  `clearHarnessLimit`). Both claim sites now delegate to `AgentJobClaimService.claim()` — a new
+  `clearHarnessLimit`). **How a window's number is read is also the provider's, and travels on the
+  window, never on the harness key**: `usedPercent` is always the *spent* share (that is what
+  `stopPolicy` and every sample compare), while `meter: 'remaining'` — Codex, whose own console
+  counts down — makes the panel and the phone print `100 − usedPercent` as «осталось N%», and
+  `sessionWindowMinutes` (Claude: 300) is what licenses «ещё N полных 5-часовых окон» beside a long
+  window's remaining time. Both are absent by default, which is byte-identical to the reading every
+  stored window had before they existed; absent `sessionWindowMinutes` means the unit is unknown,
+  not five hours, so a Codex bucket shows only its reset moment plus hours and minutes. Both claim sites now delegate to `AgentJobClaimService.claim()` — a new
   queue filter goes **there** (still as a SQL column, never JSON), not into two hand-kept WHEREs;
   the same service enforces `AgentWorker.maxConcurrentJobs` under a `FOR UPDATE` of the worker
   row. A failed pipeline result whose error text a provider classifies as a limit is **deferred,

@@ -48,6 +48,12 @@ function readSnapshot(snapshot: ObjectRecord, fallbackKey: string): HarnessLimit
       label: windowLabel(snapshot, role),
       usedPercent: entry.usedPercent,
       resetsAt: resetDate(entry.resetsAt),
+      // Codex's own console states what is left, not what is spent, and the number a person
+      // compares against it must say the same thing. The stored value stays "used": only the
+      // reading is inverted, so stop policy thresholds keep meaning what they meant.
+      meter: 'remaining',
+      // Deliberately no sessionWindowMinutes: a Codex plan has no session window, so its buckets
+      // are readable only as a reset moment plus the hours and minutes left until it.
     });
   }
   return windows;

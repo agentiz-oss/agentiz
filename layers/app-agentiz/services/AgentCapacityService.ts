@@ -80,6 +80,23 @@ function limitWindowsChanged(before: HarnessWindowState[], after: HarnessWindowS
   return false;
 }
 
+type DisplayHints = Pick<HarnessWindowState, 'meter' | 'sessionWindowMinutes'>;
+
+/**
+ * The two display hints a provider may attach to a window, copied only when it actually set one.
+ * Spelling the keys out as `undefined` instead would put them into every stored sample and change
+ * the shape of a window written before the fields existed.
+ */
+function displayHints(window: { meter?: unknown; sessionWindowMinutes?: unknown }): DisplayHints {
+  const hints: DisplayHints = {};
+  if (window.meter === 'used' || window.meter === 'remaining') hints.meter = window.meter;
+  if (typeof window.sessionWindowMinutes === 'number' && Number.isFinite(window.sessionWindowMinutes)
+    && window.sessionWindowMinutes > 0) {
+    hints.sessionWindowMinutes = window.sessionWindowMinutes;
+  }
+  return hints;
+}
+
 export interface LimitSignalOutcome {
   subscription: AgentHarnessSubscription;
   binding: AgentWorkerHarness;
@@ -309,6 +326,7 @@ export class AgentCapacityService {
           label: typeof window.label === 'string' ? window.label : String(window.key),
           usedPercent: typeof window.usedPercent === 'number' ? window.usedPercent : undefined,
           resetsAt: window.resetsAt ? new Date(window.resetsAt) : null,
+          ...displayHints(window),
         })),
         meta: snapshot.meta,
         accountId: typeof snapshot.accountId === 'string' ? snapshot.accountId : undefined,
@@ -374,6 +392,7 @@ export class AgentCapacityService {
         ? Math.min(Math.max(window.usedPercent, 0), 100)
         : undefined,
       resetsAt: window.resetsAt ? new Date(window.resetsAt).toISOString() : null,
+      ...displayHints(window),
       observedAt: observedAt.toISOString(),
       source: params.source,
     }));

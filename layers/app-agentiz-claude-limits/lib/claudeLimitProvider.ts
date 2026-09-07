@@ -32,6 +32,13 @@ const WINDOWS: Array<Pick<HarnessLimitWindow, 'key' | 'label'>> = [
   { key: 'weekly-opus', label: 'Недельное окно Opus' },
 ];
 
+/**
+ * The session window of a Claude subscription. Declared here rather than assumed by the UI: it is
+ * this plan's unit, which is why a weekly window's remaining time reads as "ещё N полных окон" —
+ * a plan without one (Codex) says so by sending no length at all.
+ */
+const SESSION_WINDOW_MINUTES = 5 * 60;
+
 /** Maps the OAuth usage endpoint's window names to our abstract keys. */
 const REPORT_WINDOW_KEYS: Record<string, string> = {
   five_hour: '5h',
@@ -138,6 +145,8 @@ export function interpretClaudeReport(raw: unknown, _ctx: HarnessLimitProviderCo
       label: WINDOWS.find((declared) => declared.key === key)?.label ?? key,
       usedPercent: typeof used === 'number' ? used : undefined,
       resetsAt: typeof resets === 'string' || typeof resets === 'number' ? new Date(resets) : null,
+      // Claude's own /usage speaks in "used", so the reading stays the default one.
+      sessionWindowMinutes: SESSION_WINDOW_MINUTES,
     });
     meta[rawKey] = value;
   }

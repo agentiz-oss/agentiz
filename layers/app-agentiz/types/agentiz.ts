@@ -157,6 +157,10 @@ export interface HarnessWindowState {
   usedPercent?: number;
   /** ISO date string in storage. */
   resetsAt?: string | null;
+  /** Display reading of `usedPercent`; absent = 'used'. See HarnessLimitWindow.meter. */
+  meter?: 'used' | 'remaining';
+  /** Session-window length of the plan, when it has one; absent = no such unit. */
+  sessionWindowMinutes?: number;
   observedAt?: string;
   source?: HarnessSignalSource;
 }

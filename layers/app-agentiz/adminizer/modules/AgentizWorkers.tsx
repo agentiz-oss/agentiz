@@ -58,8 +58,13 @@ interface RepositoryOption {
 interface HarnessWindowState {
   key: string;
   label?: string;
+  /** Always what is *spent*, whatever `meter` says a person should read. */
   usedPercent?: number;
   resetsAt?: string | null;
+  /** 'remaining' ⇒ show `100 − usedPercent`; absent = 'used', the reading Claude reports in. */
+  meter?: "used" | "remaining";
+  /** Session-window length of the plan, when it has one. Not read here; the phone shows it. */
+  sessionWindowMinutes?: number;
   observedAt?: string;
   source?: string;
 }
@@ -489,22 +494,34 @@ function idleLimitsLabel(lastLimitChangeAt?: string | null): string | null {
   return `лимиты без изменений ${duration}`;
 }
 
-/** Shared visual language for Claude, Codex and future providers: only the generic window shape. */
+/**
+ * Shared visual language for Claude, Codex and future providers: only the generic window shape.
+ *
+ * The one thing that differs between providers is which half of the quota a person reads —
+ * Claude's console says "израсходовано", Codex's says "осталось" — and that comes from the window
+ * itself (`meter`), never from the harness key: a window without it keeps the pre-existing
+ * "used" rendering, which is what every stored Claude window is.
+ */
 const LimitWindows: React.FC<{ windows: HarnessWindowState[] }> = ({ windows }) => {
   if (!windows.length) return <span className="text-muted-foreground">телеметрии пока нет</span>;
   return (
     <div className="mt-1 grid gap-1 sm:grid-cols-2">
       {windows.map((window) => {
         const used = typeof window.usedPercent === "number" ? Math.min(Math.max(Math.round(window.usedPercent), 0), 100) : null;
-        const color = used === null ? "#94a3b8" : used >= 90 ? "#dc2626" : used >= 70 ? "#d97706" : "#0891b2";
+        const remaining = window.meter === "remaining";
+        // The bar always fills with the number shown next to it, so the colour follows that same
+        // number: a nearly empty "осталось" bar is the alarming one.
+        const shown = used === null ? null : remaining ? 100 - used : used;
+        const alarm = used === null ? 0 : used;
+        const color = shown === null ? "#94a3b8" : alarm >= 90 ? "#dc2626" : alarm >= 70 ? "#d97706" : "#0891b2";
         return (
           <div key={window.key} className="rounded border px-2 py-1">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate" title={window.label ?? window.key}>{window.label ?? window.key}</span>
-              <strong>{used === null ? "—" : `${used}%`}</strong>
+              <strong>{shown === null ? "—" : remaining ? `осталось ${shown}%` : `${shown}%`}</strong>
             </div>
             <div className="mt-1 h-1.5 overflow-hidden rounded" style={{ backgroundColor: "#e2e8f0" }}>
-              <div className="h-full rounded" style={{ width: `${used ?? 0}%`, backgroundColor: color }} />
+              <div className="h-full rounded" style={{ width: `${shown ?? 0}%`, backgroundColor: color }} />
             </div>
             {window.resetsAt && (
               <div className="mt-1 text-muted-foreground">

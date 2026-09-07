@@ -37,6 +37,18 @@ describe('interpretCodexReport', () => {
     expect(report.windows[1].resetsAt).toBeNull();
   });
 
+  it('states Codex quota as what is left, without inventing a session window', () => {
+    const report = interpretCodexReport({
+      rateLimits: { primary: { usedPercent: 64, resetsAt: 1_800_000_000 }, windowDurationMins: 10_080 },
+    }, context)!;
+    // The stored number stays "used" — stopPolicy thresholds compare against it — and only the
+    // reading is inverted, which is what the panel and the app render as «осталось 36%».
+    expect(report.windows[0].usedPercent).toBe(64);
+    expect(report.windows[0].meter).toBe('remaining');
+    // A Codex plan has no 5-hour session, so nothing may print «ещё N полных окон» for it.
+    expect(report.windows[0].sessionWindowMinutes).toBeUndefined();
+  });
+
   it('rejects malformed, empty and API-key-shaped reports', () => {
     expect(interpretCodexReport(null, context)).toBeNull();
     expect(interpretCodexReport({ rateLimits: {} }, context)).toBeNull();

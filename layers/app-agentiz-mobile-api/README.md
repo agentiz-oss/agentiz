@@ -65,10 +65,18 @@ panel and never a superset.
 
 `GET /workers` gives the compact per-machine view; `GET /subscriptions` gives the account view,
 which is the source of truth when several workers share one Claude or Codex login. Both endpoints
-carry generic window records `{ key, label, usedPercent, resetsAt }`: render `usedPercent` as a
-bar, use `label` verbatim, and show `resetsAt` when it is known. The server deliberately uses the
-same shape for Claude, Codex and a future harness, so the client must not branch on `provider` to
-draw the limits.
+carry generic window records `{ key, label, usedPercent, resetsAt, meter, sessionWindowMinutes }`:
+render the percentage as a bar, use `label` verbatim, and show `resetsAt` when it is known. The
+server deliberately uses the same shape for Claude, Codex and a future harness, so the client must
+not branch on `provider` to draw the limits.
+
+The two hints are what keep that possible. `usedPercent` is always the *spent* share; `meter` says
+how a person reads it — `"used"` (Claude, and the default for anything older) or `"remaining"`
+(Codex, whose own console counts down), which the app shows as `100 − usedPercent`, «осталось N%».
+`sessionWindowMinutes` is the length of the plan's session window when it has one (Claude: 300);
+only then may a long window's remaining time also be stated as «ещё N полных 5-часовых окон». Null
+— a Codex bucket, or a server older than the field — means the reset is shown as a date plus the
+hours and minutes left, and nothing else.
 
 `lastSignalAt` says when a worker last delivered telemetry. `lastLimitChangeAt` is different: it
 changes only when a quota percentage, reset timestamp or window set changes. The app should render

@@ -98,6 +98,31 @@ describe('MobileCapacityService', () => {
     expect(subscription.workers.map((worker) => worker.name).sort()).toEqual(['alpha', 'beta']);
   });
 
+  it('tells the app how to read each number, defaulting to the reading it always had', async () => {
+    await AgentHarnessUsageSample.create({
+      workerId: reportingWorkerId,
+      harnessKey: 'claude',
+      subscriptionId,
+      observedAt: new Date('2026-08-18T11:00:00.000Z'),
+      source: 'worker_report',
+      windows: [
+        { key: 'weekly', label: 'Неделя', usedPercent: 42, sessionWindowMinutes: 300 },
+        { key: 'codex:primary', label: 'Codex', usedPercent: 64, meter: 'remaining' },
+      ],
+    } as any);
+
+    const worker = await MobileCapacityService.worker(reportingWorkerId);
+    const [claudeWindow, codexWindow] = worker!.harnesses[0].windows;
+    // A window stored before these fields — and every Claude one — reads as "израсходовано", so
+    // an older row cannot start rendering as «осталось».
+    expect(claudeWindow.meter).toBe('used');
+    expect(claudeWindow.sessionWindowMinutes).toBe(300);
+    // Codex: the same stored 64 % spent, shown as «осталось 36%», and no session-window unit.
+    expect(codexWindow.usedPercent).toBe(64);
+    expect(codexWindow.meter).toBe('remaining');
+    expect(codexWindow.sessionWindowMinutes).toBeNull();
+  });
+
   it('answers null for an unknown worker rather than an empty one', async () => {
     expect(await MobileCapacityService.worker('nope')).toBeNull();
   });

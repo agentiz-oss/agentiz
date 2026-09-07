@@ -10,8 +10,21 @@ import type { HarnessWindowState } from '../../app-agentiz/types/agentiz';
 export interface MobileHarnessWindow {
   key: string;
   label: string | null;
+  /** Always the *spent* share; `meter` says which half of it the app puts on screen. */
   usedPercent: number | null;
   resetsAt: string | null;
+  /**
+   * 'remaining' ⇒ the app shows `100 − usedPercent` («осталось 42%»), 'used' (and a missing value,
+   * which is every window stored before the field) ⇒ the spent share, as before. The decision is
+   * the provider's and travels with the window, so the phone never maps a harness key to a wording.
+   */
+  meter: 'used' | 'remaining';
+  /**
+   * How long this plan's session window is, when it has one (Claude: 300). Null means the plan has
+   * no such unit — a Codex bucket is readable only as its reset moment and the time left, never as
+   * "ещё N полных 5-часовых окон".
+   */
+  sessionWindowMinutes: number | null;
   observedAt: string | null;
   source: string | null;
 }
@@ -52,6 +65,8 @@ export class MobileCapacityService {
       label: window.label ?? null,
       usedPercent: typeof window.usedPercent === 'number' ? window.usedPercent : null,
       resetsAt: window.resetsAt ? String(window.resetsAt) : null,
+      meter: window.meter === 'remaining' ? 'remaining' : 'used',
+      sessionWindowMinutes: typeof window.sessionWindowMinutes === 'number' ? window.sessionWindowMinutes : null,
       observedAt: window.observedAt ? String(window.observedAt) : null,
       source: window.source ?? null,
     }));

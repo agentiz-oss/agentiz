@@ -74,6 +74,10 @@ describe('interpretClaudeReport', () => {
     expect(byKey['weekly-opus'].usedPercent).toBe(12);
     expect(snapshot.accountId).toBe('ivan@example.com');
     expect((snapshot.meta as Record<string, unknown>).plan).toBe('max');
+    // Claude's own numbers are what is spent, so the reading stays the default one; the session
+    // length is declared, which is what lets a weekly row read as «ещё N полных 5-часовых окон».
+    expect(byKey.weekly.meter).toBeUndefined();
+    expect(byKey.weekly.sessionWindowMinutes).toBe(300);
   });
 
   it('answers null for a shape it does not know', () => {

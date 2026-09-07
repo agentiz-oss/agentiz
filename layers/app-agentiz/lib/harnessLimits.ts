@@ -19,6 +19,21 @@ export interface HarnessLimitWindow {
   usedPercent?: number;
   /** When the window resets, when known. */
   resetsAt?: Date | null;
+  /**
+   * How a person reads that number, and nothing else: 'used' (absent means this — the reading
+   * every window had before the field existed) or 'remaining', which the UI renders as
+   * `100 − usedPercent`. `usedPercent` always means *used* whatever this says, because that is
+   * what `stopPolicy` thresholds and every stored sample compare against; a provider whose own
+   * console speaks in "осталось" changes the sentence, never the number.
+   */
+  meter?: 'used' | 'remaining';
+  /**
+   * Length of this account's session window in minutes, when the plan has one (Claude: 300).
+   * A long window's remaining time is then also readable as "ещё N полных окон". Absent means the
+   * plan has no such unit — Codex bills by its own buckets — and then only the reset moment and
+   * the hours/minutes left may be shown, never a session count the plan does not have.
+   */
+  sessionWindowMinutes?: number;
 }
 
 /** One classified failure: "this is a limit, here is when to resume". */
