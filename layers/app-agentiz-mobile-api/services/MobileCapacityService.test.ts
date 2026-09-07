@@ -44,6 +44,7 @@ describe('MobileCapacityService', () => {
       name: 'Claude Max',
       provider: 'anthropic',
       authKind: 'subscription',
+      lastLimitChangeAt: new Date('2026-08-18T08:30:00.000Z'),
       windows: [{ key: 'weekly', label: 'Неделя', usedPercent: 80, resetsAt: '2026-08-24T03:00:00.000Z' }],
     } as any);
     subscriptionId = subscription.id;
@@ -77,6 +78,7 @@ describe('MobileCapacityService', () => {
     expect(silent?.harnesses[0].windows[0].usedPercent).toBe(80);
     expect(reporting?.harnesses[0].state).toBe('available');
     expect(reporting?.harnesses[0].subscription?.name).toBe('Claude Max');
+    expect(reporting?.harnesses[0].subscription?.lastLimitChangeAt?.toISOString()).toBe('2026-08-18T08:30:00.000Z');
   });
 
   it('reports an exhausted subscription as the gate state on every worker bound to it', async () => {
@@ -91,6 +93,7 @@ describe('MobileCapacityService', () => {
     const [subscription] = await MobileCapacityService.subscriptions();
     expect(subscription.exhausted).toBe(true);
     expect(subscription.exhaustedReason).toBe('weekly limit');
+    expect(subscription.lastLimitChangeAt?.toISOString()).toBe('2026-08-18T08:30:00.000Z');
     // The reverse direction: which machines stop when this account runs out.
     expect(subscription.workers.map((worker) => worker.name).sort()).toEqual(['alpha', 'beta']);
   });

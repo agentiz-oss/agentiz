@@ -92,6 +92,9 @@ export class MobileCapacityService {
               exhausted: Boolean(harness.subscription.exhausted),
               exhaustedUntil: harness.subscription.exhaustedUntil ?? null,
               exhaustedReason: harness.subscription.exhaustedReason ?? null,
+              // Not the last heartbeat: this clock is the account's real idle period and is what
+              // the app puts below the compact limit bars.
+              lastLimitChangeAt: harness.subscription.lastLimitChangeAt ?? null,
             }
           : null,
         windows: this.windowsOf(harness.latestSample ?? null, harness.subscription ?? null),
@@ -153,6 +156,7 @@ export class MobileCapacityService {
         exhaustedReason: view.exhaustedReason,
         lastSignalAt: view.lastSignalAt,
         lastSignalSource: view.lastSignalSource,
+        lastLimitChangeAt: view.lastLimitChangeAt,
         windows: this.windowsOf(null, view),
         workers: mine.map((binding) => {
           const worker = workerById.get(binding.workerId);

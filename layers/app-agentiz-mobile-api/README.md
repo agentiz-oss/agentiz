@@ -28,6 +28,9 @@ session cookies.
 | GET    | `/tasks/:taskId/runs/:runId` | Bearer JWT | Full result, stages and log of one run.       |
 | POST   | `/tasks/:taskId/runs/:runId/cancel` | Bearer JWT | Requests cancellation of a run.             |
 | POST   | `/tasks/:taskId/runs/:runId/apply` | Bearer JWT | Applies a diff `requireApproval` held back. |
+| GET    | `/workers`       | Bearer JWT  | Workers and their harness-limit bars.                 |
+| GET    | `/workers/:id`   | Bearer JWT  | One worker, including its bound harnesses.             |
+| GET    | `/subscriptions` | Bearer JWT  | Account-level harness limits and their workers.        |
 | GET    | `/interactions`  | Bearer JWT  | Questions agents are waiting on, across all owned projects. |
 | GET    | `/interactions/:id` | Bearer JWT | One question by id — what a tapped notification opens. |
 | POST   | `/interactions/:id/answer` | Bearer JWT | `{ action, content }` — answers one question.   |
@@ -57,6 +60,21 @@ diff `agentiz-diff-review`.
 The caller is a user id, not a loaded panel session, so there is no administrator bypass here —
 mobile scope is ownership plus membership, which is a subset of what the same person sees in the
 panel and never a superset.
+
+## Workers and subscription limits
+
+`GET /workers` gives the compact per-machine view; `GET /subscriptions` gives the account view,
+which is the source of truth when several workers share one Claude or Codex login. Both endpoints
+carry generic window records `{ key, label, usedPercent, resetsAt }`: render `usedPercent` as a
+bar, use `label` verbatim, and show `resetsAt` when it is known. The server deliberately uses the
+same shape for Claude, Codex and a future harness, so the client must not branch on `provider` to
+draw the limits.
+
+`lastSignalAt` says when a worker last delivered telemetry. `lastLimitChangeAt` is different: it
+changes only when a quota percentage, reset timestamp or window set changes. The app should render
+the latter as «лимиты без изменений …» / subscription idle time; a regular identical report must
+not reset that clock. It is present on every `/subscriptions` item and on the nested `subscription`
+of each worker harness.
 
 ## Task attachments
 
