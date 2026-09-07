@@ -102,6 +102,10 @@
   lives) and `taskManagers` (where tasks come from). A project can mix them freely.
 - Shared mutable registries must live on a `Symbol.for` global: under tsx a module can be
   instantiated twice (ESM + CJS graphs) and plain module state silently splits in two.
+- Codex subscription quota is read only through the logged-in ChatGPT CLI's public
+  `codex app-server` surface on the worker; never read or forward `~/.codex` credentials. API-key
+  mode has no subscription window, and `POKERS` must not gain Codex without separately proving
+  its reset semantics.
 - A pipeline's `spec.source` decides what a run works on: `repository` (default) resolves through a
   git provider, `worker_workspace` runs in a directory on one worker and pins the job to it via
   `AgentRunJob.requiredWorkerId`. The directory is named either by `workspaceKey` (declared ahead of

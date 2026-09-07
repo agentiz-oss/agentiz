@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import threading
@@ -35,6 +36,13 @@ USAGE_REPORT_INTERVAL_SEC = 120
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_BETA = "oauth-2025-04-20"
 USAGE_HTTP_TIMEOUT_SEC = 20
+# The Codex CLI owns both authentication and the account endpoint.  This is deliberately a
+# separate timeout from Claude's HTTP request: it covers starting app-server, the JSON-RPC
+# handshake, the read and shutting the child down.
+CODEX_USAGE_TIMEOUT_SEC = 20
+# Earliest CLI whose app-server response shape this worker has verified. Older clients are allowed
+# to fail gracefully (rather than being guessed at); package pinning belongs to the CLI installer.
+CODEX_APP_SERVER_MIN_VERSION = "0.153.4"
 #: Token endpoint and public client id of Claude Code's own OAuth app, as the CLI itself uses
 #: them. Refreshing with any other client id is rejected.
 CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -193,11 +201,164 @@ def collect_claude() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+#: Explicit location of the Codex CLI.  A daemon's PATH is often smaller than the shell's.
+CODEX_BIN_ENV = "AGENTIZ_CODEX_BIN"
+CODEX_BIN_FALLBACKS = (
+    "~/.local/bin/codex",
+    "~/bin/codex",
+    "/usr/local/bin/codex",
+    "/opt/homebrew/bin/codex",
+)
+
+
+def codex_cli_path() -> str | None:
+    """Absolute path of the Codex CLI, or None when it is not installed for this worker user."""
+    override = os.environ.get(CODEX_BIN_ENV, "").strip()
+    if override:
+        return override
+    found = shutil.which("codex")
+    if found:
+        return found
+    for candidate in CODEX_BIN_FALLBACKS:
+        path = Path(candidate).expanduser()
+        if os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
+class CodexUsageError(RuntimeError):
+    """A deliberately short, credential-free app-server failure description."""
+
+
+def _codex_usage_timeout() -> float:
+    """Configured whole-lifecycle timeout, constrained so a bad environment cannot hang a worker."""
+    try:
+        configured = float(os.environ.get("AGENTIZ_CODEX_USAGE_TIMEOUT_SEC", CODEX_USAGE_TIMEOUT_SEC))
+    except ValueError:
+        configured = CODEX_USAGE_TIMEOUT_SEC
+    return min(max(configured, 1), 60)
+
+
+def _codex_client_version() -> str:
+    """The app-server protocol asks for a client version; avoid importing main (it imports us)."""
+    try:
+        from importlib.metadata import version
+        return version("agentiz-worker")
+    except Exception:  # editable source trees and stripped release images both have no metadata
+        return "unknown"
+
+
+def codex_app_server_request() -> dict[str, Any]:
+    """Read Codex rate limits through its public app-server JSON-RPC surface.
+
+    The CLI remains the only process that sees its credential store.  stdout and stderr are read
+    concurrently because waiting on stderr first can deadlock a chatty child; only matching JSON-
+    RPC ids are accepted, so ordinary app-server notifications cannot shift the protocol.
+    """
+    cli = codex_cli_path()
+    if cli is None:
+        raise CodexUsageError("no codex CLI found")
+    deadline = time.monotonic() + _codex_usage_timeout()
+    process: subprocess.Popen[str] | None = None
+    output: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+    def read_pipe(name: str, stream: Any) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                output.put((name, line))
+        except Exception:
+            # A process teardown can close a pipe beneath the reader. The exit status below is
+            # the useful diagnosis; never print what might have been an auth response.
+            return
+        finally:
+            output.put((name, None))
+
+    def remaining() -> float:
+        return deadline - time.monotonic()
+
+    def wait_for_response(request_id: int) -> dict[str, Any]:
+        while True:
+            wait = remaining()
+            if wait <= 0:
+                raise CodexUsageError("app-server timed out")
+            try:
+                source, line = output.get(timeout=wait)
+            except queue.Empty as error:
+                raise CodexUsageError("app-server timed out") from error
+            if line is None:
+                if source == "stdout" and process is not None and process.poll() is not None:
+                    raise CodexUsageError(f"app-server exited {process.returncode}")
+                continue
+            if source != "stdout":
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise CodexUsageError("malformed app-server JSON") from error
+            if not isinstance(message, dict) or message.get("id") != request_id:
+                continue
+            result = message.get("result")
+            if not isinstance(result, dict):
+                raise CodexUsageError(f"app-server rejected request {request_id}")
+            return result
+
+    try:
+        try:
+            process = subprocess.Popen(
+                [cli, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, bufsize=1,
+            )
+        except OSError as error:
+            raise CodexUsageError(f"could not start app-server: {error.__class__.__name__}") from error
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise CodexUsageError("app-server pipes unavailable")
+        threading.Thread(target=read_pipe, args=("stdout", process.stdout), daemon=True).start()
+        threading.Thread(target=read_pipe, args=("stderr", process.stderr), daemon=True).start()
+        initialize = {"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "agentiz-worker", "version": _codex_client_version()},
+        }}
+        process.stdin.write(json.dumps(initialize) + "\n")
+        process.stdin.flush()
+        wait_for_response(1)
+        process.stdin.write(json.dumps({"id": 2, "method": "account/rateLimits/read"}) + "\n")
+        process.stdin.flush()
+        result = wait_for_response(2)
+        if not isinstance(result.get("rateLimits"), dict):
+            raise CodexUsageError("app-server returned no rateLimits")
+        return result
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=max(min(remaining(), 1), 0.01))
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=0.1)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+
+def collect_codex() -> dict[str, Any] | None:
+    """Codex subscription windows as the CLI returns them, or None on every local failure."""
+    # API credentials describe request/minute billing, not a ChatGPT subscription window. Do not
+    # let an API-key worker accidentally create a `codex` binding from an unrelated response.
+    if any(os.environ.get(name, "").strip() for name in ("OPENAI_API_KEY", "CODEX_API_KEY")):
+        return None
+    try:
+        return codex_app_server_request()
+    except (CodexUsageError, OSError, ValueError) as error:
+        print(f"usage: could not read codex usage: {error}", flush=True)
+        return None
+
+
 #: Harness key (as the server derives it in `lib/harness.ts`) → collector. A collector returning
 #: None means "this harness is not usable on this machine", and nothing is sent: reporting an
 #: empty result would auto-create a binding and a subscription for a harness nobody runs here.
 COLLECTORS: dict[str, Callable[[], dict[str, Any] | None]] = {
     "claude": collect_claude,
+    "codex": collect_codex,
 }
 
 #: How long one poke may take, and how often one may run. The server keeps asking while its

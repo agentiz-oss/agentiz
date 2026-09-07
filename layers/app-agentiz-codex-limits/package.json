@@ -1,0 +1,11 @@
+{
+  "name": "@agentiz/app-agentiz-codex-limits",
+  "appId": "app-agentiz-codex-limits",
+  "appName": "App Agentiz Codex Limits",
+  "version": "1.0.0",
+  "description": "Codex subscription-limit provider for Agentiz. It maps app-server rate-limit telemetry and Codex ACP refusals onto the generic harness capacity contract.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-agentiz": "*"
+  }
+}

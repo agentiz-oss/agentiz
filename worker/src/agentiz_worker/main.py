@@ -215,20 +215,21 @@ def service_path_value() -> str:
     """PATH written into the unit.
 
     A systemd service inherits nothing from the shell it was installed from and starts with a
-    minimal PATH, which does not contain `~/.local/bin` — where Claude Code and friends install
-    themselves. Everything the worker runs during a job goes through an absolute path or `npx`,
-    so this matters for exactly one thing: the reset-alignment poke, which calls `claude` by bare
-    name (`harness_usage.poke_claude`). Whatever `claude` resolves to for the installing user is
-    added as well, so an exotic install (nvm, mise, homebrew) is picked up too.
+    minimal PATH, which does not contain `~/.local/bin` — where harness CLIs install themselves.
+    Everything the worker runs during a job goes through an absolute path or `npx`; usage
+    telemetry also invokes the installed Codex app-server, so its location must survive into the
+    unit. Whatever `claude` or `codex` resolves to for the installing user is added as well, so
+    an exotic install (nvm, mise, homebrew) is picked up too.
     """
     home = Path.home()
     directories = [home / ".local/bin", home / "bin", Path("/usr/local/bin"), Path("/usr/bin"),
                    Path("/bin"), Path("/usr/local/sbin"), Path("/usr/sbin"), Path("/sbin")]
-    found = shutil.which("claude")
-    if found:
-        parent = Path(found).parent
-        if parent not in directories:
-            directories.insert(0, parent)
+    for command in ("claude", "codex"):
+        found = shutil.which(command)
+        if found:
+            parent = Path(found).parent
+            if parent not in directories:
+                directories.insert(0, parent)
     return ":".join(str(directory) for directory in directories)
 
 

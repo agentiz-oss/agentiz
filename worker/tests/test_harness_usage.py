@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import time
 import unittest
@@ -108,6 +109,111 @@ class ClaudeTokenTest(unittest.TestCase):
                 self.assertIsNone(claude_access_token())
 
 
+class _FakeCodexPopen:
+    """Enough of Popen for the JSON-RPC collector tests, without a real Codex login."""
+
+    def __init__(self, stdout: str, stderr: str = "", returncode: int | None = None) -> None:
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = returncode
+        self.terminated = False
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    def wait(self, timeout=None) -> int:
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+class CodexUsageTest(unittest.TestCase):
+    def test_compatibility_contract_names_the_verified_app_server_version(self) -> None:
+        self.assertEqual(harness_usage.CODEX_APP_SERVER_MIN_VERSION, "0.153.4")
+
+    def test_explicit_codex_binary_wins_over_path(self) -> None:
+        with mock.patch.dict("os.environ", {harness_usage.CODEX_BIN_ENV: "/srv/codex"}), \
+                mock.patch.object(harness_usage.shutil, "which", return_value="/usr/bin/codex"):
+            self.assertEqual(harness_usage.codex_cli_path(), "/srv/codex")
+
+    def test_falls_back_to_a_user_install_without_reading_developer_home(self) -> None:
+        with TemporaryDirectory() as tmp:
+            cli = Path(tmp) / ".local/bin/codex"
+            cli.parent.mkdir(parents=True)
+            cli.write_text("#!/bin/sh\n")
+            cli.chmod(0o755)
+            with mock.patch.dict("os.environ", {"HOME": tmp}, clear=False), \
+                    mock.patch.object(harness_usage.shutil, "which", return_value=None), \
+                    mock.patch.object(harness_usage, "CODEX_BIN_FALLBACKS", ("~/.local/bin/codex",)):
+                self.assertEqual(harness_usage.codex_cli_path(), str(cli))
+
+    def test_requests_initialize_then_rate_limits_and_ignores_notifications(self) -> None:
+        process = _FakeCodexPopen("\n".join([
+            json.dumps({"method": "notice", "params": {"state": "starting"}}),
+            json.dumps({"id": 99, "result": {}}),
+            json.dumps({"id": 1, "result": {"protocolVersion": 1}}),
+            json.dumps({"method": "notice", "params": {"state": "ready"}}),
+            json.dumps({"id": 2, "result": {"rateLimits": {"primary": {"usedPercent": 31}}}}),
+        ]) + "\n")
+        calls: list[list[str]] = []
+
+        def popen(command, **kwargs):
+            calls.append(list(command))
+            return process
+
+        with mock.patch.object(harness_usage, "codex_cli_path", return_value="/opt/codex"), \
+                mock.patch.object(harness_usage.subprocess, "Popen", popen):
+            raw = harness_usage.codex_app_server_request()
+        self.assertEqual(calls, [["/opt/codex", "app-server", "--stdio"]])
+        requests = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual([request["method"] for request in requests], ["initialize", "account/rateLimits/read"])
+        self.assertEqual(requests[0]["params"]["clientInfo"]["name"], "agentiz-worker")
+        self.assertEqual(raw, {"rateLimits": {"primary": {"usedPercent": 31}}})
+        self.assertTrue(process.terminated)
+
+    def test_bad_app_server_output_is_a_quiet_absence(self) -> None:
+        cases = [
+            _FakeCodexPopen("not json\n"),
+            _FakeCodexPopen("", returncode=17),
+        ]
+        for process in cases:
+            with self.subTest(returncode=process.returncode), \
+                    mock.patch.object(harness_usage, "codex_cli_path", return_value="/opt/codex"), \
+                    mock.patch.object(harness_usage.subprocess, "Popen", return_value=process):
+                self.assertIsNone(harness_usage.collect_codex())
+
+    def test_app_server_timeout_is_a_quiet_absence(self) -> None:
+        # An open pipe with no response models an old/stuck app-server. The configured timeout
+        # covers the complete child lifecycle and collect_codex still leaves the claim loop alone.
+        process = _FakeCodexPopen("")
+        with mock.patch.dict("os.environ", {"AGENTIZ_CODEX_USAGE_TIMEOUT_SEC": "1"}), \
+                mock.patch.object(harness_usage, "codex_cli_path", return_value="/opt/codex"), \
+                mock.patch.object(harness_usage.subprocess, "Popen", return_value=process):
+            self.assertIsNone(harness_usage.collect_codex())
+        self.assertTrue(process.terminated)
+
+    def test_missing_binary_does_not_create_a_report(self) -> None:
+        sent: list = []
+        with mock.patch.object(harness_usage, "codex_cli_path", return_value=None), \
+                mock.patch.dict(harness_usage.COLLECTORS, {"codex": harness_usage.collect_codex}, clear=True):
+            self.assertEqual(UsageReporter(lambda *args: sent.append(args)).report_once(), 0)
+        self.assertEqual(sent, [])
+
+    def test_api_key_regime_does_not_collect_subscription_windows(self) -> None:
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "not-a-real-key"}), \
+                mock.patch.object(harness_usage, "codex_app_server_request") as request:
+            self.assertIsNone(harness_usage.collect_codex())
+        request.assert_not_called()
+
+
 class UsageReporterTest(unittest.TestCase):
     def test_sends_what_the_collector_returned_verbatim(self) -> None:
         raw = {"five_hour": {"utilization": 42, "resets_at": "2026-08-18T12:00:00Z"}}
@@ -122,6 +228,21 @@ class UsageReporterTest(unittest.TestCase):
         sent: list[tuple[str, dict]] = []
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: None}, clear=True):
             self.assertEqual(UsageReporter(lambda key, payload, poke=None: sent.append((key, payload))).report_once(), 0)
+        self.assertEqual(sent, [])
+
+    def test_claude_and_codex_report_independently_and_codex_never_pokes(self) -> None:
+        sent: list[tuple[str, dict]] = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {
+            "claude": lambda: {"five_hour": {}},
+            "codex": lambda: {"rateLimits": {"primary": {"usedPercent": 2}}},
+        }, clear=True), mock.patch.dict(harness_usage.POKERS, {"claude": lambda: harness_usage.PokeOutcome(True)}, clear=True):
+            self.assertEqual(UsageReporter(lambda key, payload, poke=None: sent.append((key, payload)) or {"openWindow": True}).report_once(), 2)
+        self.assertEqual([key for key, _payload in sent], ["claude", "claude", "codex"])
+
+    def test_codex_failure_never_escapes_or_sends(self) -> None:
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"codex": lambda: None}, clear=True):
+            self.assertEqual(UsageReporter(lambda *args: sent.append(args)).report_once(), 0)
         self.assertEqual(sent, [])
 
     def test_starting_the_loop_reports_once_immediately(self) -> None:
@@ -263,6 +384,12 @@ class ServiceUnitTest(unittest.TestCase):
     def test_an_exotic_install_is_added_from_the_installing_shell(self) -> None:
         with mock.patch.object(main.shutil, "which", return_value="/opt/mise/shims/claude"):
             self.assertEqual(main.service_path_value().split(":")[0], "/opt/mise/shims")
+
+    def test_codex_install_directory_is_also_preserved(self) -> None:
+        def which(command: str):
+            return "/opt/codex/bin/codex" if command == "codex" else None
+        with mock.patch.object(main.shutil, "which", side_effect=which):
+            self.assertEqual(main.service_path_value().split(":")[0], "/opt/codex/bin")
 
 
 if __name__ == "__main__":
