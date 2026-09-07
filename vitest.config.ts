@@ -21,6 +21,7 @@ export default defineConfig({
       'layers/app-agentiz/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-mobile-api/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-claude-limits/**/*.{test,spec}.{ts,tsx}',
+      'layers/app-agentiz-codex-limits/**/*.{test,spec}.{ts,tsx}',
       // app-adminizer is a package of its own, but it is developed from this checkout and carries
       // no test runner — run its tests with ours so `npm test` covers the seam the panel uses.
       'local_modules/app-adminizer/tests/**/*.{test,spec}.ts',

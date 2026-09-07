@@ -167,6 +167,14 @@ export class AgentHarnessSubscription extends Model<
   declare lastSignalSource: HarnessSignalSource | null;
 
   /**
+   * The last moment the *values* of the usage windows changed.  This intentionally differs from
+   * `lastSignalAt`: workers keep reporting while an account is idle, so using the report time
+   * here would make a quiet subscription look busy forever.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare lastLimitChangeAt: Date | null;
+
+  /**
    * Result of the last window poke this subscription's worker was asked for (reset alignment,
    * `lib/harnessAlign.ts`). The server asks through the response of a usage report and cannot
    * observe the outcome any other way — an unreported failure looks exactly like a machine that

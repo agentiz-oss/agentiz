@@ -114,6 +114,10 @@ import {
   up as upSubscriptionKeepWindowsOpen,
   down as downSubscriptionKeepWindowsOpen,
 } from './umzug/1788001500000_subscription_keep_windows_open';
+import {
+  up as upHarnessLimitChangeAt,
+  down as downHarnessLimitChangeAt,
+} from './umzug/1788001600000_harness_limit_change_at';
 
 export const umzugExports: Migration[] = [
   {
@@ -338,5 +342,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001500000,
     up: upSubscriptionKeepWindowsOpen,
     down: downSubscriptionKeepWindowsOpen,
+  },
+  {
+    name: 'harness_limit_change_at',
+    timestamp: 1788001600000,
+    up: upHarnessLimitChangeAt,
+    down: downHarnessLimitChangeAt,
   },
 ];

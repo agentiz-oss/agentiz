@@ -82,6 +82,8 @@ interface HarnessSubscription {
   exhausted: boolean;
   lastSignalAt?: string | null;
   lastSignalSource?: string | null;
+  /** Changes only when a quota window changes; ordinary telemetry heartbeats leave it alone. */
+  lastLimitChangeAt?: string | null;
   /** Outcome of the last window poke asked for by reset alignment; null = never asked/never answered. */
   lastPoke?: {
     at: string;
@@ -130,6 +132,22 @@ function contactLabel(worker: AgentWorker): string {
   const gap = Date.now() - new Date(worker.lastSeenAt).getTime();
   if (gap <= OFFLINE_AFTER_MS) return "на связи";
   return `не в сети (последний раз ${formatDateTime(worker.lastSeenAt)})`;
+}
+
+/** A paused, revoked, never-connected or stale worker should not crowd the live fleet. */
+function isInactiveWorker(worker: AgentWorker): boolean {
+  if (worker.status !== "active") return true;
+  if (!worker.lastSeenAt) return true;
+  return Date.now() - new Date(worker.lastSeenAt).getTime() > OFFLINE_AFTER_MS;
+}
+
+/** Keep relative idle/offline labels honest while an operator leaves the fleet page open. */
+function useMinuteClock(): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((value) => value + 1), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 }
 
 function workerBuildLabel(version?: string | null): React.ReactNode {
@@ -456,16 +474,49 @@ const WorkerExecutorsEditor: React.FC<{
   );
 };
 
-function windowsSummary(windows: HarnessWindowState[]): string {
-  if (!windows.length) return "телеметрии пока нет";
-  return windows
-    .map((window) => {
-      const used = typeof window.usedPercent === "number" ? `${Math.round(window.usedPercent)}%` : "—";
-      const resets = window.resetsAt ? `, сброс ${formatDateTime(window.resetsAt)}${remainingSuffix(window.resetsAt)}` : "";
-      return `${window.label ?? window.key}: ${used}${resets}`;
-    })
-    .join(" · ");
+function idleLimitsLabel(lastLimitChangeAt?: string | null): string | null {
+  if (!lastLimitChangeAt) return null;
+  const elapsedMs = Date.now() - new Date(lastLimitChangeAt).getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "лимиты изменились только что";
+  const days = Math.floor(minutes / (24 * 60));
+  const hours = Math.floor((minutes % (24 * 60)) / 60);
+  const restMinutes = minutes % 60;
+  const duration = days > 0
+    ? `${days} дн.${hours ? ` ${hours} ч` : ""}`
+    : hours > 0 ? `${hours} ч${restMinutes ? ` ${restMinutes} мин` : ""}` : `${restMinutes} мин`;
+  return `лимиты без изменений ${duration}`;
 }
+
+/** Shared visual language for Claude, Codex and future providers: only the generic window shape. */
+const LimitWindows: React.FC<{ windows: HarnessWindowState[] }> = ({ windows }) => {
+  if (!windows.length) return <span className="text-muted-foreground">телеметрии пока нет</span>;
+  return (
+    <div className="mt-1 grid gap-1 sm:grid-cols-2">
+      {windows.map((window) => {
+        const used = typeof window.usedPercent === "number" ? Math.min(Math.max(Math.round(window.usedPercent), 0), 100) : null;
+        const color = used === null ? "#94a3b8" : used >= 90 ? "#dc2626" : used >= 70 ? "#d97706" : "#0891b2";
+        return (
+          <div key={window.key} className="rounded border px-2 py-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate" title={window.label ?? window.key}>{window.label ?? window.key}</span>
+              <strong>{used === null ? "—" : `${used}%`}</strong>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded" style={{ backgroundColor: "#e2e8f0" }}>
+              <div className="h-full rounded" style={{ width: `${used ?? 0}%`, backgroundColor: color }} />
+            </div>
+            {window.resetsAt && (
+              <div className="mt-1 text-muted-foreground">
+                сброс {formatDateTime(window.resetsAt)}{remainingSuffix(window.resetsAt)}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 const HARNESS_STATE_LABELS: Record<WorkerHarnessBinding["state"], { text: string; color: string }> = {
   available: { text: "🟢 доступен", color: "#047857" },
@@ -524,7 +575,10 @@ const WorkerHarnessEditor: React.FC<{
                 </span>
                 <span className="text-muted-foreground">running: {binding.runningJobs} · в очереди: {binding.queuedJobs}</span>
               </div>
-              <div className="mt-1 text-muted-foreground">{windowsSummary(subscription?.windows ?? [])}</div>
+              <LimitWindows windows={subscription?.windows ?? []} />
+              {subscription && idleLimitsLabel(subscription.lastLimitChangeAt) && (
+                <div className="mt-1 text-muted-foreground">{idleLimitsLabel(subscription.lastLimitChangeAt)}</div>
+              )}
               {subscription?.exhaustedReason && (
                 <div className="mt-1 text-muted-foreground">последний сигнал: {subscription.exhaustedReason.slice(0, 200)}</div>
               )}
@@ -885,7 +939,12 @@ const SubscriptionsSection: React.FC<{
               )}
               {subscription.accountId && <span className="text-muted-foreground">аккаунт: {subscription.accountId}</span>}
             </div>
-            <div className="mt-1 text-muted-foreground">{windowsSummary(subscription.windows ?? [])}</div>
+            <LimitWindows windows={subscription.windows ?? []} />
+            {idleLimitsLabel(subscription.lastLimitChangeAt) && (
+              <div className="mt-1 text-muted-foreground">
+                {idleLimitsLabel(subscription.lastLimitChangeAt)} · последнее изменение {formatDateTime(subscription.lastLimitChangeAt)}
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               {subscription.exhausted ? (
                 <button
@@ -960,6 +1019,7 @@ const SubscriptionsSection: React.FC<{
 
 const AgentizWorkers: React.FC = () => {
   useViewerTimezone();
+  useMinuteClock();
   const [workers, setWorkers] = useState<AgentWorker[]>([]);
   const [workerApi, setWorkerApi] = useState<{ enabled: boolean; url: string }>({ enabled: false, url: "" });
   const [harnesses, setHarnesses] = useState<Record<string, WorkerHarnessBinding[]>>({});
@@ -969,6 +1029,7 @@ const AgentizWorkers: React.FC = () => {
   const [newWorkerName, setNewWorkerName] = useState("");
   /** An issued token is returned by the server exactly once — keep it on screen until dismissed. */
   const [issuedToken, setIssuedToken] = useState<IssuedToken | null>(null);
+  const [showInactiveWorkers, setShowInactiveWorkers] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1088,6 +1149,9 @@ const AgentizWorkers: React.FC = () => {
     }
   }, [fetchWorkers, newWorkerName, workerApi.url, workers.length]);
 
+  const inactiveWorkers = workers.filter(isInactiveWorker);
+  const displayedWorkers = showInactiveWorkers ? workers : workers.filter((worker) => !isInactiveWorker(worker));
+
   return (
     <div className="space-y-6 p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1186,8 +1250,25 @@ const AgentizWorkers: React.FC = () => {
             Воркеров нет. Нажмите «Новый воркер» — панель выдаст токен, с которым воркер сразу подключится.
           </p>
         )}
+        {inactiveWorkers.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">
+              Скрыто неактивных: {inactiveWorkers.length} (не в сети, не подключались, на паузе или отозваны).
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowInactiveWorkers((shown) => !shown)}
+              className="rounded border px-2 py-1"
+            >
+              {showInactiveWorkers ? "Скрыть неактивные" : "Показать неактивные"}
+            </button>
+          </div>
+        )}
+        {workers.length > 0 && displayedWorkers.length === 0 && (
+          <p className="mb-3 text-sm text-muted-foreground">Сейчас нет активных воркеров. Раскройте неактивные, чтобы управлять ими.</p>
+        )}
         <ul className="space-y-2">
-          {workers.map((worker) => (
+          {displayedWorkers.map((worker) => (
             <li key={worker.id} className="rounded border p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={worker.status} />

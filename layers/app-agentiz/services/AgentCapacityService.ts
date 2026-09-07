@@ -60,6 +60,26 @@ function backoffMs(deferredCount: number): number {
 /** Marker prefix that lets a later snapshot distinguish a preventive stop from a real refusal. */
 const PREVENTIVE_REASON_PREFIX = 'Preventive stop:';
 
+/**
+ * A telemetry heartbeat is not usage.  Labels, observation time and report source explain the
+ * reading but do not consume a subscription, so the idle clock advances through identical
+ * reports and resets only when a window's actual quota state changes.
+ */
+function limitWindowsChanged(before: HarnessWindowState[], after: HarnessWindowState[]): boolean {
+  const state = (windows: HarnessWindowState[]) => new Map(windows.map((window) => [window.key, {
+    usedPercent: window.usedPercent ?? null,
+    resetsAt: window.resetsAt ?? null,
+  }]));
+  const previous = state(before);
+  const next = state(after);
+  if (previous.size !== next.size) return true;
+  for (const [key, current] of next) {
+    const old = previous.get(key);
+    if (!old || old.usedPercent !== current.usedPercent || old.resetsAt !== current.resetsAt) return true;
+  }
+  return false;
+}
+
 export interface LimitSignalOutcome {
   subscription: AgentHarnessSubscription;
   binding: AgentWorkerHarness;
@@ -374,17 +394,22 @@ export class AgentCapacityService {
       const merged = new Map<string, HarnessWindowState>();
       for (const existing of subscription.windows ?? []) merged.set(existing.key, existing);
       for (const window of windows) merged.set(window.key, { ...merged.get(window.key), ...window });
+      const mergedWindows = [...merged.values()];
       const updates: Partial<{
         windows: HarnessWindowState[];
         accountId: string | null;
         lastSignalAt: Date;
         lastSignalSource: HarnessSignalSource;
+        lastLimitChangeAt: Date;
         lastPoke: HarnessPokeResult | null;
       }> = {
-        windows: [...merged.values()],
+        windows: mergedWindows,
         lastSignalAt: now,
         lastSignalSource: params.source,
       };
+      if (limitWindowsChanged(subscription.windows ?? [], mergedWindows)) {
+        updates.lastLimitChangeAt = observedAt;
+      }
       if (params.poke) {
         const previous = subscription.lastPoke;
         updates.lastPoke = {

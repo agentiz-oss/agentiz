@@ -201,6 +201,35 @@ describe('harness capacity: gates, deferral and recovery', () => {
     expect(subscription.isExhausted()).toBe(false);
   });
 
+  it('keeps the idle clock through identical telemetry and restarts it on a quota change', async () => {
+    const worker = await makeWorker('idle-clock');
+    const firstAt = new Date('2026-09-01T10:00:00.000Z');
+    const heartbeatAt = new Date('2026-09-01T12:00:00.000Z');
+    const changedAt = new Date('2026-09-01T13:00:00.000Z');
+    const resetsAt = new Date('2026-09-02T10:00:00.000Z');
+    const snapshot = (usedPercent: number) => ({
+      windows: [{ key: '5h', label: '5h', usedPercent, resetsAt }],
+    });
+
+    const first = await AgentCapacityService.applySnapshot({
+      workerId: worker.id, harnessKey: 'claude', source: 'report', observedAt: firstAt, snapshot: snapshot(20),
+    });
+    expect(first.subscription?.lastLimitChangeAt?.toISOString()).toBe(firstAt.toISOString());
+
+    await AgentCapacityService.applySnapshot({
+      workerId: worker.id, harnessKey: 'claude', source: 'report', observedAt: heartbeatAt, snapshot: snapshot(20),
+    });
+    await first.subscription!.reload();
+    expect(first.subscription!.lastSignalAt?.getTime()).toBeGreaterThan(firstAt.getTime());
+    expect(first.subscription!.lastLimitChangeAt?.toISOString()).toBe(firstAt.toISOString());
+
+    await AgentCapacityService.applySnapshot({
+      workerId: worker.id, harnessKey: 'claude', source: 'report', observedAt: changedAt, snapshot: snapshot(21),
+    });
+    await first.subscription!.reload();
+    expect(first.subscription!.lastLimitChangeAt?.toISOString()).toBe(changedAt.toISOString());
+  });
+
   it('interprets a raw report through the harness provider and rejects one nobody understands', async () => {
     const worker = await makeWorker('w');
     registerHarnessLimitProvider({
