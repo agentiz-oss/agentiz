@@ -501,7 +501,18 @@
   refreshes when it is about to call the API, so without this the numbers would freeze exactly
   while the machine is idle. That write is a compare-and-swap plus an atomic replace, and it must
   persist a **rotated** refresh token or the CLI is logged out (`AGENTIZ_CLAUDE_TOKEN_REFRESH=0`
-  disables it).
+  disables it). A subscription therefore carries **two** clocks and they answer different
+  questions: `lastSignalAt` ("воркер ещё присылает") moves with every report, `lastLimitChangeAt`
+  ("простой подписки") only when a window's quota really moved. The second one is why a window's
+  `resetsAt` is compared **with a minute of tolerance** (`RESET_JITTER_TOLERANCE_MS` in
+  `AgentCapacityService`): a provider may recompute the moment per request — Claude's one 07:00
+  window arrives as `06:59:59.654Z` and `07:00:00.164Z` two minutes apart, jitter that crosses a
+  second *and* a minute boundary, so neither exact comparison nor truncation works, while a real
+  reset moves the moment by a whole window. Compared exactly it read as a quota change on every
+  heartbeat and the panel said «лимиты изменились только что» forever
+  (prod, 2026-09-07 → 2026-09-09). A test that feeds the same `Date` object twice cannot see this
+  — the regression test in `harnessCapacity.test.ts` replays the jittering shape prod actually
+  sends.
 - The admin assistant's dialogs live in a table, `AgentAssistantConversation`
   (`agentiz_assistant_conversations`, keyed by `agentId` + `userId`), not in the service: a deploy
   used to end every conversation and drop the model's context mid-dialog. Adminizer reads the

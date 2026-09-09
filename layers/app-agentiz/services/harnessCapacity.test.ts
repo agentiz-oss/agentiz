@@ -230,6 +230,46 @@ describe('harness capacity: gates, deferral and recovery', () => {
     expect(first.subscription!.lastLimitChangeAt?.toISOString()).toBe(changedAt.toISOString());
   });
 
+  it('holds the idle clock while a provider re-computes the same reset moment on every report', async () => {
+    // Claude answers `resets_at` per request, so one 07:00 window arrives as 06:59:59.654Z and
+    // 07:00:00.164Z minutes apart. Compared exactly, every heartbeat read as a quota change and
+    // the panel said "лимиты изменились только что" forever — prod, 2026-09-09.
+    const worker = await makeWorker('reset-jitter');
+    const firstAt = new Date('2026-09-01T10:00:00.000Z');
+    const snapshot = (usedPercent: number, resetsAt: string) => ({
+      windows: [{ key: '5h', label: '5h', usedPercent, resetsAt: new Date(resetsAt) }],
+    });
+
+    const first = await AgentCapacityService.applySnapshot({
+      workerId: worker.id, harnessKey: 'claude', source: 'report', observedAt: firstAt,
+      snapshot: snapshot(45, '2026-09-01T15:00:00.164Z'),
+    });
+    const subscription = first.subscription!;
+
+    for (const [minute, resetsAt] of [
+      [2, '2026-09-01T14:59:59.654Z'],
+      [4, '2026-09-01T15:00:00.220Z'],
+      [6, '2026-09-01T14:59:59.861Z'],
+    ] as Array<[number, string]>) {
+      await AgentCapacityService.applySnapshot({
+        workerId: worker.id, harnessKey: 'claude', source: 'report',
+        observedAt: new Date(firstAt.getTime() + minute * 60_000),
+        snapshot: snapshot(45, resetsAt),
+      });
+      await subscription.reload();
+      expect(subscription.lastLimitChangeAt?.toISOString()).toBe(firstAt.toISOString());
+    }
+
+    // A window that genuinely rolled over is minutes away, not milliseconds, and still lands.
+    const rolledAt = new Date(firstAt.getTime() + 8 * 60_000);
+    await AgentCapacityService.applySnapshot({
+      workerId: worker.id, harnessKey: 'claude', source: 'report', observedAt: rolledAt,
+      snapshot: snapshot(45, '2026-09-01T20:00:00.100Z'),
+    });
+    await subscription.reload();
+    expect(subscription.lastLimitChangeAt?.toISOString()).toBe(rolledAt.toISOString());
+  });
+
   it('carries a provider\'s display hints into storage without changing what the number means', async () => {
     const worker = await makeWorker('display-hints');
     const subscription = await AgentHarnessSubscription.create({

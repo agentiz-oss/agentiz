@@ -61,6 +61,27 @@ function backoffMs(deferredCount: number): number {
 const PREVENTIVE_REASON_PREFIX = 'Preventive stop:';
 
 /**
+ * How far two reports may put the same reset moment apart and still mean the same window.
+ *
+ * A provider is not obliged to hand back a stable instant: Claude recomputes `resets_at` per
+ * request, so the same 07:00 window arrives as `06:59:59.654Z` and `07:00:00.164Z` two minutes
+ * apart — jitter that straddles a second *and* a minute boundary, which is why neither exact
+ * comparison nor truncation works. Reset moments a person is shown are minute-grained and a real
+ * one moves by a whole window, so anything under a minute is noise.
+ */
+const RESET_JITTER_TOLERANCE_MS = 60_000;
+
+/** Same reset moment as far as a reader is concerned — see `RESET_JITTER_TOLERANCE_MS`. */
+function sameResetMoment(before: string | null, after: string | null): boolean {
+  if (before === after) return true;
+  if (!before || !after) return false;
+  const previous = new Date(before).getTime();
+  const next = new Date(after).getTime();
+  if (!Number.isFinite(previous) || !Number.isFinite(next)) return before === after;
+  return Math.abs(next - previous) <= RESET_JITTER_TOLERANCE_MS;
+}
+
+/**
  * A telemetry heartbeat is not usage.  Labels, observation time and report source explain the
  * reading but do not consume a subscription, so the idle clock advances through identical
  * reports and resets only when a window's actual quota state changes.
@@ -75,7 +96,8 @@ function limitWindowsChanged(before: HarnessWindowState[], after: HarnessWindowS
   if (previous.size !== next.size) return true;
   for (const [key, current] of next) {
     const old = previous.get(key);
-    if (!old || old.usedPercent !== current.usedPercent || old.resetsAt !== current.resetsAt) return true;
+    if (!old || old.usedPercent !== current.usedPercent) return true;
+    if (!sameResetMoment(old.resetsAt, current.resetsAt)) return true;
   }
   return false;
 }
