@@ -1,6 +1,7 @@
 import { Op } from 'sequelize';
 import { AgentHarnessSubscription } from '../models/AgentHarnessSubscription';
 import { AgentHarnessUsageSample } from '../models/AgentHarnessUsageSample';
+import { AgentRun } from '../models/AgentRun';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
 import { AgentWorkerHarness } from '../models/AgentWorkerHarness';
@@ -9,9 +10,12 @@ import type { HarnessLimitProviderContext, HarnessLimitSignal, HarnessLimitSnaps
 import { isScheduleOpen, nextScheduleOpen, nextWeeklyMoment, prevWeeklyMoment } from '../lib/activeHours';
 import { alignState } from '../lib/harnessAlign';
 import { MIXED_HARNESS_KEY } from '../lib/harness';
+import { harnessTitle } from '../lib/harnessCatalog';
 import { sendDashboardNotification } from '../lib/notifications/dashboardNotifications';
 import { formatUserDeadline } from '../lib/userTime';
-import type { HarnessPokeResult, HarnessSignalSource, HarnessWindowState } from '../types/agentiz';
+import { ActivityService } from './ActivityService';
+import { AgentPipelineService } from './AgentPipelineService';
+import type { HarnessAuthState, HarnessPokeResult, HarnessSignalSource, HarnessWindowState } from '../types/agentiz';
 
 /** How often the capacity sweep runs (schedule windows, declared resets). */
 /** A poke error is a diagnosis, not a log: one line is enough and the column is not a sink. */
@@ -27,6 +31,11 @@ const SAMPLE_RETENTION_DAYS = Number(process.env.AGENTIZ_USAGE_SAMPLE_RETENTION_
  */
 const BACKOFF_LADDER_MS = [15 * 60_000, 60 * 60_000, 4 * 60 * 60_000, 12 * 60 * 60_000];
 const BACKOFF_CEILING_MS = Number(process.env.AGENTIZ_DEFER_BACKOFF_MAX_MS ?? BACKOFF_LADDER_MS[BACKOFF_LADDER_MS.length - 1]);
+
+/** An auth detail is one diagnostic line for a person, not a place to keep a stack trace. */
+const AUTH_DETAIL_MAX_LENGTH = 300;
+/** How many parked jobs one sweep looks at — the same order of magnitude as the other sweeps. */
+const AUTH_SWEEP_JOB_LIMIT = 200;
 
 /** `resumeAt` comes out of parsed refusal text, so it is clamped before anything trusts it. */
 const RESUME_CLAMP_MIN_MS = 60_000;
@@ -125,10 +134,24 @@ export interface LimitSignalOutcome {
   exhaustedUntil: Date;
 }
 
+export interface AuthStateOutcome {
+  /** Null only when an `ok` statement arrived for a harness this worker has no binding for. */
+  binding: AgentWorkerHarness | null;
+  /** Whether the state actually flipped — the only case that notifies or wakes anything. */
+  changed: boolean;
+}
+
 export interface AppliedSnapshotOutcome {
   subscription: AgentHarnessSubscription | null;
-  sample: AgentHarnessUsageSample;
+  /**
+   * Null for a report that carried no telemetry at all — the credential-only report a worker
+   * sends when it cannot read the numbers *because* it is logged out. Storing an empty-window
+   * sample every two minutes for such a machine would be history nobody can read.
+   */
+  sample: AgentHarnessUsageSample | null;
   warnings: string[];
+  /** Present when the report also said something about the machine's authorization. */
+  auth?: AuthStateOutcome;
 }
 
 /**
@@ -169,9 +192,9 @@ export class AgentCapacityService {
   }
 
   /**
-   * Harness keys this worker must not receive right now: bindings switched off by an operator and
-   * bindings whose subscription is exhausted (including preventively). Read by the claim gate on
-   * every claim, hence the small cache.
+   * Harness keys this worker must not receive right now: bindings switched off by an operator,
+   * bindings whose machine cannot log in, and bindings whose subscription is exhausted (including
+   * preventively). Read by the claim gate on every claim, hence the small cache.
    */
   static async gatedHarnessKeys(worker: Pick<AgentWorker, 'id'>, now: Date = new Date()): Promise<string[]> {
     const cache = gateCache();
@@ -181,6 +204,15 @@ export class AgentCapacityService {
     const keys: string[] = [];
     for (const binding of bindings) {
       if (!binding.enabled) {
+        keys.push(binding.harnessKey);
+        continue;
+      }
+      // Nobody is logged in on this machine, so every stage of that harness would fail on its
+      // first call. Unlike a limit this is *not* a subscription's state — the credential sits in
+      // this worker's home directory, and a sibling worker on the same account keeps working.
+      // Also unlike a limit it has no end time, which is why nothing here touches `availableAt`:
+      // the gate opens the moment the worker reports a live credential again.
+      if (binding.needsLogin()) {
         keys.push(binding.harnessKey);
         continue;
       }
@@ -304,6 +336,94 @@ export class AgentCapacityService {
   }
 
   /**
+   * The single write point for "can this machine log in to this harness" — see
+   * `HarnessAuthState` for why that lives on the binding and not on the subscription.
+   *
+   * Two sources reach it and they answer the same question at different moments: the worker's
+   * usage reporter, which holds the credential and can therefore say so **before** any run, and a
+   * stage failure a provider classified as `auth`. Both are idempotent — only a flip does
+   * anything, so a machine repeating "still logged out" every two minutes writes one notification
+   * and one streak start, not one per report.
+   *
+   * The recovery direction is deliberately generous: any statement of `ok` re-opens the gate at
+   * once, because the cheapest proof that the credential works is the worker having just used it.
+   */
+  static async applyAuthState(params: {
+    worker: Pick<AgentWorker, 'id' | 'name'>;
+    harnessKey: string;
+    state: HarnessAuthState;
+    /** One line for a person: what the worker or the failed stage actually said. */
+    detail?: string | null;
+    source: HarnessSignalSource;
+    observedAt?: Date;
+  }): Promise<AuthStateOutcome> {
+    const now = params.observedAt ?? new Date();
+    const detail = params.detail ? params.detail.trim().slice(0, AUTH_DETAIL_MAX_LENGTH) : null;
+
+    if (params.state === 'ok') {
+      // Never materialises a binding: "this machine is fine" about a harness nobody declared here
+      // is not news, and auto-creating a row (and an implicit subscription with it) for it would
+      // fill the directory with machines that merely have a CLI installed.
+      const binding = await AgentWorkerHarness.findOne({
+        where: { workerId: params.worker.id, harnessKey: params.harnessKey },
+      });
+      if (!binding) return { binding: null, changed: false };
+      const wasExpired = binding.authState === 'expired';
+      await binding.update({ authState: 'ok', authDetail: null, authCheckedAt: now, authFailedSince: null });
+      if (!wasExpired) return { binding, changed: false };
+      const woken = await this.recoverAuth(params.worker, now);
+      void sendDashboardNotification({
+        channel: 'harness-auth',
+        title: `Вход в ${harnessTitle(params.harnessKey)} на воркере ${params.worker.name} восстановлен`,
+        message: woken > 0 ? `Продолжаем ${woken} задач(и)` : 'Очередь этого harness\'а снова раздаётся',
+        metadata: { workerId: params.worker.id, harnessKey: params.harnessKey, wokenJobs: woken },
+      });
+      return { binding, changed: true };
+    }
+
+    // A machine that says "I am logged out" *does* run this harness — it just cannot authenticate
+    // — so the binding is materialised exactly as a limit signal materialises one.
+    const { binding } = await this.ensureBinding(params.worker, params.harnessKey);
+    const wasExpired = binding.authState === 'expired';
+    await binding.update({
+      authState: 'expired',
+      authDetail: detail,
+      authCheckedAt: now,
+      // The streak's start survives every repeat, so a reader learns "не работает с 12.09 20:46"
+      // instead of the moment of the latest of two hundred identical reports.
+      authFailedSince: wasExpired ? binding.authFailedSince ?? now : now,
+    });
+    if (wasExpired) return { binding, changed: false };
+    this.invalidateGateCache();
+    void sendDashboardNotification({
+      channel: 'harness-auth',
+      title: `Нужен вход: ${harnessTitle(params.harnessKey)} на воркере ${params.worker.name}`,
+      message: `Авторизация закончилась${detail ? ` (${detail})` : ''}. Войдите заново в браузере на машине воркера`
+        + ' — задачи этого harness\'а ждут в очереди и продолжатся сами.',
+      metadata: { workerId: params.worker.id, harnessKey: params.harnessKey, source: params.source },
+    });
+    return { binding, changed: true };
+  }
+
+  /**
+   * Wakes what the closed auth gate was holding. Pinned jobs only, exactly like
+   * `recoverSubscription`: an unpinned one sits on a short backoff and any worker that can log in
+   * may already have taken it.
+   */
+  private static async recoverAuth(worker: Pick<AgentWorker, 'id'>, now: Date): Promise<number> {
+    this.invalidateGateCache();
+    const [woken] = await AgentRunJob.update({ availableAt: now }, {
+      where: {
+        status: { [Op.in]: ['released', 'queued'] },
+        deferReason: 'harness_auth',
+        requiredWorkerId: worker.id,
+        availableAt: { [Op.gt]: now },
+      },
+    });
+    return woken;
+  }
+
+  /**
    * The one place a *report* becomes a snapshot: either an already normalized `snapshot`, or a
    * provider-specific `raw` payload run through that harness's `interpretReport`.
    *
@@ -320,9 +440,36 @@ export class AgentCapacityService {
     observedAt?: Date;
     /** What came of the window poke this worker was last asked for; see normalizePoke. */
     poke?: unknown;
+    /** Whether the machine can authenticate at all; see normalizeAuth. */
+    auth?: unknown;
   }): Promise<AppliedSnapshotOutcome> {
+    const auth = this.normalizeAuth(params.auth);
+    // A report with no telemetry is legal exactly when it carries a credential verdict: that is
+    // the shape a logged-out machine can still send, and refusing it would leave the one state a
+    // person has to act on as the only state nobody can report.
+    const hasTelemetry = (params.raw !== undefined && params.raw !== null)
+      || Array.isArray(params.snapshot?.windows);
+    if (!hasTelemetry) {
+      if (!auth || !params.workerId) {
+        throw new Error('Either raw (with a provider registered) or snapshot.windows is required');
+      }
+      const worker = await AgentWorker.findByPk(params.workerId);
+      if (!worker) throw new Error(`AgentWorker ${params.workerId} not found`);
+      const outcome = await this.applyAuthState({
+        worker,
+        harnessKey: params.harnessKey,
+        state: auth.state,
+        detail: auth.detail,
+        source: 'report',
+        observedAt: params.observedAt,
+      });
+      const subscription = outcome.binding?.subscriptionId
+        ? await AgentHarnessSubscription.findByPk(outcome.binding.subscriptionId)
+        : null;
+      return { subscription, sample: null, warnings: [], auth: outcome };
+    }
     let snapshot = params.snapshot;
-    if (!snapshot && params.raw !== undefined) {
+    if (!snapshot && params.raw !== undefined && params.raw !== null) {
       const provider = harnessLimitProviderFor(params.harnessKey);
       if (!provider?.interpretReport) {
         throw new Error(`No registered provider can interpret raw reports for "${params.harnessKey}" — send a normalized snapshot instead`);
@@ -356,7 +503,24 @@ export class AgentCapacityService {
       source: 'report',
       observedAt: params.observedAt,
       poke: this.normalizePoke(params.poke),
+      auth,
     });
+  }
+
+  /**
+   * Reads a worker's verdict on its own credential. Shaped defensively for the same reason
+   * `normalizePoke` is: it arrives from a machine that may be older than the field, and anything
+   * unrecognizable must read as "said nothing" rather than as a logout.
+   *
+   * Only the two states the core acts on are accepted. A worker that finds no credential store at
+   * all reports nothing — a machine that simply does not run this harness is not logged out of it.
+   */
+  private static normalizeAuth(value: unknown): { state: HarnessAuthState; detail: string | null } | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const payload = value as Record<string, unknown>;
+    if (payload.state !== 'ok' && payload.state !== 'expired') return undefined;
+    const detail = typeof payload.detail === 'string' ? payload.detail.trim().slice(0, AUTH_DETAIL_MAX_LENGTH) : null;
+    return { state: payload.state, detail: detail || null };
   }
 
   /**
@@ -391,6 +555,7 @@ export class AgentCapacityService {
     source: HarnessSignalSource;
     observedAt?: Date;
     poke?: { at: string; ok: boolean; error?: string | null };
+    auth?: { state: HarnessAuthState; detail: string | null };
   }): Promise<AppliedSnapshotOutcome> {
     const now = new Date();
     const observedAt = params.observedAt ?? now;
@@ -478,7 +643,28 @@ export class AgentCapacityService {
       this.invalidateGateCache();
     }
 
-    return { subscription, sample, warnings };
+    // Numbers that arrived from a machine *are* the proof that its credential works: Claude's
+    // usage endpoint is behind the very OAuth token a stage would use, and Codex's is behind its
+    // CLI's own login. So a report with windows clears the state even from a worker too old to
+    // send the field — without this, one classified `auth` failure would gate such a machine
+    // forever, since nothing else would ever say otherwise.
+    const authState = params.auth?.state ?? (params.source === 'report' && windows.length > 0 ? 'ok' : null);
+    let auth: AuthStateOutcome | undefined;
+    if (authState && workerId) {
+      const worker = await AgentWorker.findByPk(workerId);
+      if (worker) {
+        auth = await this.applyAuthState({
+          worker,
+          harnessKey: params.harnessKey,
+          state: authState,
+          detail: params.auth?.detail ?? null,
+          source: params.source,
+          observedAt,
+        });
+      }
+    }
+
+    return { subscription, sample, warnings, auth };
   }
 
   /** Operator's hand or a declared schedule: close the gate until `until`. */
@@ -557,6 +743,7 @@ export class AgentCapacityService {
     try {
       const movedWindows = await this.sweepScheduleWindows();
       const resetSubscriptions = await this.sweepDeclaredResets();
+      await this.sweepAuthBlockedRuns();
       if (Date.now() - this.lastUsageCycleAt >= USAGE_POLL_MS) {
         this.lastUsageCycleAt = Date.now();
         await this.runRefreshCycle();
@@ -582,6 +769,9 @@ export class AgentCapacityService {
       const keys = this.jobHarnessKeys(job);
       for (const key of keys) {
         const binding = await AgentWorkerHarness.findOne({ where: { workerId: job.requiredWorkerId, harnessKey: key } });
+        // A machine that cannot log in has no ETA at all, so the moment is left alone and only
+        // the reason is added: an invented time here would be shown as a promise.
+        if (binding?.needsLogin()) reasons.push(`harness_auth:${key}`);
         if (!binding?.subscriptionId) continue;
         const subscription = await AgentHarnessSubscription.findByPk(binding.subscriptionId);
         if (subscription?.exhaustedUntil && subscription.exhaustedUntil.getTime() > at.getTime()) {
@@ -654,6 +844,126 @@ export class AgentCapacityService {
       await subscription.update({ exhaustedUntil: null, exhaustedReason: null });
       await this.recoverSubscription(subscription, 'телеметрия опустилась ниже порога stopPolicy');
     }
+  }
+
+  /**
+   * Says out loud what the auth gate is holding — the half of this feature that answers "я
+   * запустил задачу, и в приложении просто ничего не появилось".
+   *
+   * The gate itself is silent by construction: a gated key simply does not match the claim query,
+   * so a job whose only harness is logged out sits `queued` with an `availableAt` in the past and
+   * nothing anywhere says why. This sweep turns that silence into the two things a person can
+   * see — `run.waitingReason` and one `harness.auth_required` activity (hence a push) per parked
+   * run — and it does so **once**: the second pass finds `waitingReason` already set and says
+   * nothing more.
+   *
+   * Which jobs count as held is deliberately narrow, because "nobody can run this" is a claim
+   * about the whole fleet: a job pinned to a logged-out machine is stuck whatever else exists,
+   * while an unpinned one is stuck only when no worker can log in to that harness at all.
+   */
+  private static async sweepAuthBlockedRuns(): Promise<number> {
+    const expired = await AgentWorkerHarness.findAll({ where: { authState: 'expired' } });
+    // The common case, and the one every installation that never saw this feature is in.
+    if (expired.length === 0) return 0;
+
+    const keys = [...new Set(expired.map((binding) => binding.harnessKey))];
+    const siblings = await AgentWorkerHarness.findAll({ where: { harnessKey: { [Op.in]: keys } } });
+    const workers = await AgentWorker.findAll({
+      where: { id: { [Op.in]: [...new Set(siblings.map((binding) => binding.workerId))] } },
+    });
+    const workerById = new Map(workers.map((worker) => [worker.id, worker]));
+    const hasHealthyWorker = new Set(keys.filter((key) => siblings.some((binding) => binding.harnessKey === key
+      && binding.enabled
+      && binding.authState !== 'expired'
+      && workerById.get(binding.workerId)?.status === 'active')));
+
+    const jobs = await AgentRunJob.findAll({
+      where: {
+        status: { [Op.in]: ['queued', 'released'] },
+        harnessKey: { [Op.in]: [...keys, MIXED_HARNESS_KEY] },
+      },
+      order: [['createdAt', 'ASC']],
+      limit: AUTH_SWEEP_JOB_LIMIT,
+    });
+
+    let parked = 0;
+    for (const job of jobs) {
+      const blocking = this.jobHarnessKeys(job).find((key) => {
+        if (!keys.includes(key)) return false;
+        if (job.requiredWorkerId) {
+          return expired.some((binding) => binding.workerId === job.requiredWorkerId && binding.harnessKey === key);
+        }
+        return !hasHealthyWorker.has(key);
+      });
+      if (!blocking) continue;
+
+      const run = await AgentRun.findByPk(job.runId);
+      if (!run || ['succeeded', 'failed', 'cancelled'].includes(run.status)) continue;
+      if (run.waitingReason === 'harness_auth') continue;
+
+      const binding = expired.find((item) => item.harnessKey === blocking
+        && (!job.requiredWorkerId || item.workerId === job.requiredWorkerId)) ?? null;
+      await job.update({ deferReason: 'harness_auth' });
+      const noted = await this.noteAuthBlockedRun({
+        run,
+        jobId: job.id,
+        harnessKey: blocking,
+        workerId: binding?.workerId ?? null,
+        workerName: binding ? workerById.get(binding.workerId)?.name ?? binding.workerId : null,
+        detail: binding?.authDetail ?? null,
+        since: binding?.authFailedSince ?? null,
+      });
+      if (noted) parked += 1;
+    }
+    return parked;
+  }
+
+  /**
+   * Says, once, that one run is parked because a machine has to be logged into again — the run's
+   * own waiting badge, a line in its log and one `harness.auth_required` activity (hence a push).
+   *
+   * Shared by the two paths that discover it: a stage that failed on the credential
+   * (`AgentRunDeferService`) and this sweep, which is what finds the runs that never got that far
+   * because the claim gate was already closed. The guard is `run.waitingReason`, so whichever of
+   * the two gets there first is the one that speaks and the other stays quiet.
+   */
+  static async noteAuthBlockedRun(params: {
+    run: AgentRun;
+    jobId?: string | null;
+    harnessKey: string;
+    workerId: string | null;
+    workerName: string | null;
+    detail?: string | null;
+    since?: Date | null;
+  }): Promise<boolean> {
+    const { run } = params;
+    if (run.waitingReason === 'harness_auth') return false;
+    // No `waitingUntil`: this wait has no deadline, and inventing one would put a time in front of
+    // a person that nothing is going to honour.
+    await run.update({ waitingReason: 'harness_auth', waitingUntil: null });
+
+    const harness = harnessTitle(params.harnessKey);
+    const where = params.workerName ? `на воркере ${params.workerName}` : 'на воркере';
+    await AgentPipelineService.log(run.id, run.projectId, null, 'warn',
+      `Запуск ждёт: ${where} закончилась авторизация ${harness} — нужно войти заново через браузер`,
+      { jobId: params.jobId ?? null, harnessKey: params.harnessKey, workerId: params.workerId, detail: params.detail ?? null });
+    await ActivityService.record({
+      type: 'harness.auth_required',
+      projectId: run.projectId,
+      runId: run.id,
+      taskId: run.taskId,
+      title: `Нужен вход в ${harness} ${where}`,
+      body: `Задача стоит и ждёт: авторизация ${harness} на машине воркера закончилась, и сервер не может продлить её сам.`
+        + ' Откройте на этой машине браузер и войдите в аккаунт заново — запуск продолжится сам, перезапускать ничего не нужно.'
+        + (params.detail ? ` Воркер сообщил: ${params.detail}` : ''),
+      data: {
+        harnessKey: params.harnessKey,
+        workerId: params.workerId,
+        workerName: params.workerName,
+        since: params.since ? params.since.toISOString() : null,
+      },
+    });
+    return true;
   }
 
   /**

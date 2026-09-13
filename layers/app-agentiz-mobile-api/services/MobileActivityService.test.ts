@@ -14,6 +14,8 @@ import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
 import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
+import { AgentWorker } from '../../app-agentiz/models/AgentWorker';
+import { AgentWorkerHarness } from '../../app-agentiz/models/AgentWorkerHarness';
 import { MobileDevice } from '../models/MobileDevice';
 import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileActivityService } from './MobileActivityService';
@@ -423,6 +425,49 @@ describe('MobileActivityService', () => {
     expect(items[0]).toMatchObject({ kind: 'question', headline: 'Ставить ли зависимость?', runId: run.id });
     expect(items[0].explain).toBeTruthy();
   });
+  it('says out loud that a run is parked because a machine has to be logged into again', async () => {
+    // The row this whole state exists for: without it the task is simply queued forever and the
+    // app shows nothing at all, which is what a person reads as "просто остановилось".
+    const worker = await AgentWorker.create({ name: 'worker-2', kind: 'external', status: 'active' } as any);
+    const binding = await AgentWorkerHarness.create({
+      workerId: worker.id, harnessKey: 'claude', authState: 'expired',
+      authDetail: 'refresh token expired', authFailedSince: new Date(Date.now() - 2 * 60 * 60_000),
+    } as any);
+    const run = await AgentRun.create({
+      projectId: ownProject.id, taskId: ownTask.id, status: 'queued', trigger: 'manual', currentStageIndex: 0,
+      waitingReason: 'harness_auth', pipelineSnapshot: { stages: [], finalAction: { type: 'none' } },
+    } as any);
+    await AgentRunJob.create({
+      runId: run.id, projectId: ownProject.id, status: 'queued', attempt: 0, harnessKey: 'claude',
+      requiredWorkerId: worker.id, snapshot: {},
+    } as any);
+
+    const summary = await MobileActivityService.summary(OWNER, OWNER);
+    const [item] = summary.items;
+    expect(item).toMatchObject({ kind: 'harness_auth', badge: 'нужен вход', runId: run.id, taskId: ownTask.id });
+    expect(item.headline).toContain('worker-2');
+    expect(item.explain).toContain('браузер');
+    // It holds a run and nobody but a person ends it: counted, and not waveable-away.
+    expect(item.dismissible).toBe(false);
+    expect(summary.actionableCount).toBe(1);
+    // And it is on the two screens a person actually launches from.
+    expect((await MobileActivityService.itemsForTask(ownTask, ownProject)).map((row) => row.kind))
+      .toContain('harness_auth');
+    expect((await MobileActivityService.itemsForRun(run, ownTask, ownProject)).map((row) => row.kind))
+      .toContain('harness_auth');
+
+    // And the same summary carries the ambient counter, so the phone can show "с воркером что-то
+    // не так" without anybody opening the workers screen.
+    expect(summary.workerAlerts).toMatchObject({ needLogin: 1 });
+
+    // Closed by its own entity and by nothing else: the worker logs back in, the binding clears,
+    // the row is gone on the next refresh with nobody having pressed anything.
+    await binding.update({ authState: 'ok', authDetail: null, authFailedSince: null });
+    const recovered = await MobileActivityService.summary(OWNER, OWNER);
+    expect(recovered.items).toHaveLength(0);
+    expect(recovered.workerAlerts).toMatchObject({ needLogin: 0 });
+  });
+
   it('sinks reminders as newer ones arrive, while blocking rows still climb by age', async () => {
     // No expiry rule anywhere: old reminders leave the top of the list because newer ones push
     // them down, which is the whole mechanism behind "уйдут вниз и перестанут попадаться на глаза".

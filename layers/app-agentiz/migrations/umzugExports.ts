@@ -118,6 +118,10 @@ import {
   up as upHarnessLimitChangeAt,
   down as downHarnessLimitChangeAt,
 } from './umzug/1788001600000_harness_limit_change_at';
+import {
+  up as upHarnessAuthState,
+  down as downHarnessAuthState,
+} from './umzug/1788001800000_harness_auth_state';
 
 export const umzugExports: Migration[] = [
   {
@@ -348,5 +352,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001600000,
     up: upHarnessLimitChangeAt,
     down: downHarnessLimitChangeAt,
+  },
+  {
+    name: 'harness_auth_state',
+    timestamp: 1788001800000,
+    up: upHarnessAuthState,
+    down: downHarnessAuthState,
   },
 ];

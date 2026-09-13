@@ -71,7 +71,17 @@ export async function workerHarnessView(worker: Pick<AgentWorker, 'id'>) {
       enabled: binding.enabled,
       maxConcurrent: binding.maxConcurrent,
       subscription: subscription ? subscriptionView(subscription) : null,
-      state: !binding.enabled ? 'disabled' : subscription?.isExhausted() ? 'exhausted' : 'available',
+      // Whether this machine can log in at all — a property of the machine, not of the account
+      // behind it, which is why it sits beside `subscription` and not inside it.
+      authState: binding.authState ?? null,
+      authDetail: binding.authDetail ?? null,
+      authCheckedAt: binding.authCheckedAt ?? null,
+      authFailedSince: binding.authFailedSince ?? null,
+      // Ordered by what a person would have to do about it: an operator's switch first, then a
+      // login only they can perform, then a quota that ends by itself.
+      state: !binding.enabled ? 'disabled'
+        : binding.needsLogin() ? 'unauthorized'
+          : subscription?.isExhausted() ? 'exhausted' : 'available',
       latestSample: latestSample
         ? {
             observedAt: latestSample.observedAt,

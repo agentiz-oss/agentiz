@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
+from urllib.error import HTTPError, URLError
 
 from agentiz_worker import harness_usage, main
 from agentiz_worker.harness_usage import UsageReporter, claude_access_token
@@ -219,15 +220,18 @@ class UsageReporterTest(unittest.TestCase):
         raw = {"five_hour": {"utilization": 42, "resets_at": "2026-08-18T12:00:00Z"}}
         sent: list[tuple[str, dict]] = []
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: raw}, clear=True):
-            reporter = UsageReporter(lambda key, payload, poke=None: sent.append((key, payload, poke)))
+            reporter = UsageReporter(lambda key, payload, poke=None, auth=None: sent.append((key, payload, poke)))
             self.assertEqual(reporter.report_once(), 1)
-        # No poke has happened, so the body is what it always was — an older server sees no change.
+        # No poke has happened, so the numbers are what they always were; the credential
+        # statement rides beside them and is what clears a stale "logged out" on the server.
         self.assertEqual(sent, [("claude", raw, None)])
 
     def test_a_harness_absent_from_this_machine_reports_nothing(self) -> None:
         sent: list[tuple[str, dict]] = []
-        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: None}, clear=True):
-            self.assertEqual(UsageReporter(lambda key, payload, poke=None: sent.append((key, payload))).report_once(), 0)
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: None}, clear=True), \
+                mock.patch.dict(harness_usage.AUTH_PROBES,
+                                {"claude": lambda: harness_usage.CredentialState("missing")}, clear=True):
+            self.assertEqual(UsageReporter(lambda key, payload, poke=None, auth=None: sent.append((key, payload))).report_once(), 0)
         self.assertEqual(sent, [])
 
     def test_claude_and_codex_report_independently_and_codex_never_pokes(self) -> None:
@@ -236,7 +240,7 @@ class UsageReporterTest(unittest.TestCase):
             "claude": lambda: {"five_hour": {}},
             "codex": lambda: {"rateLimits": {"primary": {"usedPercent": 2}}},
         }, clear=True), mock.patch.dict(harness_usage.POKERS, {"claude": lambda: harness_usage.PokeOutcome(True)}, clear=True):
-            self.assertEqual(UsageReporter(lambda key, payload, poke=None: sent.append((key, payload)) or {"openWindow": True}).report_once(), 2)
+            self.assertEqual(UsageReporter(lambda key, payload, poke=None, auth=None: sent.append((key, payload)) or {"openWindow": True}).report_once(), 2)
         self.assertEqual([key for key, _payload in sent], ["claude", "claude", "codex"])
 
     def test_codex_failure_never_escapes_or_sends(self) -> None:
@@ -249,7 +253,7 @@ class UsageReporterTest(unittest.TestCase):
         """main() starts the thread instead of also calling report_once — one report, not two."""
         sent: list[tuple[str, dict]] = []
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True):
-            reporter = UsageReporter(lambda key, payload, poke=None: sent.append((key, payload)), interval_sec=3600)
+            reporter = UsageReporter(lambda key, payload, poke=None, auth=None: sent.append((key, payload)), interval_sec=3600)
             reporter.start()
             for _ in range(50):
                 if sent:
@@ -263,13 +267,127 @@ class UsageReporterTest(unittest.TestCase):
             raise OSError("no network")
 
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": explode}, clear=True):
-            self.assertEqual(UsageReporter(lambda key, payload, poke=None: None).report_once(), 0)
+            self.assertEqual(UsageReporter(lambda key, payload, poke=None, auth=None: None).report_once(), 0)
 
-        def refuse(key: str, payload: dict, poke: dict | None = None) -> None:
+        def refuse(key: str, payload: dict, poke: dict | None = None, auth: dict | None = None) -> None:
             raise RuntimeError("HTTP 400")
 
         with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True):
             self.assertEqual(UsageReporter(refuse).report_once(), 0)
+
+
+class CredentialStateTest(unittest.TestCase):
+    """What the worker is allowed to claim about its own login.
+
+    The asymmetry is the point: `expired` closes that machine's claim gate on the server, so it is
+    claimed only where nothing local can recover, while every ambiguity has to read as silence —
+    an offline minute must not look like a logout.
+    """
+
+    def _write(self, root: Path, oauth: dict) -> None:
+        (root / ".credentials.json").write_text(json.dumps({"claudeAiOauth": oauth}))
+
+    def test_a_live_token_is_ok(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"accessToken": "live", "expiresAt": (time.time() + 3600) * 1000})
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root)}):
+                self.assertEqual(harness_usage.claude_credential_state().state, "ok")
+
+    def test_no_credential_store_is_missing_not_expired(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": tmp}):
+                self.assertEqual(harness_usage.claude_credential_state().state, "missing")
+
+    def test_a_rejected_refresh_is_a_logout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"accessToken": "old", "refreshToken": "r-dead", "expiresAt": 1000})
+
+            def refuse(request, timeout=None):
+                raise HTTPError("https://platform.claude.com/v1/oauth/token", 400, "Bad Request", {},
+                                io.BytesIO(b'{"error":"invalid_grant"}'))
+
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root)}), \
+                    mock.patch.object(harness_usage, "urlopen", refuse):
+                state = harness_usage.claude_credential_state()
+        self.assertEqual(state.state, "expired")
+        self.assertIn("invalid_grant", state.detail or "")
+
+    def test_an_expired_refresh_token_with_renewal_off_is_still_a_logout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"accessToken": "old", "refreshToken": "r", "expiresAt": 1000,
+                               "refreshTokenExpiresAt": 2000})
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root),
+                                                "AGENTIZ_CLAUDE_TOKEN_REFRESH": "0"}):
+                state = harness_usage.claude_credential_state()
+        self.assertEqual(state.state, "expired")
+        self.assertIn("refresh token expired", state.detail or "")
+
+    def test_a_stale_access_token_with_renewal_off_is_not_a_logout(self) -> None:
+        # The CLI renews it the moment it runs, so the machine works; saying "expired" here would
+        # gate a healthy worker until somebody noticed.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"accessToken": "old", "refreshToken": "r", "expiresAt": 1000,
+                               "refreshTokenExpiresAt": (time.time() + 86400) * 1000})
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root),
+                                                "AGENTIZ_CLAUDE_TOKEN_REFRESH": "0"}):
+                self.assertEqual(harness_usage.claude_credential_state().state, "unknown")
+
+    def test_an_unreachable_token_endpoint_is_not_a_logout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"accessToken": "old", "refreshToken": "r", "expiresAt": 1000})
+
+            def offline(request, timeout=None):
+                raise URLError("no route to host")
+
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root)}), \
+                    mock.patch.object(harness_usage, "urlopen", offline):
+                self.assertEqual(harness_usage.claude_credential_state().state, "unknown")
+
+
+class CredentialReportingTest(unittest.TestCase):
+    """The report shape a logged-out machine sends — the only evidence the server ever gets before
+    a pipeline fails on it hours later."""
+
+    def test_a_logged_out_machine_reports_the_credential_with_no_numbers(self) -> None:
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: None}, clear=True), \
+                mock.patch.dict(harness_usage.AUTH_PROBES,
+                                {"claude": lambda: harness_usage.CredentialState("expired", "refresh token expired")},
+                                clear=True):
+            reporter = UsageReporter(lambda key, payload, poke=None, auth=None: sent.append((key, payload, auth)))
+            self.assertEqual(reporter.report_once(), 1)
+        self.assertEqual(sent[0][0], "claude")
+        self.assertIsNone(sent[0][1])   # no raw at all: there is nothing to read without a token
+        self.assertEqual(sent[0][2], {"state": "expired", "detail": "refresh token expired"})
+
+    def test_numbers_carry_the_proof_that_the_credential_works(self) -> None:
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: {"five_hour": {}}}, clear=True):
+            UsageReporter(lambda key, payload, poke=None, auth=None: sent.append((key, payload, auth))).report_once()
+        self.assertEqual(sent[0][2], {"state": "ok"})
+
+    def test_an_unsure_probe_says_nothing_at_all(self) -> None:
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"claude": lambda: None}, clear=True), \
+                mock.patch.dict(harness_usage.AUTH_PROBES,
+                                {"claude": lambda: harness_usage.CredentialState("unknown", "offline")}, clear=True):
+            self.assertEqual(
+                UsageReporter(lambda key, payload, poke=None, auth=None: sent.append(key)).report_once(), 0)
+        self.assertEqual(sent, [])
+
+    def test_a_harness_with_no_probe_keeps_reporting_nothing(self) -> None:
+        # Codex: its CLI owns its login and we have not proven its failure modes, so a machine
+        # that cannot read its numbers stays silent exactly as it did before this existed.
+        sent: list = []
+        with mock.patch.dict(harness_usage.COLLECTORS, {"codex": lambda: None}, clear=True), \
+                mock.patch.dict(harness_usage.AUTH_PROBES, {}, clear=True):
+            self.assertEqual(UsageReporter(lambda *args, **kwargs: sent.append(args)).report_once(), 0)
+        self.assertEqual(sent, [])
 
 
 class PokeReportingTest(unittest.TestCase):
@@ -277,7 +395,7 @@ class PokeReportingTest(unittest.TestCase):
     this machine's journal and the server goes on believing the request was carried out."""
 
     def _reporter(self, sent: list, open_window: bool = True) -> UsageReporter:
-        def send(key: str, payload: dict, poke: dict | None = None) -> dict:
+        def send(key: str, payload: dict, poke: dict | None = None, auth: dict | None = None) -> dict:
             sent.append((key, payload, poke))
             return {"openWindow": open_window}
 
@@ -309,7 +427,7 @@ class PokeReportingTest(unittest.TestCase):
     def test_a_send_that_failed_does_not_lose_the_outcome(self) -> None:
         sent: list = []
 
-        def send(key: str, payload: dict, poke: dict | None = None) -> dict:
+        def send(key: str, payload: dict, poke: dict | None = None, auth: dict | None = None) -> dict:
             sent.append((key, payload, poke))
             if len(sent) == 2:
                 raise RuntimeError("HTTP 502")

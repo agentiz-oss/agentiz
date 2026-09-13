@@ -445,6 +445,32 @@
   worker release and is rejected by validation) and in `AgentWorker.activeHours` — the first is a
   job property and lands in `availableAt`, the second is a claim-side gate and must never touch
   `availableAt`.
+- **A usage limit belongs to an account; an authorization belongs to a machine** (long form:
+  [`docs/guides/harness-authorization.md`](docs/guides/harness-authorization.md)). A dead credential
+  is therefore *not* an `exhaustedUntil` on the subscription but `AgentWorkerHarness.authState`
+  (+ `authDetail`/`authCheckedAt`/`authFailedSince`) on the worker × harness binding — one worker
+  logged out says nothing about its sibling on the same Claude account — and it has no end moment,
+  so `run.waitingUntil` stays **null** and nothing ever puts a resume time on it. Written only by
+  `AgentCapacityService.applyAuthState()`, from two sources: the worker's usage reporter, which is
+  the only thing that can tell *before* a run (a report with windows proves the credential works,
+  and that is also what heals a machine whose worker is too old to send the field; a report with
+  `auth` and **no** windows is legal and writes no sample), and a stage failure the provider
+  classifies as `kind: 'auth'` — checked **before** every quota pattern, because "упёрся в лимит"
+  and "разлогинен" stop the work identically and end completely differently. The worker only ever
+  claims `expired` where nothing local can recover (4xx from the token endpoint, no or expired
+  refresh token); no network and `AGENTIZ_CLAUDE_TOKEN_REFRESH=0` are `unknown` and stay silent, or
+  a minute offline would stop the fleet. `null` is "nobody said" and behaves byte-identically to
+  before the column existed — the first test in `services/harnessAuth.test.ts` is that proof.
+  The half that is easy to leave out is the **voice**: a gated harness key simply does not match
+  the claim query, which is exactly how a task launched from the phone used to sit queued with
+  nothing anywhere saying why, so `sweepAuthBlockedRuns()` turns that silence into
+  `run.waitingReason = 'harness_auth'`, a run-log line and one `harness.auth_required` activity
+  (hence a push, hence the mobile `harness_auth` inbox row) — once per run, deduplicated on
+  `waitingReason`, both doors going through `noteAuthBlockedRun`. An unpinned job is only called
+  blocked when **no** worker can log in to that harness at all. That inbox row is the one blocking
+  row with no button (the fix is a browser on the worker machine) and it is closed by its own
+  entity alone: the first healthy report clears the binding and the row disappears with nobody
+  pressing anything.
 - Daily reset alignment (`AgentHarnessSubscription.alignReset*`, logic in `lib/harnessAlign.ts`,
   long form: [`docs/guides/harness-reset-alignment.md`](docs/guides/harness-reset-alignment.md)) is
   **best-effort discipline over when a session window opens**, never enforcement: it reads the same

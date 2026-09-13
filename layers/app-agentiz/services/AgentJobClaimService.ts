@@ -158,10 +158,12 @@ export class AgentJobClaimService {
     const run = await AgentRun.findByPk(job.runId);
     const waitedMs = run?.waitingUntil ? Math.max(Date.now() - new Date(run.updatedAt).getTime(), 0) : null;
     const waitedText = waitedMs !== null && waitedMs > 60_000 ? ` (ждал ${formatDuration(waitedMs)})` : '';
-    await AgentPipelineService.log(job.runId, job.projectId, null, 'info',
-      reason === 'harness_limit'
-        ? `Run продолжен после ожидания лимита${waitedText} на воркере ${worker.name}`
-        : `Run продолжен после открытия окна рабочего времени на воркере ${worker.name}`,
+    const resumed = reason === 'harness_limit'
+      ? `Run продолжен после ожидания лимита${waitedText} на воркере ${worker.name}`
+      : reason === 'harness_auth'
+        ? `Run продолжен после повторного входа${waitedText} на воркере ${worker.name}`
+        : `Run продолжен после открытия окна рабочего времени на воркере ${worker.name}`;
+    await AgentPipelineService.log(job.runId, job.projectId, null, 'info', resumed,
       { jobId: job.id, deferReason: reason, deferredCount: job.deferredCount });
   }
 }

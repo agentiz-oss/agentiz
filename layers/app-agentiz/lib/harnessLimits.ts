@@ -38,7 +38,15 @@ export interface HarnessLimitWindow {
 
 /** One classified failure: "this is a limit, here is when to resume". */
 export interface HarnessLimitSignal {
-  kind: 'exhausted' | 'throttled';
+  /**
+   * `exhausted`/`throttled` are quotas: they end by themselves and the core parks the job until
+   * they do. `auth` is not a quota at all — the credential on **that machine** is dead (logged
+   * out, refresh token expired, key revoked) and no amount of waiting fixes it, so the core marks
+   * the binding (never the subscription: a limit belongs to the account, an authorization to the
+   * machine), closes the claim gate for that worker and tells a person to log in. `resumeAt` and
+   * `windowKey` are meaningless on it and are ignored.
+   */
+  kind: 'exhausted' | 'throttled' | 'auth';
   windowKey?: string;
   /** null ⇒ the core applies its backoff ladder / the subscription's resetSchedule. */
   resumeAt?: Date | null;

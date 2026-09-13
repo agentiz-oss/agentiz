@@ -183,11 +183,30 @@ export interface HarnessPokeResult {
   failedSince?: string | null;
 }
 
+/**
+ * Whether the harness on **one machine** can authenticate at all — deliberately not a property of
+ * the subscription next to `exhaustedUntil`.
+ *
+ * A usage limit belongs to the account: two workers logged into the same Claude account run out
+ * together. An authorization belongs to the machine: the OAuth credential lives in that worker's
+ * `~/.claude`, and one machine being logged out says nothing about its sibling. Hence this lives
+ * on `AgentWorkerHarness`, and the only exit from `expired` is a person opening a browser **on
+ * that machine** — no reset time exists, so it is never a deferral with an ETA.
+ *
+ * `null` means nobody has said anything (a worker too old to report it, or a harness that has
+ * never been looked at) and is treated exactly as it was before this field existed: healthy.
+ */
+export type HarnessAuthState = 'ok' | 'expired';
+
 /** Per-window preventive stop: close the gate when a window reaches the threshold. */
 export type HarnessStopPolicy = Record<string, { pauseAtUsedPercent: number }>;
 
-/** Why a queued job is parked: a harness limit, or a closed working-hours window. */
-export type AgentJobDeferReason = 'harness_limit' | 'schedule_window';
+/**
+ * Why a queued job is parked: a harness limit, a closed working-hours window, or a harness whose
+ * credential on that machine has died. The third one is the odd one out on purpose — it carries
+ * no `waitingUntil`, because only a person logging in ends it.
+ */
+export type AgentJobDeferReason = 'harness_limit' | 'schedule_window' | 'harness_auth';
 
 /** A named, administrator-configured ACP runner available on one worker. */
 export interface AgentWorkerExecutor {

@@ -90,9 +90,15 @@ export class MobileCapacityService {
         id: String(harness.id),
         harnessKey: String(harness.harnessKey),
         enabled: Boolean(harness.enabled),
-        // 'disabled' | 'exhausted' | 'available', decided by the shared view — the app colours the
-        // row from it and never re-derives "исчерпан" out of the percentages.
+        // 'disabled' | 'unauthorized' | 'exhausted' | 'available', decided by the shared view — the
+        // app colours the row from it and never re-derives "исчерпан" out of the percentages.
         state: String(harness.state),
+        // Whether that machine can log in at all. Separate from the subscription below on
+        // purpose: a credential lives on the worker, so one machine being logged out says nothing
+        // about its sibling on the same account. Null = nobody reported (an older worker).
+        authState: harness.authState ?? null,
+        authDetail: harness.authDetail ?? null,
+        authFailedSince: harness.authFailedSince ?? null,
         maxConcurrent: harness.maxConcurrent ?? null,
         runningJobs: Number(harness.runningJobs ?? 0),
         queuedJobs: Number(harness.queuedJobs ?? 0),
@@ -181,6 +187,9 @@ export class MobileCapacityService {
             harnessKey: binding.harnessKey,
             enabled: binding.enabled,
             contactState: worker?.contactState() ?? 'never_contacted',
+            // One machine of a shared account can be logged out while the others are fine, which
+            // is the whole reason this is a per-worker row rather than a field of the card.
+            authState: binding.authState ?? null,
             runningJobs: activeJobs.filter(
               (job) => job.workerId === binding.workerId && job.harnessKey === binding.harnessKey,
             ).length,

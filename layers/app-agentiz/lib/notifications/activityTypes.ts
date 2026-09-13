@@ -78,6 +78,24 @@ const DEFS: ActivityTypeDef[] = [
     badge: 'сброс не прошёл',
   },
   {
+    /**
+     * The machine an agent runs on has lost its authorization (Claude logged out, an OAuth token
+     * past renewal) and every stage of that harness is parked until a person logs in again — see
+     * `HarnessAuthState`. `action_required` and `push: on` because it is the one blocker nobody
+     * inside Agentiz can clear: the fix is a browser on the worker machine, and until it happens
+     * the queue just silently stops moving.
+     *
+     * One row per parked run rather than one per broken machine: an activity belongs to a
+     * project, and what a person actually needs to hear is that *their* task is not running.
+     */
+    type: 'harness.auth_required',
+    kind: 'action_required',
+    defaults: { push: 'on', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_ACTIONS,
+    label: 'Нужен повторный вход в harness на воркере',
+    badge: 'нужен вход',
+  },
+  {
     type: 'run.held_for_approval',
     kind: 'action_required',
     defaults: { push: 'on', dashboard: 'on' },

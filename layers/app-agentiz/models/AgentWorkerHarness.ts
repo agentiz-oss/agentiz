@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentWorker } from './AgentWorker';
 import { AgentHarnessSubscription } from './AgentHarnessSubscription';
+import type { HarnessAuthState } from '../types/agentiz';
 
 /**
  * The binding "this worker runs this harness under this subscription". Declared by an operator
@@ -56,6 +57,39 @@ export class AgentWorkerHarness extends Model<
   @Column({ type: DataType.INTEGER, allowNull: true })
   declare maxConcurrent: number | null;
 
+  /**
+   * Whether this machine can authenticate to this harness right now — see `HarnessAuthState`.
+   *
+   * Written only by `AgentCapacityService.applyAuthState()`, from two sources: the worker's usage
+   * reporter (which holds the credential and is therefore the only thing that can tell before a
+   * run) and a stage failure a provider classified as `auth`. `null` = nobody said, which behaves
+   * exactly as before this column existed.
+   */
+  @AdminizerField({
+    title: 'Auth state',
+    type: 'select',
+    isIn: { ok: 'Authorized', expired: 'Needs login' },
+    views: { list: true, add: false, edit: false },
+  })
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare authState: HarnessAuthState | null;
+
+  /** One short line explaining the state, as the worker or the failed stage put it. */
+  @AdminizerField({ title: 'Auth detail', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.TEXT, allowNull: true })
+  declare authDetail: string | null;
+
+  /** When the state was last confirmed — a healthy report moves it as much as a failing one. */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare authCheckedAt: Date | null;
+
+  /**
+   * Start of the current `expired` streak, so a reader learns "не работает с 12.09 20:46" rather
+   * than the moment of the latest of two hundred identical reports. Null while authorized.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare authFailedSince: Date | null;
+
   @Column({ type: DataType.DATE, defaultValue: DataType.NOW })
   declare createdAt: CreationOptional<Date>;
 
@@ -67,4 +101,9 @@ export class AgentWorkerHarness extends Model<
 
   @BelongsTo(() => AgentHarnessSubscription, 'subscriptionId')
   declare subscription: AgentHarnessSubscription;
+
+  /** Whether the claim gate must skip this harness on this machine because nobody is logged in. */
+  needsLogin(): boolean {
+    return this.authState === 'expired';
+  }
 }

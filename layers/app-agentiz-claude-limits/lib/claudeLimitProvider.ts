@@ -85,9 +85,33 @@ function windowKeyFromText(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Wordings that mean "this machine is not logged in", as the CLI and the API put them.
+ *
+ * Checked **before** every quota pattern, because the two are easy to confuse and the
+ * consequences are opposite: a quota ends by itself and the job waits for it, while this one ends
+ * only when a person opens a browser on the worker machine. `invalid_grant` is the refresh
+ * endpoint's answer once the refresh token itself has expired — the state the worker's own
+ * renewal cannot get out of either (see `refresh_claude_token` in the worker's harness_usage.py).
+ */
+const AUTH_PATTERNS: Array<[RegExp, string]> = [
+  [/not logged in|please run\s*\/login|run `?claude (auth )?login|\/login to (?:log ?in|authenticate)/i, 'claude-not-logged-in'],
+  [/invalid_grant|refresh token (?:is )?(?:expired|invalid|revoked)|oauth token (?:has )?expired/i, 'claude-oauth-expired'],
+  [/authentication_error|invalid x-api-key|invalid bearer token|401 unauthorized|status 401/i, 'claude-authentication-error'],
+  // Deliberately not here: "credit balance is too low". It also needs a person and a browser, but
+  // it is a billing state, not a login one — parking every job behind "войдите заново" would name
+  // the wrong fix, and an unclassified failure still shows the provider's own text.
+];
+
 export function classifyClaudeFailure(errorText: string, ctx: HarnessLimitProviderContext, now: Date = new Date()): HarnessLimitSignal | null {
   const text = errorText.trim();
   if (!text) return null;
+
+  // Authorization first: "usage limit" and "not logged in" both stop the work, but only one of
+  // them is over when a clock runs out.
+  for (const [pattern, matched] of AUTH_PATTERNS) {
+    if (pattern.test(text)) return { kind: 'auth', matched };
+  }
 
   // Historical headless format: the resume moment arrives as a ready unix epoch after "|".
   const epochMatch = /Claude (?:AI )?usage limit reached\|(\d{9,13})/i.exec(text);

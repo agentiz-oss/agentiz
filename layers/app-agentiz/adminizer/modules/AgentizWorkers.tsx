@@ -105,7 +105,11 @@ interface WorkerHarnessBinding {
   enabled: boolean;
   maxConcurrent?: number | null;
   subscription: HarnessSubscription | null;
-  state: "disabled" | "exhausted" | "available";
+  state: "disabled" | "unauthorized" | "exhausted" | "available";
+  /** Whether this machine can log in to the harness at all; null = no worker ever said. */
+  authState?: "ok" | "expired" | null;
+  authDetail?: string | null;
+  authFailedSince?: string | null;
   latestSample: {
     observedAt: string;
     source: string;
@@ -539,6 +543,8 @@ const HARNESS_STATE_LABELS: Record<WorkerHarnessBinding["state"], { text: string
   available: { text: "🟢 доступен", color: "#047857" },
   exhausted: { text: "🔴 исчерпан", color: "#b91c1c" },
   disabled: { text: "⏸ выключен оператором", color: "#b45309" },
+  // Not a limit: nothing here ends by itself, and the fix is a browser on the worker machine.
+  unauthorized: { text: "🔑 нет авторизации", color: "#b91c1c" },
 };
 
 /**
@@ -592,6 +598,18 @@ const WorkerHarnessEditor: React.FC<{
                 </span>
                 <span className="text-muted-foreground">running: {binding.runningJobs} · в очереди: {binding.queuedJobs}</span>
               </div>
+              {binding.authState === "expired" && (
+                // The one state on this card nobody can clear from here: the credential lives on
+                // the worker machine and only a browser there renews it. Says what to do rather
+                // than what happened, because "нет авторизации" alone sends people to the panel.
+                <div className="mt-1 rounded border p-2" style={{ color: "#b91c1c", borderColor: "#fecaca" }}>
+                  Авторизация закончилась{binding.authFailedSince ? ` ${formatDateTime(binding.authFailedSince)}` : ""}
+                  {binding.authDetail ? ` — ${binding.authDetail.slice(0, 200)}` : ""}. Задачи этого harness'а на этой
+                  машине стоят в очереди. Войдите заново на самой машине воркера
+                  {binding.harnessKey === "claude" ? " (claude auth login под пользователем воркера, подтверждение в браузере)" : ""}
+                  {" "}— очередь продолжится сама в течение пары минут.
+                </div>
+              )}
               <LimitWindows windows={subscription?.windows ?? []} />
               {subscription && idleLimitsLabel(subscription.lastLimitChangeAt) && (
                 <div className="mt-1 text-muted-foreground">{idleLimitsLabel(subscription.lastLimitChangeAt)}</div>

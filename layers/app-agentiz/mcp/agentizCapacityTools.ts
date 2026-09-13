@@ -63,6 +63,12 @@ const reportHarnessUsageTool: IMcpTool = {
         required: ['ok'],
         properties: { ok: { type: 'boolean' }, at: { type: 'string' }, error: { type: 'string' } },
       },
+      auth: {
+        type: 'object',
+        description: 'Whether that machine can authenticate to the harness at all: {state:"ok"|"expired", detail?:string}. Stored on the worker×harness binding, not on the subscription — a credential belongs to a machine. With state:"expired" the report may carry no windows at all, which is exactly what a logged-out machine can still send.',
+        required: ['state'],
+        properties: { state: { type: 'string', enum: ['ok', 'expired'] }, detail: { type: 'string' } },
+      },
     },
   },
   async handler(params) {
@@ -82,11 +88,13 @@ const reportHarnessUsageTool: IMcpTool = {
       snapshot: payload.snapshot as { windows?: unknown[]; meta?: unknown; accountId?: string } | undefined,
       observedAt: observedAtText ? new Date(observedAtText) : undefined,
       poke: payload.poke,
+      auth: payload.auth,
     });
     return {
-      sampleId: result.sample.id,
+      sampleId: result.sample?.id ?? null,
       subscription: result.subscription ? subscriptionView(result.subscription) : null,
       warnings: result.warnings,
+      authState: result.auth?.binding?.authState ?? null,
     };
   },
 };

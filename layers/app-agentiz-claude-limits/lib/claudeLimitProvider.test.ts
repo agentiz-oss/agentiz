@@ -53,6 +53,28 @@ describe('classifyClaudeFailure', () => {
     expect(signal.resumeAt!.getTime()).toBeLessThan(NOW.getTime() + 10 * 60_000);
   });
 
+  it('tells a logout apart from a spent quota, because only one of them ends by itself', () => {
+    for (const text of [
+      'Not logged in · Please run /login',
+      'Invalid refresh token: invalid_grant',
+      'OAuth token has expired',
+      'API error: authentication_error (401)',
+    ]) {
+      const signal = classifyClaudeFailure(text, ctx(), NOW)!;
+      expect(signal.kind, text).toBe('auth');
+      // No resume time on purpose: nothing here reopens on a clock, so a job must not be parked
+      // until one — the machine's gate is what holds it until a person logs in.
+      expect(signal.resumeAt, text).toBeUndefined();
+    }
+  });
+
+  it('still reads a usage limit that merely mentions the word login', () => {
+    // Ordering check: the auth patterns run first, so a refusal has to be matched on what it
+    // actually says rather than on which list was consulted first.
+    const signal = classifyClaudeFailure('5-hour limit reached ∙ resets 3am', ctx(), NOW)!;
+    expect(signal.kind).toBe('exhausted');
+  });
+
   it('leaves an ordinary failure alone', () => {
     expect(classifyClaudeFailure('TypeError: Cannot read properties of undefined', ctx(), NOW)).toBeNull();
     expect(classifyClaudeFailure('', ctx(), NOW)).toBeNull();

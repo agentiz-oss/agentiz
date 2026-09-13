@@ -164,6 +164,79 @@ def refresh_claude_token(oauth: dict[str, Any]) -> str | None:
     return _persist_refreshed_token(payload, refresh_token.strip())
 
 
+@dataclass(frozen=True)
+class CredentialState:
+    """What the worker can honestly say about its own credential for one harness.
+
+    Four states and only two of them are ever reported. ``ok`` and ``expired`` are statements the
+    server acts on — the second closes that machine's claim gate until a person logs in — so
+    ``expired`` is claimed only where nothing local can recover: the token endpoint itself
+    rejected the refresh, or there is no usable refresh token left at all. ``missing`` means this
+    machine simply does not run the harness under a subscription, and ``unknown`` covers every
+    ambiguity (no network, renewal switched off) — both are silence, because reporting a guess
+    would stop a fleet that is merely offline for a minute.
+    """
+
+    state: str
+    detail: str | None = None
+
+
+def _epoch_ms_passed(value: Any) -> bool:
+    return isinstance(value, (int, float)) and value / 1000 <= time.time()
+
+
+def _moment(value: Any) -> str:
+    """A stored epoch-ms field as a short UTC stamp, for a one-line diagnosis."""
+    if not isinstance(value, (int, float)):
+        return "unknown"
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _http_error_reason(error: HTTPError) -> str:
+    """The token endpoint's own error code, when the body carries one. Never the body itself —
+    a credential response is not something to copy into a server-side column."""
+    try:
+        payload = json.loads(error.read() or b"{}")
+    except Exception:  # noqa: BLE001 - a diagnosis must not raise on a diagnosis
+        return ""
+    code = payload.get("error") if isinstance(payload, dict) else None
+    return str(code)[:60] if isinstance(code, str) else ""
+
+
+def claude_credential_state() -> CredentialState:
+    """Whether Claude Code on this machine can still authenticate.
+
+    Called only when the usage collector produced nothing: with no live token there are no
+    numbers to read, and this is the one thing a logged-out machine can still tell the server —
+    which is the whole point, since otherwise the first evidence is a pipeline failing hours
+    later with a message nobody connects to a login.
+    """
+    oauth = _read_claude_oauth()
+    if oauth is None:
+        return CredentialState("missing", "no credential store on this machine")
+    try:
+        token = claude_access_token()
+    except HTTPError as error:
+        if 400 <= error.code < 500:
+            reason = _http_error_reason(error)
+            return CredentialState("expired", f"token refresh rejected ({error.code}{f': {reason}' if reason else ''})")
+        return CredentialState("unknown", f"token endpoint answered {error.code}")
+    except (URLError, OSError, ValueError) as error:
+        # Unreachable endpoint, unreadable file: not a logout, and must never be reported as one.
+        return CredentialState("unknown", f"could not check: {error.__class__.__name__}")
+    if token:
+        return CredentialState("ok")
+    refresh_token = oauth.get("refreshToken")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return CredentialState("expired", "no refresh token stored — this machine was never logged in")
+    if _epoch_ms_passed(oauth.get("refreshTokenExpiresAt")):
+        return CredentialState("expired", f"refresh token expired {_moment(oauth.get('refreshTokenExpiresAt'))}")
+    # An expired access token with a live refresh token and renewal switched off
+    # (AGENTIZ_CLAUDE_TOKEN_REFRESH=0): the CLI still renews it when it runs, so this is not a
+    # logout and saying it were would gate a perfectly working machine.
+    return CredentialState("unknown", "access token expired and renewal is disabled here")
+
+
 def claude_access_token() -> str | None:
     """A live OAuth access token for the subscription, refreshing it first if it has expired."""
     oauth = _read_claude_oauth()
@@ -361,6 +434,15 @@ COLLECTORS: dict[str, Callable[[], dict[str, Any] | None]] = {
     "codex": collect_codex,
 }
 
+#: Harness key → "can this machine authenticate at all", consulted **only** when that harness's
+#: collector produced nothing. A harness with no probe keeps the pre-existing behaviour exactly:
+#: no numbers means no report. Codex deliberately has none — its CLI owns its login and its
+#: failure modes have not been proven the way Claude's have, and a wrong "logged out" here would
+#: stop a working machine.
+AUTH_PROBES: dict[str, Callable[[], CredentialState]] = {
+    "claude": claude_credential_state,
+}
+
 #: How long one poke may take, and how often one may run. The server keeps asking while its
 #: telemetry shows no open window, so the throttle only caps the cost of a poke that silently
 #: fails to open one.
@@ -465,7 +547,7 @@ class UsageReporter:
         self._last_poke_at: dict[str, float] = {}
         self._pending_poke: dict[str, dict[str, Any]] = {}
 
-    def _send_report(self, harness_key: str, raw: dict[str, Any]) -> Any:
+    def _send_report(self, harness_key: str, raw: dict[str, Any] | None, auth: dict[str, Any] | None = None) -> Any:
         """One report, carrying what the last poke did.
 
         The outcome rides the next report instead of a channel of its own: the server asked for the
@@ -476,25 +558,33 @@ class UsageReporter:
         """
         poke = self._pending_poke.pop(harness_key, None)
         try:
-            return self._send(harness_key, raw, poke)
+            return self._send(harness_key, raw, poke, auth)
         except Exception:
             if poke is not None:
                 self._pending_poke[harness_key] = poke
             raise
 
     def report_once(self) -> int:
-        """Collects and sends every harness this machine can report on. Returns how many went out."""
+        """Collects and sends every harness this machine can report on. Returns how many went out.
+
+        Two shapes leave here. The usual one carries the collector's payload and, with it, the
+        statement that the credential works — reading those numbers required it. The other
+        carries **only** a credential verdict and no numbers at all: that is what a logged-out
+        machine can still say, and it is the difference between the server showing "нужно войти
+        заново" and a queue that silently stops moving.
+        """
         sent = 0
         for harness_key, collect in COLLECTORS.items():
+            raw: dict[str, Any] | None = None
             try:
                 raw = collect()
             except (HTTPError, URLError, OSError, ValueError) as error:
                 print(f"usage: could not read {harness_key} usage: {error}", flush=True)
-                continue
-            if not raw:
+            auth = self._auth_payload(harness_key, has_numbers=bool(raw))
+            if not raw and auth is None:
                 continue
             try:
-                response = self._send_report(harness_key, raw)
+                response = self._send_report(harness_key, raw, auth)
                 sent += 1
             except Exception as error:  # noqa: BLE001 - telemetry must never break the worker
                 print(f"usage: could not report {harness_key} usage: {error}", flush=True)
@@ -502,6 +592,29 @@ class UsageReporter:
             if isinstance(response, dict) and response.get("openWindow"):
                 self._maybe_poke(harness_key)
         return sent
+
+    def _auth_payload(self, harness_key: str, has_numbers: bool) -> dict[str, Any] | None:
+        """The credential statement to attach to this harness's report, if any.
+
+        Numbers in hand ⇒ plainly `ok`: every collector here reads through the very credential a
+        stage would use, so having read them *is* the proof. Nothing in hand ⇒ ask the probe, and
+        report only a confident `expired`; `unknown` and `missing` stay silent on purpose (see
+        `CredentialState`).
+        """
+        if has_numbers:
+            return {"state": "ok"}
+        probe = AUTH_PROBES.get(harness_key)
+        if probe is None:
+            return None
+        try:
+            state = probe()
+        except Exception as error:  # noqa: BLE001 - a probe must never break the reporting loop
+            print(f"usage: could not check {harness_key} credentials: {error}", flush=True)
+            return None
+        if state.state != "expired":
+            return None
+        print(f"usage: {harness_key} is not authorized on this machine: {state.detail}", flush=True)
+        return {"state": "expired", **({"detail": state.detail} if state.detail else {})}
 
     def _maybe_poke(self, harness_key: str) -> None:
         """Answers the server's `openWindow` by opening a session window, then re-reports right
@@ -529,7 +642,7 @@ class UsageReporter:
         try:
             raw = collect() if collect else None
             if raw:
-                self._send_report(harness_key, raw)
+                self._send_report(harness_key, raw, {"state": "ok"})
         except Exception as error:  # noqa: BLE001 - telemetry must never break the worker
             print(f"usage: could not re-report {harness_key} usage after poke: {error}", flush=True)
 

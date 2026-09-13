@@ -856,6 +856,10 @@ export class AgentWorkerApiService {
         // Beside `raw`, never inside it: `raw` is the provider's own payload, verbatim, while this
         // is the worker answering a request the server made (openWindow below).
         poke: payload.poke,
+        // Also beside `raw`, and the one thing a machine can still report when it is logged out:
+        // with no live credential there are no numbers to read, so a report carrying only this is
+        // legal and is the only way the server ever learns before a run fails.
+        auth: payload.auth,
       });
       // Reset alignment (lib/harnessAlign.ts): the poke decision rides the report's response on
       // purpose — it is made on telemetry this very report just refreshed, and the worker that
@@ -870,7 +874,7 @@ export class AgentWorkerApiService {
         && alignState(subscription.alignConfig(), subscription.windows, new Date(), subscription.keepWindowsOpen) === 'poke');
       return {
         schemaVersion: SCHEMA_VERSION,
-        sampleId: result.sample.id,
+        sampleId: result.sample?.id ?? null,
         subscriptionId: subscription?.id ?? null,
         warnings: result.warnings,
         openWindow,

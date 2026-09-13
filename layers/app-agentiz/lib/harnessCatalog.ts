@@ -69,6 +69,14 @@ export function harnessProfile(key: string | null | undefined): HarnessProfile |
   return PROFILES[key] ?? { key, title: key, models: [], reasoningLevels: [] };
 }
 
+/**
+ * What to call a harness in a sentence a person reads. The catalogue's own title when there is
+ * one ("Claude Code"), otherwise the raw key — an unknown runner is named, never hidden.
+ */
+export function harnessTitle(key: string | null | undefined): string {
+  return harnessProfile(key)?.title ?? String(key ?? '');
+}
+
 /** The harness a configured ACP command belongs to, by the one derivation in `lib/harness.ts`. */
 export function harnessKeyForCommand(acpCommand: unknown): string | null {
   return harnessKeyForStage({ config: { acpCommand } });

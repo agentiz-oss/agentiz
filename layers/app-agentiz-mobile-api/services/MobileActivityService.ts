@@ -9,6 +9,11 @@ import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteractio
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
 import { AgentApprovalRequest } from '../../app-agentiz/models/AgentApprovalRequest';
 import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
+import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
+import { AgentWorker } from '../../app-agentiz/models/AgentWorker';
+import { AgentWorkerHarness } from '../../app-agentiz/models/AgentWorkerHarness';
+import { harnessTitle } from '../../app-agentiz/lib/harnessCatalog';
+import { MIXED_HARNESS_KEY } from '../../app-agentiz/lib/harness';
 import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentWorkspaceProposalService';
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
 import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
@@ -17,6 +22,7 @@ import { canInProject, visibleProjectIds } from '../lib/mobileScope';
 import {
   applyDismissal,
   approvalItem,
+  harnessAuthItem,
   heldDiffItem,
   isBlockingInboxItem,
   proposalItem,
@@ -165,6 +171,7 @@ export class MobileActivityService {
       return {
         items: [], interactions: [], proposals: [], heldRuns: [],
         actionableCount: 0, dismissedCount: 0, unseen: 0,
+        workerAlerts: await this.workerAlerts(),
       };
     }
 
@@ -207,8 +214,10 @@ export class MobileActivityService {
     ]);
 
     const failedRuns = await this.latestRunPerTask(failedTasks.map((task) => task.id));
+    const authBlocked = await this.authBlockedRuns(projectIds);
 
     const runIds = new Set<string>([
+      ...authBlocked.map((item) => item.run.id),
       ...interactions.map((item) => item.runId),
       ...proposals.map((item) => item.latestRunId),
       ...approvals.map((item) => item.runId).filter(Boolean) as string[],
@@ -233,6 +242,7 @@ export class MobileActivityService {
     const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
 
     const taskIds = new Set<string>([
+      ...authBlocked.map((item) => item.run.taskId),
       ...proposals.map((item) => item.taskId),
       ...approvals.map((item) => item.taskId).filter(Boolean) as string[],
       ...[...runById.values()].map((run) => run.taskId),
@@ -283,6 +293,10 @@ export class MobileActivityService {
     }));
 
     const built = sortInboxItems([
+      // First in the list and first here: while a machine is logged out, nothing of that harness
+      // runs on it, so every other row is downstream of this one.
+      ...authBlocked.map(({ run, info }) => harnessAuthItem(run, info,
+        contextOf(run.projectId, run.taskId, run.pipelineSpecId))),
       ...interactions.map((item) => questionItem(item, {
         ...contextOf(item.projectId, runById.get(item.runId)?.taskId, runById.get(item.runId)?.pipelineSpecId),
         run: runById.get(item.runId) ?? null,
@@ -350,6 +364,17 @@ export class MobileActivityService {
       /** How many rows this caller has hidden — the "Скрытые (N)" switch, nothing else. */
       dismissedCount,
       unseen,
+      /**
+       * Machines that need a person, riding the one request the app already polls.
+       *
+       * Deliberately **not** project-scoped, like the rest of the capacity surface: a worker
+       * belongs to the installation, holds nothing secret (a name and a state, never a
+       * credential), and a machine that cannot log in stops everybody's work, not one project's.
+       * It is here rather than on `/workers` because the phone has to be able to *notice* it
+       * without opening the workers screen — that was exactly the failure this whole state
+       * answers: a queue that stopped moving with nothing anywhere saying so.
+       */
+      workerAlerts: await this.workerAlerts(),
     };
   }
 
@@ -487,12 +512,13 @@ export class MobileActivityService {
     /** The reader, when known: their dismissed rows are hidden here as well as in the inbox. */
     userId?: number,
   ): Promise<InboxItem[]> {
-    const [interactions, proposal, held] = await Promise.all([
+    const [interactions, proposal, held, authBlocked] = await Promise.all([
       AgentRunInteraction.findAll({ where: { runId: run.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
       AgentWorkspaceProposal.findOne({
         where: { latestRunId: run.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
       }),
       this.heldDiffs([run.projectId]),
+      this.authBlockedRuns([run.projectId]),
     ]);
     const [stages, diff] = await Promise.all([
       AgentStageExecution.findAll({
@@ -511,6 +537,10 @@ export class MobileActivityService {
     }));
 
     return this.visible(userId, here(sortInboxItems([
+      // The run screen is exactly where "он просто стоит и ничего не пишет" is read, so the
+      // reason it stands is the first thing on it.
+      ...authBlocked.filter((entry) => entry.run.id === run.id)
+        .map((entry) => harnessAuthItem(entry.run, entry.info, context)),
       ...interactions.map((item) => questionItem(item, {
         ...context,
         run,
@@ -536,7 +566,7 @@ export class MobileActivityService {
     project: AgentProject | null,
     userId?: number,
   ): Promise<InboxItem[]> {
-    const [interactions, proposals, approvals, runs] = await Promise.all([
+    const [interactions, proposals, approvals, runs, authBlocked] = await Promise.all([
       AgentRunInteraction.findAll({ where: { projectId: task.projectId, status: 'pending' }, order: [['createdAt', 'ASC']] }),
       AgentWorkspaceProposal.findAll({
         where: { taskId: task.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
@@ -544,6 +574,7 @@ export class MobileActivityService {
       }),
       AgentApprovalRequest.findAll({ where: { taskId: task.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
       AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id', 'pipelineSpecId', 'verdict', 'verdictReason'] }),
+      this.authBlockedRuns([task.projectId]),
     ]);
     const runById = new Map(runs.map((run) => [run.id, run]));
     const runIds = new Set(runs.map((run) => run.id));
@@ -569,6 +600,10 @@ export class MobileActivityService {
       : null;
 
     return this.visible(userId, sortInboxItems([
+      // Same reason as on the run screen: this strip is what a person reads after launching from
+      // the phone, and a queue that is not moving has to say so here rather than nowhere.
+      ...authBlocked.filter((entry) => entry.run.taskId === task.id)
+        .map((entry) => harnessAuthItem(entry.run, entry.info, context(entry.run.pipelineSpecId))),
       ...ownInteractions.map((item) => questionItem(item, {
         ...context(pipelineOfRun.get(item.runId)),
         stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
@@ -643,6 +678,85 @@ export class MobileActivityService {
       return canInProject(approval.projectId, userId, approval.assigneeToken);
     }));
     return approvals.filter((_approval, index) => decisions[index]);
+  }
+
+  /**
+   * The two states of a worker that a person has to do something about, counted for the ambient
+   * badge. Both are limited to `active` machines: a paused or revoked one being silent is the
+   * operator's own decision, not a fault.
+   *
+   * `needLogin` — a harness on that machine cannot authenticate at all (`HarnessAuthState`), which
+   * closes its claim gate until somebody opens a browser there. `offline` — a machine that is
+   * supposed to be polling and has stopped, which is the other way work quietly stops moving.
+   */
+  private static async workerAlerts(): Promise<{ needLogin: number; offline: number }> {
+    const workers = await AgentWorker.findAll({ where: { status: 'active' } });
+    if (workers.length === 0) return { needLogin: 0, offline: 0 };
+    const needLogin = await AgentWorkerHarness.count({
+      where: { authState: 'expired', workerId: { [Op.in]: workers.map((worker) => worker.id) } },
+    });
+    return {
+      needLogin,
+      offline: workers.filter((worker) => worker.contactState() === 'offline').length,
+    };
+  }
+
+  /**
+   * Runs that are parked because the machine they need is logged out of its harness.
+   *
+   * Read from the **live** binding, never from the journal, like every other row here: the run
+   * carries `waitingReason: 'harness_auth'` (written by the capacity sweep or by the stage that
+   * failed on the credential), and the row only survives while a binding is still `expired`. That
+   * is what closes it — the worker's first healthy report clears the binding and the row is gone
+   * on the next refresh, with nobody having pressed anything.
+   *
+   * Matching a run to a machine goes through its job: a pinned job names the worker outright, and
+   * an unpinned one is only here because no worker could log in at all, so any expired binding for
+   * that harness names the problem correctly.
+   */
+  private static async authBlockedRuns(projectIds: string[]): Promise<Array<{
+    run: AgentRun;
+    info: { harnessKey: string; harnessTitle: string; workerName: string; since: Date | null; detail: string | null };
+  }>> {
+    const expired = await AgentWorkerHarness.findAll({ where: { authState: 'expired' } });
+    if (expired.length === 0) return [];
+    const runs = await AgentRun.findAll({
+      where: {
+        projectId: { [Op.in]: projectIds },
+        waitingReason: 'harness_auth',
+        status: { [Op.notIn]: ['succeeded', 'failed', 'cancelled'] },
+      },
+      order: [['updatedAt', 'DESC']],
+      limit: 100,
+    });
+    if (runs.length === 0) return [];
+
+    const jobs = await AgentRunJob.findAll({ where: { runId: { [Op.in]: runs.map((run) => run.id) } } });
+    const jobByRun = new Map(jobs.map((job) => [job.runId, job]));
+    const workers = await AgentWorker.findAll({
+      where: { id: { [Op.in]: [...new Set(expired.map((binding) => binding.workerId))] } },
+    });
+    const workerById = new Map(workers.map((worker) => [worker.id, worker]));
+
+    return runs.flatMap((run) => {
+      const job = jobByRun.get(run.id) ?? null;
+      const binding = expired.find((item) => (job?.requiredWorkerId ? item.workerId === job.requiredWorkerId : true)
+        && (!job?.harnessKey || job.harnessKey === MIXED_HARNESS_KEY || item.harnessKey === job.harnessKey));
+      // Nothing expired matches this run any more — its binding recovered while the run kept a
+      // stale `waitingReason` (that is cleared when the run actually restarts). Nothing is
+      // blocked, so nothing is shown, and the row closes itself with nobody pressing anything.
+      if (!binding) return [];
+      return [{
+        run,
+        info: {
+          harnessKey: binding.harnessKey,
+          harnessTitle: harnessTitle(binding.harnessKey),
+          workerName: workerById.get(binding.workerId)?.name ?? binding.workerId,
+          since: binding.authFailedSince ?? null,
+          detail: binding.authDetail ?? null,
+        },
+      }];
+    });
   }
 
   private static async heldDiffs(projectIds: string[]): Promise<Array<{ diff: AgentRunDiff; run: AgentRun }>> {

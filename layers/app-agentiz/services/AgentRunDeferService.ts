@@ -41,7 +41,8 @@ export interface ClassifiedLimit {
 
 export interface DeferredOutcome {
   retryAt: Date;
-  exhaustedUntil: Date;
+  /** Null for an `auth` deferral — nothing there reopens on a clock; see `HarnessAuthState`. */
+  exhaustedUntil: Date | null;
 }
 
 /**
@@ -93,6 +94,9 @@ export class AgentRunDeferService {
     classified: ClassifiedLimit;
     errorText: string;
   }): Promise<DeferredOutcome> {
+    // A dead credential is not a quota: it has no reset moment to wait for, and the gate that
+    // holds the job is the binding's, not the subscription's.
+    if (params.classified.signal.kind === 'auth') return this.deferForAuth(params);
     const { job, run, worker, classified, errorText } = params;
     const now = new Date();
     const { exhaustedUntil } = await AgentCapacityService.recordLimitSignal({
@@ -152,6 +156,61 @@ export class AgentRunDeferService {
       // project's parked run is that project's business.
     }
     return { retryAt, exhaustedUntil };
+  }
+
+  /**
+   * The `auth` arm of a deferral: the machine is logged out, so the job goes back to the queue
+   * and the **binding** closes rather than the subscription.
+   *
+   * Everything else is the limit path's shape on purpose — released job, refunded attempt, run
+   * left non-terminal with a waiting badge — because from a task's point of view the two are the
+   * same event ("это не поехало и не по моей вине"). The two differences are what makes the state
+   * legible: there is no `waitingUntil`, since only a person ends this, and the person is told
+   * through the `harness.auth_required` activity rather than through a bell message about a
+   * deadline. `availableAt` is a short courtesy retry only — what actually holds the job is the
+   * closed gate, which opens by itself on the worker's first healthy report.
+   */
+  private static async deferForAuth(params: {
+    job: AgentRunJob;
+    run: AgentRun;
+    worker: Pick<AgentWorker, 'id' | 'name'>;
+    classified: ClassifiedLimit;
+    errorText: string;
+  }): Promise<DeferredOutcome> {
+    const { job, run, worker, classified, errorText } = params;
+    const now = new Date();
+    const detail = errorText.split('\n').map((line) => line.trim()).find((line) => line.length > 0)
+      ?? classified.signal.matched;
+    await AgentCapacityService.applyAuthState({
+      worker,
+      harnessKey: classified.harnessKey,
+      state: 'expired',
+      detail,
+      source: 'failure',
+    });
+
+    const retryAt = new Date(now.getTime() + PINNED_RETRY_MIN_MS);
+    await AgentRunInteractionService.closeForJob(job, 'orphaned', `deferred: ${classified.signal.matched}`);
+    await job.update({
+      status: 'released',
+      workerId: null,
+      leaseTokenHash: null,
+      lockedUntil: null,
+      availableAt: retryAt,
+      deferReason: 'harness_auth',
+      deferredCount: job.deferredCount + 1,
+      attempt: Math.max(job.attempt - 1, 0),
+      lastError: errorText,
+    });
+    await AgentCapacityService.noteAuthBlockedRun({
+      run,
+      jobId: job.id,
+      harnessKey: classified.harnessKey,
+      workerId: worker.id,
+      workerName: worker.name,
+      detail,
+    });
+    return { retryAt, exhaustedUntil: null };
   }
 
   /**

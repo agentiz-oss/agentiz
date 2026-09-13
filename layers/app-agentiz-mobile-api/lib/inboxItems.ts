@@ -34,6 +34,17 @@ import type { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorks
 export type InboxItemKind =
   | 'question'
   /**
+   * The machine the run needs cannot log in to its harness any more, so the run is parked in the
+   * queue until a person opens a browser **on that machine** (`HarnessAuthState`).
+   *
+   * The one row here that is blocking without being resolvable from the phone, and that is the
+   * whole reason it exists: the alternative is what it replaced — a task that silently never
+   * starts, with nothing anywhere saying why. It still obeys the other half of the rule, since
+   * only its own entity closes it: the row is built from the live binding and disappears the
+   * moment the worker reports a working credential again.
+   */
+  | 'harness_auth'
+  /**
    * A person has to accept the work itself, or send it back with a reason — the human gate of a
    * workflow (`AgentApprovalRequest`). Blocking: a whole flow is parked on it and only a decision
    * moves it, so it is counted and cannot be dismissed. Distinct from `review`, which is about a
@@ -165,6 +176,9 @@ export interface InboxItem {
  */
 const PRIORITY: Record<InboxItemKind, number> = {
   question: 0,
+  // Above everything: while it lasts, nothing of that harness runs at all on that machine, so
+  // every other row on the screen is downstream of it.
+  harness_auth: 0,
   push_failed: 1,
   reset_failed: 1,
   no_changes: 1,
@@ -189,6 +203,9 @@ const PRIORITY: Record<InboxItemKind, number> = {
  */
 const BLOCKING: ReadonlySet<InboxItemKind> = new Set<InboxItemKind>([
   'question', 'push_failed', 'reset_failed', 'no_changes', 'review', 'held_diff', 'approval',
+  // Counted and not dismissible even though the phone has no button for it: it holds a run, and
+  // hiding it would restore exactly the silence this row was added to break.
+  'harness_auth',
 ]);
 
 export function isBlockingInboxItem(item: InboxItem): boolean {
@@ -495,6 +512,52 @@ export function approvalItem(
 }
 
 /**
+ * A run that cannot start because the machine it needs is logged out of its harness.
+ *
+ * There is no button, and that is honest: the fix is a browser on the worker machine, and the
+ * row says so instead of offering a gesture that would not help. What it does carry is the
+ * three facts that make the fix possible — which harness, which machine, and what the worker
+ * itself reported — plus the one reassurance that stops people re-creating tasks: the run is not
+ * lost and resumes on its own.
+ */
+export function harnessAuthItem(
+  run: AgentRun,
+  info: {
+    harnessKey: string;
+    /** Human name of the harness, from the core's catalogue — never invented here. */
+    harnessTitle: string;
+    workerName: string;
+    /** Start of the outage, as the binding recorded it; the row's "ждёт N" reads from it. */
+    since: Date | null;
+    /** The worker's own one-liner ("refresh token expired"), when it sent one. */
+    detail: string | null;
+  },
+  context: InboxContext,
+): InboxItem {
+  const login = info.harnessKey === 'claude'
+    // Plain text: the card renders this as-is, so no backticks and no markdown that would show up
+    // as punctuation on a phone.
+    ? ' На машине воркера выполните «claude auth login» под тем пользователем, от которого он работает,'
+      + ' и подтвердите вход в браузере.'
+    : ' Войдите в аккаунт этого harness\'а на машине воркера — так же, как входили при установке.';
+  return {
+    ...base('harness_auth', 'harness.auth_required', context, run.projectId),
+    id: `harness-auth:${run.id}`,
+    headline: `Нужно заново войти в ${info.harnessTitle} на воркере ${info.workerName}`,
+    facts: join([info.harnessTitle, `воркер ${info.workerName}`, firstLine(info.detail, 80)]),
+    explain: 'Авторизация закончилась, и продлить её из Agentiz нельзя: она живёт на машине воркера'
+      + ' и обновляется только через браузер.' + login
+      + ' Запуск при этом не потерян — он стоит в очереди и продолжится сам через пару минут после входа;'
+      + ' пока входа нет, все задачи этого harness\'а на этой машине будут просто стоять.',
+    projectId: run.projectId,
+    taskId: run.taskId,
+    runId: run.id,
+    waitingSince: info.since ?? run.updatedAt ?? null,
+    actions: [{ key: 'open_run', label: 'Открыть запуск', style: 'default' }],
+  };
+}
+
+/**
  * What a failure was, in words, when we recognise it.
  *
  * `run.errorMessage` is written for whoever is debugging: it carries the HTTP verb, the job id and
@@ -505,6 +568,12 @@ export function approvalItem(
  */
 function runFailureHeadline(error: string | null): string {
   if (!error?.trim()) return 'Запуск завершился с ошибкой';
+  // Before the limit line: a logout and a spent quota both stop the work, and only one of them
+  // ends by itself — telling a person to wait for a reset that will never come is worse than
+  // showing them the raw text.
+  if (/not logged in|\/login|invalid_grant|oauth token|authentication_error|invalid x-api-key/i.test(error)) {
+    return 'Воркер не авторизован — нужно войти заново';
+  }
   if (/(session|usage|rate) limit/i.test(error)) return 'Упёрся в лимит подписки';
   if (/is reserved by proposal/i.test(error)) return 'Папка воркера была занята другим ревью';
   if (/^(POST|GET|PUT|DELETE)\s+\/jobs\/.*HTTP\s+\d{3}/i.test(error)) return 'Воркер не смог отчитаться серверу';

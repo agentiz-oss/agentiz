@@ -298,16 +298,24 @@ class Client:
     def heartbeat(self, job: dict[str, Any]) -> Any:
         return self.post(f"/jobs/{job['jobId']}/heartbeat", job, {})
 
-    def report_harness_usage(self, harness_key: str, raw: dict[str, Any],
-                             poke: dict[str, Any] | None = None) -> Any:
+    def report_harness_usage(self, harness_key: str, raw: dict[str, Any] | None,
+                             poke: dict[str, Any] | None = None,
+                             auth: dict[str, Any] | None = None) -> Any:
         """Pushes one harness's usage payload. Outside any job lease — see the server endpoint.
 
-        `poke` travels beside `raw`, never inside it: `raw` is the provider's own payload verbatim,
-        while the poke result is this worker answering something the server asked for.
+        `poke` and `auth` travel beside `raw`, never inside it: `raw` is the provider's own payload
+        verbatim, while those two are this worker answering the server — what came of the window
+        it was asked to open, and whether this machine can authenticate at all. `raw` is omitted
+        entirely when there is nothing to report but the credential state, which is exactly the
+        shape a logged-out machine sends.
         """
-        body: dict[str, Any] = {"schemaVersion": SCHEMA_VERSION, "harnessKey": harness_key, "raw": raw}
+        body: dict[str, Any] = {"schemaVersion": SCHEMA_VERSION, "harnessKey": harness_key}
+        if raw is not None:
+            body["raw"] = raw
         if poke is not None:
             body["poke"] = poke
+        if auth is not None:
+            body["auth"] = auth
         return self.request("POST", "/harness-usage", body)[1]
 
     def secrets(self, job: dict[str, Any]) -> Any:
