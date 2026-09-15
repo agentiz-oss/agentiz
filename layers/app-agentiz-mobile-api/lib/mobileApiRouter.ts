@@ -3,7 +3,13 @@ import express, { type NextFunction, type Request, type Response, type Router } 
 import cors from 'cors';
 import type { Model, Sequelize } from 'sequelize';
 import { readBodyWithLimit } from '../../app-agentiz/lib/taskAttachments';
-import { bearerToken, verifyMobileToken } from './mobileAuth';
+import {
+  bearerToken,
+  mobileTokenExpiresAt,
+  mobileTokenNeedsRenewal,
+  signMobileToken,
+  verifyMobileToken,
+} from './mobileAuth';
 import { MobileActivityService } from '../services/MobileActivityService';
 import { MobileAuthError, MobileAuthService } from '../services/MobileAuthService';
 import { MobileCapacityService } from '../services/MobileCapacityService';
@@ -21,9 +27,19 @@ import type { AgentRunInteractionAction } from '../../app-agentiz/types/agentiz'
 /** Public base path of the mobile API. Versioned so the app can pin a contract. */
 export const MOBILE_API_BASE = '/api/agentiz/mobile/v1';
 
+/**
+ * Headers carrying a renewed session. Every authenticated answer can bring one, so a client that
+ * stores them never has to notice the token is running out; a client that ignores them is not
+ * affected, which is why the renewal rides along instead of being an endpoint the app must call.
+ */
+export const MOBILE_TOKEN_HEADER = 'X-Agentiz-Token';
+export const MOBILE_TOKEN_EXPIRES_HEADER = 'X-Agentiz-Token-Expires';
+
 /** The authenticated UserAP instance is attached here by requireAuth for downstream handlers. */
 interface AuthedRequest extends Request {
   mobileUser?: Model;
+  /** The session this request authenticated with, plus a fresh token when one was minted for it. */
+  mobileSession?: { expiresAt: string; renewedToken?: string };
 }
 
 function errorResponse(res: Response, error: unknown) {
@@ -47,8 +63,10 @@ function errorResponse(res: Response, error: unknown) {
 export function createMobileApiRouter(sequelize: Sequelize): Router {
   const router = express.Router();
   // Bearer-token auth, no cookies: a wildcard CORS origin is safe and lets a browser build of the
-  // client call the same API a native build does.
-  router.use(cors());
+  // client call the same API a native build does. The renewal headers have to be named explicitly:
+  // a browser hides every response header a CORS answer does not list, so without this the web
+  // build would be the one client that silently never renews.
+  router.use(cors({ exposedHeaders: [MOBILE_TOKEN_HEADER, MOBILE_TOKEN_EXPIRES_HEADER] }));
   router.use(express.json({ limit: '1mb' }));
 
   router.get(['/healthz', '/readyz'], (_req, res) => {
@@ -80,14 +98,51 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
         throw new MobileAuthError(401, 'Invalid or expired token');
       }
       req.mobileUser = await MobileAuthService.requireUser(sequelize, payload.sub);
+      // Sliding renewal: past half its life the token is replaced on whatever request happened to
+      // come in, so a phone that is opened at all keeps a session that never reaches its expiry.
+      // The old token stays valid until its own expiry — nothing here is a revocation, and two
+      // requests racing must not be able to invalidate each other's credential mid-flight.
+      const session: NonNullable<AuthedRequest['mobileSession']> = {
+        expiresAt: mobileTokenExpiresAt(payload).toISOString(),
+      };
+      if (mobileTokenNeedsRenewal(payload)) {
+        const renewed = signMobileToken({ sub: payload.sub, login: payload.login });
+        session.renewedToken = renewed.token;
+        session.expiresAt = renewed.expiresAt.toISOString();
+        res.setHeader(MOBILE_TOKEN_HEADER, renewed.token);
+      }
+      res.setHeader(MOBILE_TOKEN_EXPIRES_HEADER, session.expiresAt);
+      req.mobileSession = session;
       next();
     } catch (error) {
       errorResponse(res, error);
     }
   };
 
+  /**
+   * Who the token belongs to, and how long it is good for. The app calls this on every launch, so
+   * it is also where a renewed token is handed over in the body rather than only in a header — an
+   * older build reads neither and simply keeps the token it has, which stays valid.
+   */
   router.get('/auth/me', requireAuth, (req: AuthedRequest, res) => {
-    res.json({ user: MobileAuthService.toAuthUser(req.mobileUser) });
+    res.json({
+      user: MobileAuthService.toAuthUser(req.mobileUser),
+      expiresAt: req.mobileSession?.expiresAt,
+      ...(req.mobileSession?.renewedToken ? { token: req.mobileSession.renewedToken } : {}),
+    });
+  });
+
+  /**
+   * Trade a still-valid token for a fresh one, unconditionally. `me` already renews on its own
+   * schedule; this exists for a client that wants to ask outright — after a long sleep, or before
+   * a background job it does not want to see fail on an expiry it could have avoided.
+   */
+  router.post('/auth/refresh', requireAuth, (req: AuthedRequest, res) => {
+    const user = MobileAuthService.toAuthUser(req.mobileUser);
+    const { token, expiresAt } = signMobileToken({ sub: String(user.id), login: user.login });
+    res.setHeader(MOBILE_TOKEN_HEADER, token);
+    res.setHeader(MOBILE_TOKEN_EXPIRES_HEADER, expiresAt.toISOString());
+    res.json({ token, expiresAt: expiresAt.toISOString(), user });
   });
 
   // Express types a route parameter as `string | string[]` (a `:id*` pattern can repeat), which no

@@ -34,4 +34,8 @@ export interface MobileTokenPayload {
   sub: string;
   login: string;
   type: 'mobile';
+  /** Issued-at, in seconds. This — not `exp` — is what the server's expiry policy counts from. */
+  iat?: number;
+  /** Expiry as it was minted, kept for clients that read it; see `verifyMobileToken`. */
+  exp?: number;
 }

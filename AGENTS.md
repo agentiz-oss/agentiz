@@ -313,8 +313,22 @@
   longer exists. `interaction.created` keeps its legacy push payload (`type=interaction`) for
   older app builds; every other type travels as `type=activity`.
 - Everything that waits on a **person** — a question, a review, a failed push or reset, a diff held
-  by `requireApproval`, an opened PR, a task whose last run died — reaches the phone as one shape,
-  `InboxItem` (`layers/app-agentiz-mobile-api/lib/inboxItems.ts`), served as `items` by
+  by `requireApproval`, an opened PR, a task whose last run died — is one shape, `InboxItem`, and
+  **one** place that builds it: `layers/app-agentiz/lib/inbox/` (`items.ts` turns an entity into
+  the row a person reads, `collect.ts` finds the entities). It lived in the mobile layer while the
+  phone was its only reader; the panel's «Входящие» is the second, and two readers computing "что
+  меня ждёт" from two pieces of code is how a screen and a badge start disagreeing about the same
+  four rows. Two things stay with the caller and must not move in: the **scope** is an argument
+  (`InboxScope.actor` — the phone passes a bare id, the panel the loaded user, so the administrator
+  flag and the bypass token apply where they should; compare an addressee with `accessActorId`,
+  never `Number(actor)`, which answers `NaN` for the object form and hides the row from the only
+  person who could act on it), and the **dismissal** («скрыл напоминание») is `MobileInboxDismissal`
+  — a mobile model and a swipe gesture, so the panel simply does not hide reminders. Because the
+  app is not redeployed with the server, `services/mobileInboxContract.test.ts` freezes the whole
+  answer of the three endpoints below against file snapshots: re-recording them to make a diff go
+  away is a change to a shipped client's contract. The panel's own two additions (`href` via
+  `href()`, `projectSlug`) live in `lib/panel/inboxPanel.ts` and never enter `InboxItem`. Served as
+  `items` by
   `GET /activities/summary`, as `actionRequired` in `GET /tasks/:id` and, per run, in
   `GET /tasks/:taskId/runs/:runId` — the last is what the run screen prints **above** its own
   result, and there `open_run` is stripped because the reader is already there. It is computed from
@@ -350,6 +364,25 @@
   directory is still reserved) and `run_failed` (one row per task, keyed off
   `AgentTask.status = 'failed'`, which a re-run clears by itself). The old
   `interactions`/`proposals`/`heldRuns` arrays stay for builds that predate `items`.
+- **How long a mobile session lasts is current server policy, not a number frozen into the token.**
+  `verifyMobileToken` (`layers/app-agentiz-mobile-api/lib/mobileAuth.ts`) checks the signature with
+  `ignoreExpiration` and then decides expiry itself, from `iat` + `mobileTokenTtlSeconds()`
+  (`AGENTIZ_MOBILE_TOKEN_TTL_SEC`, default a year). Both directions of that are the point: raising
+  the TTL keeps signed in the phones that are already signed in — the app cannot re-authenticate on
+  its own, so an expiry is always a person retyping an admin password — and lowering it actually
+  ends the sessions already out there. A check against the minted `exp` can do neither. The `exp`
+  claim is still issued, because it is what a client reads; a token with no `iat` at all is treated
+  as expired, never as eternal. On top of that, every authenticated answer can carry a renewal: past
+  half the lifetime `requireAuth` mints a fresh token into `X-Agentiz-Token` /
+  `X-Agentiz-Token-Expires` (named in the CORS `exposedHeaders`, or the browser build would be the
+  one client that never sees them) and into the body of `GET /auth/me`, which the app calls on every
+  launch — so a phone opened at all never reaches an expiry, and `POST /auth/refresh` is there for a
+  client that wants to ask outright. A renewal is **not** a revocation: the previous token stays
+  valid to its own expiry, because two requests in flight must not be able to invalidate each
+  other's credential. Which is why 401 has to mean something on the client — the app drops the
+  stored session and shows the login screen (`App.kt`); before that it retried silently and every
+  screen rendered the same error forever.
+
 - *How* a push travels is chosen once, from `PUSH_PROVIDER`, and never branched on again:
   `MobilePushService` builds one FCM-HTTP-v1-shaped `PushMessage` and sends it through a
   `PushProvider` (`layers/app-agentiz-mobile-api/lib/push/`). `firebase` (default) signs and posts to
@@ -557,6 +590,77 @@
   as a placeholder text part instead of their base64: whole messages are never dropped to save
   space, because that can separate a tool call from its result and the provider then rejects the
   restored dialog.
+- A repository fact — commits landed in a branch, a CI run finished, a package version was
+  published — reaches a workflow through
+  **one** function per fact, `publishRepositoryPush` / `publishRepositoryCiRun` /
+  `publishRepositoryPackage` in
+  `layers/app-agentiz/lib/workflow/repositoryEvents.ts` (long form:
+  [`docs/guides/repository-events.md`](docs/guides/repository-events.md)). There are deliberately
+  **two sources** of each — a webhook we install ourselves and a 15-minute poll — and the poll is
+  *not* switched off where a hook exists: GitHub never retries a delivery it could not make, and
+  the server is unreachable for a minute on every deploy. What makes them one source instead of two
+  is `AgentRepository.watchCursor`, moved **only** by those two functions: a push a hook already
+  reported leaves the branch head equal to the stored one and the next poll says nothing. Anything
+  that advances the cursor elsewhere is how the two start double-firing. The first look at a
+  repository emits nothing at all (`seedWatchCursor`, one whole write, not a cursor built up branch
+  by branch — a pass that died halfway would make every branch missing from it read as new). The
+  fact is about a *repository* but the payload carries `projectId`, because every node filters by
+  project: one repository linked to two projects raises two events off one observation, and the
+  platform is still asked once. `ownRunId`/`ownTaskId` are matched on `AgentRun.branch` and not on
+  the sha (a person adding a commit to the agent's branch is inside a round that is already
+  running), and the trigger's `ignoreOwnRuns` therefore defaults **on** for a push and **off** for
+  a CI run — the second is the whole point, since "упала сборка нашей ветки" is what closes the
+  rework round through `agentiz.task.comment`. Because that default depends on `event`, the schema
+  carries no `default` and `bind()` resolves it, exactly as `triggerFilters` does for comments.
+  `ownTaskId` is also copied into the payload as `taskId` (the name every node downstream reads),
+  and is **absent** rather than null when no run of ours made the push — `payloadOf` would take a
+  null for a task it failed to load.
+  The **package** fact (`agentiz.repository.packagePublished`, GitHub's `package` hook event) is
+  the deliberate exception to all of the above and the exception is the point: the poll reads the
+  git API and knows nothing about registries, so this fact has **one** source, **no** cursor —
+  there is no second observer to keep quiet, and re-delivery is idempotent through the journal's
+  unique `(endpointId, dedupeKey)` — and **no** attribution, because an image carries no branch, so
+  `branches`/`ignoreOwnRuns` are not read on it at all and a graph guards itself with
+  `skipIfFlowActive`/`maxRounds`. A missed delivery is therefore lost rather than late; guaranteed
+  delivery would mean a registry reader over the OCI Distribution API with a `{tag: digest}` cursor
+  of its own, which does not exist. Two things also have to be true for it to arrive at all: the
+  package must be *linked* to the repository (published from its workflow, or labelled
+  `org.opencontainers.image.source`) — an unlinked container is an org-level event no repository
+  hook sees — and the hook must already ask for the event, which is why the installed event set is
+  stored as `webhook.events` and a stale one is **patched** rather than reinstalled: reinstalling
+  rotates the secret and a delivery in flight then arrives unverifiable. Adding a fact to
+  `HOOK_EVENTS` without that comparison leaves every repository linked earlier on the old set
+  forever, silently.
+- The webhook is the **repository's**, not the project link's: one hook per `AgentRepository`, and
+  its secret lives in `AgentRepository.webhook` because we issued it *to* the platform — which is
+  why the `github-repository` mapper declares `auth: 'mapper'` instead of letting the receiving
+  layer compare a token against the endpoint's own, and why that column never leaves the server
+  except through `maskRepositoryWebhook`. The lifecycle follows the links from the **model hooks**
+  on `AgentProjectRepository` (four callers write a link; only a hook covers all four) and is
+  deferred to `transaction.afterCommit`: started inline it would hold the transaction open for a
+  GitHub round trip, or — on sqlite, one connection — run its queries beside the open transaction
+  and break it outright ("cannot commit - no transaction is active"). Reconciliation is serialized
+  per repository (`syncRepositoryWebhook`): two concurrent passes each delete what they take for
+  the other's stale hook and write their secret over it, leaving a hook whose secret nobody stored.
+  No hook is a **supported state**, never an error — no `AGENTIZ_PUBLIC_URL`, no receiving layer,
+  a connection whose organisation trimmed its scope: the reason goes to `webhook.lastError` and the
+  poll carries that repository. No new OAuth scope is needed; `repo` already covers installing a
+  hook and reading its delivery log.
+- Inbound webhooks are received by `layers/app-agentiz-webhooks` and understood by nobody there:
+  the seam is the core's `webhookMappers` collection plus the `WebhookHost` registry
+  (`lib/webhooks/`), and **both sides are optional**. The body is taken **raw** (a signature is
+  computed over the bytes that arrived; `JSON.parse` + `JSON.stringify` does not reproduce them)
+  and the router is mounted on `appManager.app`, never through `adminizerMiddlewares` — that
+  dispatcher prefixes everything with `/dashboard` and an integrator would be posting into the
+  admin panel. `endpointId` in the path is not a secret in a URL: it is what says, before the body
+  is parsed, which mapper this is and whose secret to check. `AgentWebhookDelivery` is written for
+  **every** delivery including `rejected` and `ignored` — most rows are `ignored` and that is
+  healthy — and idempotency rests on the composite **unique** index `(endpointId, dedupeKey)`,
+  declared in the migration **and** on the model: present only in the migration it would
+  deduplicate in production and silently not at all under `sync({ alter: true })`, where a
+  re-delivery publishes a second event. The `github-repository` mapper creates **no task** — a
+  deviation from that layer's base model, recorded in `.ai-notes/project-webhook-api.md`, because a
+  repository event is not a request to do anything; `agentiz.task.create` in the graph is.
 - A workflow reacts to Agentiz through **one** seam: `layers/app-agentiz/lib/workflow/`. Task facts
   reach the engine as app-manager emitter events (`agentiz.task.created` / `agentiz.task.updated`),
   emitted from `@AfterCreate`/`@AfterUpdate` hooks on `AgentTask` rather than from the four places
@@ -658,6 +762,60 @@
   as `?raw` (`adminizer/modules/lib/injectStyles.ts` in app-workflow). What it looks like when it is
   missing: React Flow's canvas with a black minimap, a control bar stretched across the top and
   nodes placed by the document flow instead of by the pane transform.
+- The panel's own screens live under **one** address tree, `/agentiz`, parsed by
+  `layers/app-agentiz/lib/panel/routeTree.ts` — the only place that knows it, imported by the
+  server and by the browser module, so an address is only ever spelled by its `href()` (long form:
+  [`docs/guides/panel-ui.md`](docs/guides/panel-ui.md)). One registered `adminizerMiddlewares` entry
+  serves the whole tree (the dispatcher matches a **prefix**, so `:param` in `route` does nothing
+  and `req.params` is empty), and `?_method=` on it is the JSON API of those screens, not an
+  address. Everything *around* the content belongs to the panel and reaches it as **page props**
+  our render supplies — `menu`/`menuSections` from `lib/panel/menu.ts`, breadcrumbs and the help
+  button from `lib/panel/render.ts`; page props override shared ones, which is the whole mechanism
+  and needs nothing in adminizer. Two consequences: a transition that does not reach the server
+  freezes the sidebar on the state the page was opened with, so an **address** is always a real
+  visit while a tab or a filter is `history.replaceState` (`modules/lib/format.ts`) and nothing
+  else; and since one component draws every address, a screen that does not take a `key` from the
+  address keeps the *previous* page's props in `useState(initial)`. The first paint travels as
+  props (`dataFor`), everything after it is the same `_method` RPC the old screens used, and the
+  builder behind both lives beside `lib/runBoard.ts` / `lib/panel/*Panel.ts` rather than in the
+  route body — the renderer must not import the route table. Three neighbouring rules guard the
+  seams. The stylesheet of those modules is **global to the panel**:
+  `moduleComponentCSS` is a `<link>` in `head` that stays on every page, ours or not, so
+  `adminizer/styles/agentiz.css` carries no preflight and writes nothing into `:root`
+  (`theme(reference)` + `@theme inline` *map* the panel's palette, never declare it), and our
+  utilities sit in the `components` layer, **below** the panel's. A second global utility sheet is
+  asymmetric: a class both sheets emit is decided by the panel, a class only the panel has we can
+  override — which is how a module's `.hidden` once hid the panel's own sidebar on every Agentiz
+  page with nothing logged. The same asymmetry means `hidden lg:block` never works here and says
+  nothing about it; write `max-lg:hidden`. `assertModuleClassesCovered()` in `vite.config.ts` fails
+  the build on both (a class with no rule in the built sheet, that pair inside one `className`),
+  because a missing utility is invisible — the element simply renders unstyled. A model is
+  registered for the panel's generic CRUD through `agentizModelConfig`
+  (`lib/panel/modelConfigs.ts`), never `generateAdminizerModelConfig` directly: the generator
+  spreads a model's own `@AdminizerModel` metadata **after** `options.override`, so a model
+  declaring `navbar: { visible: true }` silently keeps its sidebar row, and a model registered
+  around the wrapper both reappears in the sidebar and is missing from «Админ → Модели данных»,
+  which is the section that replaced those rows. And an old screen address is a permanent **`302`**:
+  those links are in notifications sent months ago, in the text of comments a pipeline wrote and in
+  the `urls:` of help articles, so where each one leads now is one table (`lib/panel/legacyScreens.ts`)
+  and one answerer (`lib/panel/legacyRedirect.ts`). It is **unconditional** — the old modules are
+  gone, so "could not build the new address" cannot mean "render the old screen" any more: the
+  caller names a `fallback` route, which must be one of the parameterless `ROOT_ROUTES`
+  (`href` throws on a missing parameter, and a stale link would answer `500`). The redirect goes in
+  the **render** branch of the old route and never beside its `_method` branches — those are the
+  JSON API of the same screen, not addresses — and it is written as the handler's last statement,
+  `return legacyRedirect(req, res, '<fallback>')`, because `res.redirect()` answers `undefined` and
+  an `if (moved) return moved` once fell through into `Inertia.render` and killed the process on
+  `ERR_HTTP_HEADERS_SENT`. Somebody else's address is not in that table at all (`/workflows` and
+  `/workflow` are app-workflow's, `/model/AgentProject` is the panel's own CRUD form, which the
+  assistant and every picker open). While the port was running the same table carried a `ported`
+  switch — **one** boolean for both directions, because two would be a loop — and the lesson it
+  left is worth keeping for the next staged migration: a flag like that is verified **on**, since
+  while it is off the code behind it never runs, which is exactly how that `if (moved)` passed
+  review. What the panel shows as waiting for a person is not a further rule here but the same
+  `lib/inbox/` the phone reads (see the `InboxItem` bullet above): the sidebar badge, «Входящие»,
+  the overview and a task's card all count it, and a second implementation of "что меня ждёт" is
+  how a screen and a badge start disagreeing.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

@@ -20,7 +20,8 @@ session cookies.
 | ------ | ---------------- | ----------- | --------------------------------------------------- |
 | GET    | `/healthz`       | none        | Liveness probe.                                     |
 | POST   | `/auth/login`    | none        | `{ login, password }` → `{ token, expiresAt, user }`. |
-| GET    | `/auth/me`       | Bearer JWT  | The current user.                                   |
+| GET    | `/auth/me`       | Bearer JWT  | The current user, `expiresAt`, and a renewed `token` when one is due. |
+| POST   | `/auth/refresh`  | Bearer JWT  | Trades a live token for a fresh one → `{ token, expiresAt, user }`. |
 | GET    | `/projects`      | Bearer JWT  | Projects owned by the current user (secrets masked).|
 | GET    | `/projects/:id`  | Bearer JWT  | One owned project, or 404.                           |
 | GET    | `/runs`          | Bearer JWT  | Runs in flight across all owned projects, plus recent ones. |
@@ -60,6 +61,30 @@ diff `agentiz-diff-review`.
 The caller is a user id, not a loaded panel session, so there is no administrator bypass here —
 mobile scope is ownership plus membership, which is a subset of what the same person sees in the
 panel and never a superset.
+
+## Session lifetime
+
+A mobile session lasts `AGENTIZ_MOBILE_TOKEN_TTL_SEC` — a year by default. The phone cannot
+re-authenticate by itself, so an expiry always means a person retyping an admin password; the
+lifetime is set accordingly and kept from ever being reached.
+
+Two mechanics do that, and neither is in the token:
+
+* **Expiry is current policy, not the minted `exp`.** `verifyMobileToken` checks the signature with
+  `ignoreExpiration` and then compares `iat + AGENTIZ_MOBILE_TOKEN_TTL_SEC` itself. Raising the TTL
+  therefore reaches the phones that are already signed in, and lowering it actually ends the
+  sessions already out there — a check against the baked-in `exp` does neither. The `exp` claim is
+  still issued, because it is what a client reads; a token with no `iat` is treated as expired.
+* **Renewal rides along on every authenticated answer.** Past half its life, the token is replaced
+  and the fresh one comes back in `X-Agentiz-Token` (+ `X-Agentiz-Token-Expires`), and in the body
+  of `GET /auth/me` — which the app calls on every launch. Both headers are in the CORS
+  `exposedHeaders`, or a browser build would be the one client that never sees them. A renewal is
+  **not** a revocation: the previous token stays valid to its own expiry, so two requests in flight
+  cannot invalidate each other's credential. `POST /auth/refresh` is the same thing on demand.
+
+A client that reads none of this keeps working; it just runs out at the end of the year instead of
+never. The one thing it must do is treat **401 as "sign in again"** rather than as a failed request
+to retry — the token is gone for good at that point.
 
 ## Workers and subscription limits
 
@@ -328,7 +353,7 @@ leaving it to be discovered.
 | Variable                        | Default              | Meaning                                             |
 | ------------------------------- | -------------------- | --------------------------------------------------- |
 | `AGENTIZ_MOBILE_JWT_SECRET`     | `process.env.SECRET` | HS256 signing secret for mobile tokens.             |
-| `AGENTIZ_MOBILE_TOKEN_TTL_SEC`  | `2592000` (30 days)  | Token lifetime in seconds.                          |
+| `AGENTIZ_MOBILE_TOKEN_TTL_SEC`  | `31536000` (a year)  | Session lifetime in seconds. Applied as current policy, so changing it also moves the expiry of tokens already issued (see «Срок жизни сессии» below). |
 | `PUSH_PROVIDER`                 | `firebase`           | `firebase` (send to FCM directly) or `gateway` (forward to a push gateway). |
 | `AGENTIZ_FCM_SERVICE_ACCOUNT`   | —                    | Firebase service-account JSON, inline or a path. Enables FCM push. Unused with `PUSH_PROVIDER=gateway`. |
 | `PUSH_GATEWAY_URL`              | —                    | Base URL of the push gateway, e.g. `http://push-gateway:3000`. |

@@ -2,8 +2,27 @@ import jwt from 'jsonwebtoken';
 import { timingSafeEqual } from 'crypto';
 import type { MobileTokenPayload } from '../types/mobileApi';
 
-/** Token lifetime. A phone stays logged in for a month unless an operator shortens it. */
-const TOKEN_TTL_SECONDS = Number(process.env.AGENTIZ_MOBILE_TOKEN_TTL_SEC ?? 60 * 60 * 24 * 30);
+/** A year. A phone is a signed-in device, not a browser tab: being asked to type an admin password
+ * again is the failure mode here, and the app has no way to re-authenticate on its own. */
+const DEFAULT_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 365;
+
+/**
+ * How long a mobile session lives, as **current server policy** rather than a number frozen into
+ * every token ever issued (see `verifyMobileToken`). Read per call so `AGENTIZ_MOBILE_TOKEN_TTL_SEC`
+ * takes effect on restart alone — and, because the policy is what decides expiry, applies to the
+ * tokens already sitting on people's phones.
+ */
+export function mobileTokenTtlSeconds(): number {
+  const raw = Number(process.env.AGENTIZ_MOBILE_TOKEN_TTL_SEC);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_TOKEN_TTL_SECONDS;
+}
+
+/**
+ * Past this share of its life a token is handed back renewed on the next authenticated request, so
+ * an app that is used at all never reaches the expiry at the end. Half is deliberately generous:
+ * renewing on every request would mint a new credential per screen and invalidate nothing.
+ */
+const RENEW_AFTER_RATIO = 0.5;
 
 /**
  * Signing secret for mobile tokens.
@@ -16,19 +35,55 @@ export function mobileJwtSecret(): string {
   return process.env.AGENTIZ_MOBILE_JWT_SECRET ?? process.env.SECRET ?? 'secret';
 }
 
-export function signMobileToken(payload: Omit<MobileTokenPayload, 'type'>): { token: string; expiresAt: Date } {
-  const token = jwt.sign({ ...payload, type: 'mobile' } satisfies MobileTokenPayload, mobileJwtSecret(), {
+export function signMobileToken(payload: Omit<MobileTokenPayload, 'type' | 'iat' | 'exp'>): { token: string; expiresAt: Date } {
+  const ttl = mobileTokenTtlSeconds();
+  const token = jwt.sign({ ...payload, type: 'mobile' }, mobileJwtSecret(), {
     algorithm: 'HS256',
-    expiresIn: TOKEN_TTL_SECONDS,
+    expiresIn: ttl,
   });
-  return { token, expiresAt: new Date(Date.now() + TOKEN_TTL_SECONDS * 1000) };
+  return { token, expiresAt: new Date(Date.now() + ttl * 1000) };
 }
 
-/** Verifies signature, expiry and that the token is one we minted for mobile. Throws otherwise. */
-export function verifyMobileToken(token: string): MobileTokenPayload {
-  const decoded = jwt.verify(token, mobileJwtSecret(), { algorithms: ['HS256'] }) as MobileTokenPayload;
+/**
+ * When the session behind `payload` runs out.
+ *
+ * Counted from the moment of issue (`iat`) plus the **current** TTL, which is why a token minted
+ * under a shorter policy stretches when the policy grows and — the half that matters for security —
+ * dies early when an operator shortens it. A token with no `iat` (nothing we mint lacks one) falls
+ * back to its own `exp`, and with neither it is treated as already expired rather than as eternal.
+ */
+export function mobileTokenExpiresAt(payload: MobileTokenPayload): Date {
+  if (typeof payload.iat === 'number') return new Date((payload.iat + mobileTokenTtlSeconds()) * 1000);
+  if (typeof payload.exp === 'number') return new Date(payload.exp * 1000);
+  return new Date(0);
+}
+
+/** True once the token is far enough through its life that the caller should be handed a fresh one. */
+export function mobileTokenNeedsRenewal(payload: MobileTokenPayload, now = new Date()): boolean {
+  if (typeof payload.iat !== 'number') return true;
+  const ttl = mobileTokenTtlSeconds();
+  return now.getTime() >= (payload.iat + ttl * RENEW_AFTER_RATIO) * 1000;
+}
+
+/**
+ * Verifies signature, expiry and that the token is one we minted for mobile. Throws otherwise.
+ *
+ * `exp` is checked by us instead of by the library: the lifetime of a session is a property of the
+ * server today, not of the day the phone happened to sign in, so a deployment that raises
+ * `AGENTIZ_MOBILE_TOKEN_TTL_SEC` (or takes this module's longer default) keeps signed in the
+ * people who are already signed in, and one that lowers it logs out the long tail it means to log
+ * out. The `exp` claim is still minted, because it is what a client reads to know when to worry.
+ */
+export function verifyMobileToken(token: string, now = new Date()): MobileTokenPayload {
+  const decoded = jwt.verify(token, mobileJwtSecret(), {
+    algorithms: ['HS256'],
+    ignoreExpiration: true,
+  }) as MobileTokenPayload;
   if (!decoded || decoded.type !== 'mobile' || !decoded.sub) {
     throw new Error('Not a mobile token');
+  }
+  if (mobileTokenExpiresAt(decoded).getTime() <= now.getTime()) {
+    throw new Error('Mobile token expired');
   }
   return decoded;
 }
