@@ -25,16 +25,9 @@ import { AgentizWorkflowHost } from './host';
 import { AgentizWorkflowSpecProvider } from './specProvider';
 import { agentizWorkflowNodes, taskMatchNode, taskRunNode } from './nodes';
 import { AgentizWorkflowRunStore } from './runStore';
+import { workflowIdle } from './idle';
 import { forgetWorkflowEvents, useWorkflowEvents } from './events';
 
-/**
- * The engine walks a graph out of band; give it a moment before reading the run record.
- *
- * Generous on purpose. A flow now touches several tables per run (the run record, the task's
- * workflow ownership, an approval row), and 40 ms was enough only on an idle machine — under the
- * whole suite the same assertions started failing on timing rather than on behaviour.
- */
-const settled = () => new Promise((resolve) => setTimeout(resolve, 250));
 
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -93,6 +86,17 @@ describe('agentiz workflow nodes', () => {
   /** Ids of the AgentRun rows the mocked `runTask` produced, newest last. */
   const pipelineRuns: string[] = [];
 
+  /**
+   * The engine walks a graph out of band, and so does the trigger that started it — so a barrier,
+   * not a duration, is what separates an assertion from the thing it asserts (lib/workflow/idle.ts).
+   *
+   * What stood here was `setTimeout(250)`, already raised once from 40 ms because "40 ms was enough
+   * only on an idle machine". 250 ms was not enough either: under the whole suite this file dropped
+   * `AgentRun.findByPk` on a run that had not been created yet, and left the walk to collide with
+   * the next test's `sync({ force: true })`.
+   */
+  const settled = (): Promise<void> => workflowIdle(runStore);
+
   beforeAll(async () => {
     sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: Object.values(agentizModels) as any[] });
     for (const node of agentizWorkflowNodes) nodeRegistry.register(node);
@@ -146,6 +150,10 @@ describe('agentiz workflow nodes', () => {
   });
 
   afterEach(async () => {
+    // Drain before taking anything away: the next test's `sync({ force: true })` drops every table,
+    // so a walk still going here becomes an unhandled `no such table` there — attributed to
+    // whichever test happened to be running at the time.
+    await settled();
     forgetWorkflowEvents();
     workflowEngineHolder().detach();
     await engine.stop();

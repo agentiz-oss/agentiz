@@ -30,6 +30,7 @@ import { AgentizWorkflowHost } from './host';
 import { AgentizWorkflowSpecProvider } from './specProvider';
 import { agentizWorkflowNodes } from './nodes';
 import { AgentizWorkflowRunStore } from './runStore';
+import { workflowIdle } from './idle';
 import { forgetWorkflowEvents, useWorkflowEvents } from './events';
 
 /**
@@ -54,9 +55,6 @@ import { forgetWorkflowEvents, useWorkflowEvents } from './events';
  *   config; a spec saved before that must resolve its pipeline by tags and must not inherit the
  *   comment input's strict defaults.
  */
-
-/** The engine walks a graph out of band, and one round now touches half a dozen tables. */
-const settled = () => new Promise((resolve) => setTimeout(resolve, 250));
 
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -143,6 +141,18 @@ describe('human-in-the-loop: разработчик → тестировщик �
   /** What a phone would have received — the far end of ActivityService → activityNotifiers. */
   const delivered: ActivityEvent[] = [];
 
+  /**
+   * The engine walks a graph out of band, and so does the trigger that started it — so every
+   * assertion below is separated from the thing it asserts by work nobody awaits.
+   *
+   * `workflowIdle` is the barrier for exactly that (see lib/workflow/idle.ts). It replaced a fixed
+   * 250 ms sleep, which is a bet on how loaded the machine is and was lost whenever the whole suite
+   * ran: a round arrived after the assertion meant to cover it, its leftovers landed in the next
+   * test's freshly dropped schema, and this one file then failed four different ways depending on
+   * the run — including an unhandled `no such table` from a walk the previous test left going.
+   */
+  const settled = (): Promise<void> => workflowIdle(runStore);
+
   beforeAll(async () => {
     sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: Object.values(agentizModels) as any[] });
     for (const node of agentizWorkflowNodes) nodeRegistry.register(node);
@@ -201,6 +211,11 @@ describe('human-in-the-loop: разработчик → тестировщик �
   });
 
   afterEach(async () => {
+    // Drain **before** taking anything away. The next test's `sync({ force: true })` drops every
+    // table, so a round still walking here is an unhandled `no such table` there — and a launch of
+    // this test's counted into the next one's `launches`. Both were real, and neither was
+    // attributed to the test that caused them.
+    await settled();
     forgetWorkflowEvents();
     workflowEngineHolder().detach();
     await engine.stop();

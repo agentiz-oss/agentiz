@@ -15,8 +15,18 @@ import { AgentWorkflowSpec } from '../../models/AgentWorkflowSpec';
  * No `onChange`: the only writer is the engine itself, which rebinds after every write. Editing a
  * row in the database by hand therefore takes effect on the next restart, not immediately.
  */
+/**
+ * The provider id every flow stored by this layer carries.
+ *
+ * Named once because two places outside this class need it: the engine addresses a spec as
+ * (providerId, specId), and the panel's own workflow address
+ * (`/agentiz/projects/:slug/workflows/:workflowId`) has to hand the canvas that pair — the canvas
+ * reads both from the query string, which is its vocabulary, not ours.
+ */
+export const AGENTIZ_WORKFLOW_PROVIDER_ID = 'agentiz';
+
 export class AgentizWorkflowSpecProvider implements WorkflowSpecProvider {
-  readonly id = 'agentiz';
+  readonly id = AGENTIZ_WORKFLOW_PROVIDER_ID;
   readonly name = 'Agentiz';
 
   async listSpecs(): Promise<Array<Omit<WorkflowSpecRef, 'providerId'>>> {

@@ -1,4 +1,5 @@
 import type { AgentTask } from '../../models/AgentTask';
+import type { GitProviderType } from '../../types/agentiz';
 
 /**
  * The facts app-agentiz puts on the app-manager emitter so a workflow can react to them.
@@ -23,6 +24,35 @@ export const AGENTIZ_TASK_UPDATED = 'agentiz.task.updated';
  * (the `agentiz.task.trigger` node's second input), the same way `authorKind`/`maxRounds` do.
  */
 export const AGENTIZ_TASK_COMMENTED = 'agentiz.task.commented';
+
+/**
+ * Repository facts (`.ai-notes/repository-events-workflow-plan.md` §2): commits landed in a branch,
+ * a CI run finished.
+ *
+ * Provider-neutral and emitted from the core (`lib/workflow/repositoryEvents.ts`) whichever source
+ * observed them — the 15-minute poll or a webhook delivery — so a second platform contributes a
+ * reader, not a second event. The payload carries `projectId` because every node here filters by
+ * project; one repository linked to two projects therefore raises two events, one per active
+ * `AgentProjectRepository`.
+ */
+export const AGENTIZ_REPOSITORY_PUSHED = 'agentiz.repository.pushed';
+export const AGENTIZ_REPOSITORY_CI_RUN = 'agentiz.repository.ciRun';
+
+/**
+ * A package version of this repository was published — a container image tag, in practice.
+ *
+ * The one fact here with a **single** source, and deliberately so: the platform's hook is the only
+ * thing that reports it (GitHub's `package`), while the poll behind the other two reads the git
+ * API and knows nothing about registries. Reading a registry is a separate reader over the OCI
+ * Distribution API with a cursor of its own, and until that exists a missed delivery of this fact
+ * is lost rather than delayed — which is why there is no cursor for it here either: there is no
+ * second observer to keep quiet.
+ *
+ * No attribution: an image carries no branch, so `ownRunId`/`taskId` are absent by construction
+ * and a graph on this event guards itself with `skipIfFlowActive`/`maxRounds`, not with
+ * `ignoreOwnRuns`.
+ */
+export const AGENTIZ_REPOSITORY_PACKAGE = 'agentiz.repository.packagePublished';
 
 /** What a trigger node hands the graph as `msg.payload`. Flat on purpose: the nodes read paths. */
 export interface AgentizTaskEventPayload {
@@ -60,6 +90,85 @@ export interface AgentizTaskCommentedPayload extends AgentizTaskEventPayload {
   silent: boolean;
 }
 
+/** Which repository, in which project's copy of the event. Common to every repository fact. */
+export interface AgentizRepositoryIdentity {
+  projectId: string;
+  /** `AgentRepository.id` — the mirror row, the same id for every project the repository reaches. */
+  repositoryId: string;
+  /** `AgentProjectRepository.id` — the link this copy of the event travelled through. */
+  projectRepositoryId: string;
+  provider: GitProviderType;
+  pathWithNamespace: string;
+  webUrl: string | null;
+}
+
+/** The half of a *branch* fact (push, CI) that does not depend on which of the two it is. */
+export interface AgentizRepositoryEventPayload extends AgentizRepositoryIdentity {
+  branch: string;
+  /**
+   * The run that produced this, when the branch is one of ours (§6).
+   *
+   * Matched on `AgentRun.branch` rather than on the sha: a person pushing one more commit onto the
+   * agent's branch is still work that must not restart the flow that is already on it. The sha is
+   * carried beside it as a fact, so a graph that wants the stricter reading can compare itself.
+   */
+  ownRunId: string | null;
+  ownTaskId: string | null;
+  /**
+   * `ownTaskId` again, under the name every node downstream reads (`payloadOf` wants `taskId`).
+   *
+   * Absent for a push nobody's run made — and that is the normal case that `agentiz.task.create`
+   * exists for. Present, it is what lets `agentiz.task.comment` write a failed CI straight into the
+   * thread of the task whose run caused it, which is how the rework round closes through CI.
+   */
+  taskId?: string;
+}
+
+/** `agentiz.repository.pushed` — commits landed in a branch. */
+export interface AgentizRepositoryPushedPayload extends AgentizRepositoryEventPayload {
+  /** `null` = the branch is new; the commits are then those it does not share with the default one. */
+  beforeSha: string | null;
+  afterSha: string;
+  forced: boolean;
+  commits: Array<{ sha: string; message: string; author: string; url: string }>;
+  compareUrl: string | null;
+}
+
+/** `agentiz.repository.ciRun` — a CI run of this repository finished, with its outcome. */
+export interface AgentizRepositoryCiRunPayload extends AgentizRepositoryEventPayload {
+  headSha: string;
+  workflowName: string;
+  conclusion: string;
+  url: string;
+  externalRunId: string;
+}
+
+/**
+ * `agentiz.repository.packagePublished` — a package version appeared or moved.
+ *
+ * `tag`/`digest` are what a graph acts on and both may be empty: a package type that is not a
+ * container has no tag, and a platform that reports the version without its manifest digest gives
+ * none. Empty is passed on rather than guessed, and a filter naming a tag simply does not match.
+ */
+export interface AgentizRepositoryPackagePayload extends AgentizRepositoryIdentity {
+  packageName: string;
+  /** Lower case, the platform's own vocabulary: `container`, `npm`, `maven`, … */
+  packageType: string;
+  /** The owner the package hangs on — the org or user, not the repository. */
+  namespace: string;
+  /** `published` (a new version) or `updated` (the same version re-tagged or re-described). */
+  action: string;
+  /** The version as the platform names it; for a container that is usually the digest. */
+  version: string;
+  /** The image tag this version was published under, `''` when the platform reported none. */
+  tag: string;
+  /** `sha256:…`, `''` when the platform reported none. */
+  digest: string;
+  /** What you would `docker pull` — `ghcr.io/<ns>/<name>`, without the tag. */
+  packageUrl: string;
+  htmlUrl: string;
+}
+
 /**
  * Not extending app-manager's `AbstractEvent`: that class lives in `dist/lib/AsyncEventEmitter`
  * and is not re-exported from the package root, and reaching into a dependency's file layout for
@@ -87,7 +196,35 @@ export class EventAgentizTaskCommented {
   arguments = [Object];
 }
 
-export const agentizWorkflowEvents = [EventAgentizTaskCreated, EventAgentizTaskUpdated, EventAgentizTaskCommented];
+export class EventAgentizRepositoryPushed {
+  key = AGENTIZ_REPOSITORY_PUSHED;
+  name = 'Agentiz: в репозиторий пришли коммиты';
+  description = 'В ветку подключённого к проекту репозитория запушили коммиты';
+  arguments = [Object];
+}
+
+export class EventAgentizRepositoryCiRun {
+  key = AGENTIZ_REPOSITORY_CI_RUN;
+  name = 'Agentiz: завершился CI-прогон';
+  description = 'Прогон CI подключённого репозитория закончился — с исходом (успех, падение, отмена)';
+  arguments = [Object];
+}
+
+export class EventAgentizRepositoryPackage {
+  key = AGENTIZ_REPOSITORY_PACKAGE;
+  name = 'Agentiz: опубликован пакет репозитория';
+  description = 'В реестре появилась новая версия пакета (для контейнеров — новый тег образа)';
+  arguments = [Object];
+}
+
+export const agentizWorkflowEvents = [
+  EventAgentizTaskCreated,
+  EventAgentizTaskUpdated,
+  EventAgentizTaskCommented,
+  EventAgentizRepositoryPushed,
+  EventAgentizRepositoryCiRun,
+  EventAgentizRepositoryPackage,
+];
 
 interface EmitterLike {
   emit(eventKey: string, payload: unknown): void;

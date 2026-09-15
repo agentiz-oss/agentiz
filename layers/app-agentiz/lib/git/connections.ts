@@ -1,4 +1,5 @@
 import type { AgentGitConnection } from '../../models/AgentGitConnection';
+import type { AgentRepository } from '../../models/AgentRepository';
 import type { GitProviderType } from '../../types/agentiz';
 
 /**
@@ -19,6 +20,19 @@ export interface GitConnectionAuthority {
   syncRepositories(connection: AgentGitConnection): Promise<RepositorySyncResult>;
   /** Revoke the token upstream (best effort) and mark the connection locally. */
   disconnect?(connection: AgentGitConnection): Promise<void>;
+  /**
+   * Install or remove the webhook through which this repository's pushes and CI runs reach us.
+   *
+   * `desired` is simply "is this repository still linked to at least one project"; the core works
+   * that out (`lib/webhooks/repositoryWebhook.ts`) and the layer does the platform-shaped half —
+   * which endpoint, which events, which secret, and where the failure is written down.
+   *
+   * Optional, and its absence is a supported configuration rather than a gap: the repository is
+   * then watched by the periodic poll alone, which is the only thing a deployment without a public
+   * address can do anyway. So this must never throw for "нет публичного URL" or "у токена
+   * урезан скоуп" — degrade, record the reason on the repository, and let the poll carry it.
+   */
+  syncWebhook?(repository: AgentRepository, desired: boolean): Promise<void>;
 }
 
 export interface RepositorySyncResult {

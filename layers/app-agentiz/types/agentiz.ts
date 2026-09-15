@@ -31,6 +31,58 @@ export interface ProjectRepositoryConfig {
   defaultBranch?: string;
 }
 
+/**
+ * Where the two repository watchers left off (`AgentRepository.watchCursor`).
+ *
+ * One cursor per repository rather than per project link: the poll and the webhook are two sources
+ * of one fact, and it is the shared cursor that makes them one — what a delivered hook already
+ * advanced, the next poll sees as unchanged and stays silent about. A repository linked to two
+ * projects is therefore read from the platform once.
+ *
+ * An absent cursor means "never looked": the first pass only fills it and emits nothing, or every
+ * connected repository would raise its whole branch history and every finished CI run at once.
+ */
+export interface RepositoryWatchCursor {
+  /** branch name -> the head we last reported. A deleted branch is removed, never reported. */
+  branchHeads?: Record<string, string>;
+  /** Highest CI run id already reported; runs are emitted in ascending id after it. */
+  lastCiRunId?: number | null;
+  checkedAt?: string;
+}
+
+/**
+ * The webhook this repository is watched through, when one could be installed
+ * (`AgentRepository.webhook`).
+ *
+ * One hook per repository, not per project link, for the same reason the cursor is: the delivery is
+ * one, the fan-out over projects happens here. `secret` never leaves the server — it is what the
+ * signature of an incoming delivery is checked against, and every read path masks it.
+ *
+ * `lastError` is the whole point of the row being visible: a connection whose scope was trimmed, or
+ * a server GitHub cannot reach, must degrade to the poll and *say so*, rather than look installed.
+ */
+export interface RepositoryWebhookState {
+  /** Numeric hook id at the platform, as a string — GitHub numbers hooks, GitLab numbers them too. */
+  hookId?: string | null;
+  /** The webhook endpoint row (app-agentiz-webhooks) this repository's deliveries arrive on. */
+  endpointId?: string | null;
+  url?: string | null;
+  secret?: string | null;
+  installedAt?: string | null;
+  /**
+   * The event names the hook was installed with.
+   *
+   * Stored so that adding a fact to the watched set upgrades hooks that already exist: without it
+   * the reconciler's "already installed at this URL" fast path is indistinguishable from "already
+   * installed with the right events", and every repository linked before the change would keep
+   * delivering the old set forever. Absent = installed before this field, i.e. stale by definition.
+   */
+  events?: string[] | null;
+  lastDeliveryAt?: string | null;
+  /** Why the hook is not installed (or stopped working). `null` = it is fine. */
+  lastError?: string | null;
+}
+
 /** Internal lifecycle of a synced tracker task, independent from the tracker's own status field. */
 export type AgentTaskStatus =
   | 'new'

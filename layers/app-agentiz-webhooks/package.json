@@ -1,0 +1,11 @@
+{
+  "name": "@agentiz/app-agentiz-webhooks",
+  "appId": "app-agentiz-webhooks",
+  "appName": "App Agentiz Webhooks",
+  "version": "1.0.0",
+  "description": "Receives inbound webhook deliveries on a public endpoint, checks the sender, journals every delivery and hands the body to whichever mapper understands that sender's format.",
+  "main": "index.ts",
+  "appDependencies": {
+    "app-agentiz": "*"
+  }
+}

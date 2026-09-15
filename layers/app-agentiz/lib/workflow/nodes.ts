@@ -14,11 +14,18 @@ import { AgentPipelineService } from '../../services/AgentPipelineService';
 import { AgentTaskService } from '../../services/AgentTaskService';
 import { ApprovalService } from '../../services/ApprovalService';
 import { PROJECT_TOKENS } from '../access/tokens';
+import { trackDetachedWork } from '../detachedWork';
 import type { AgentRunTrigger, AgentTaskStatus } from '../../types/agentiz';
 import {
+  AGENTIZ_REPOSITORY_CI_RUN,
+  AGENTIZ_REPOSITORY_PACKAGE,
+  AGENTIZ_REPOSITORY_PUSHED,
   AGENTIZ_TASK_COMMENTED,
   AGENTIZ_TASK_CREATED,
   AGENTIZ_TASK_UPDATED,
+  type AgentizRepositoryCiRunPayload,
+  type AgentizRepositoryPackagePayload,
+  type AgentizRepositoryPushedPayload,
   type AgentizTaskCommentedPayload,
   type AgentizTaskEventPayload,
 } from './events';
@@ -27,6 +34,7 @@ import {
   approvalDocs,
   pipelineDocs,
   taskCommentDocs,
+  repositoryTriggerDocs,
   taskCreateDocs,
   taskMatchDocs,
   taskRunDocs,
@@ -253,8 +261,10 @@ export const taskEventTriggerNode: NodeTypeDefinition = {
         }
 
         // The emit is synchronous inside whoever wrote the task/comment: decide out of band and
-        // return immediately, exactly as the single-filter version did.
-        void (async () => {
+        // return immediately, exactly as the single-filter version did. Tracked, because a decision
+        // nobody can wait for is indistinguishable from a decision that has not been taken — see
+        // lib/detachedWork.ts.
+        void trackDetachedWork((async () => {
           if (skipIfFlowActive || maxRounds > 0) {
             const task = await AgentTask.findByPk(payload.taskId);
             if (!task) return;
@@ -283,7 +293,7 @@ export const taskEventTriggerNode: NodeTypeDefinition = {
             }
           }
           await ctx.fire({ payload });
-        })().catch((error) => {
+        })()).catch((error) => {
           console.error(`[AppAgentiz] workflow trigger ${ctx.listenerKey} failed to start:`, error);
         });
       });
@@ -292,6 +302,190 @@ export const taskEventTriggerNode: NodeTypeDefinition = {
     unbind(ctx: TriggerBindingContext): void {
       boundTaskTriggers.get(ctx.listenerKey)?.();
       boundTaskTriggers.delete(ctx.listenerKey);
+    },
+  },
+};
+
+
+// ---------------------------------------------------------------------------
+// trigger: something happened in a repository
+// ---------------------------------------------------------------------------
+
+/** Same idempotence contract as `boundTaskTriggers`, and for the same double-rebind on startup. */
+const boundRepositoryTriggers = new Map<string, () => void>();
+
+/**
+ * `main`, `release/*`, `feature/**` — the whole matching language of the `branches` field.
+ *
+ * Deliberately globs and not regular expressions: the field is filled in by whoever draws the
+ * graph, a mistyped regex either throws or matches everything, and neither failure is visible in a
+ * canvas. `*` stops at a slash so that `release/*` does not quietly swallow `release/a/b`; `**`
+ * is the one that crosses them.
+ */
+function branchMatches(branch: string, masks: string[]): boolean {
+  if (masks.length === 0) return true;
+  return masks.some((mask) => {
+    const pattern = mask
+      .split('**').map((part) => part.split('*').map((chunk) => chunk.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*'))
+      .join('.*');
+    return new RegExp(`^${pattern}$`).test(branch);
+  });
+}
+
+/**
+ * Whether events produced by our own runs are skipped, when the node does not say.
+ *
+ * The two events want opposite answers and that asymmetry is the point (plan §6). A **push** made
+ * by a run is how a flow feeds itself — agent pushes, trigger fires, pipeline runs, agent pushes —
+ * so it is skipped unless somebody deliberately asks for it. A **CI run** on our own branch is the
+ * opposite: it is the whole reason the CI event exists, because "сборка нашей ветки упала" is what
+ * closes the rework round through the task's thread.
+ *
+ * Because it depends on `event`, the schema carries no `default` — the canvas would then write one
+ * value into both. Resolved in `bind()` instead, exactly as `triggerFilters` does for comments.
+ */
+function defaultIgnoreOwnRuns(eventKey: string): boolean {
+  return eventKey !== AGENTIZ_REPOSITORY_CI_RUN;
+}
+
+/**
+ * `ghcr.io/acme/api`, `*-worker`, `api, web` — the `packageName`/`tag` fields of the package event.
+ *
+ * The same glob language as `branches` minus the slash rule: an image tag has no path structure,
+ * so `*` here crosses everything and `v1.*` means what it looks like. Matching is case-insensitive
+ * because a registry lower-cases image names while a person types them as they please.
+ */
+function globMatches(value: string, masks: string[]): boolean {
+  if (masks.length === 0) return true;
+  const subject = value.toLowerCase();
+  return masks.some((mask) => {
+    const pattern = mask.toLowerCase().split('*')
+      .map((chunk) => chunk.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*');
+    return new RegExp(`^${pattern}$`).test(subject);
+  });
+}
+
+export const repositoryEventTriggerNode: NodeTypeDefinition = {
+  type: 'agentiz.repository.trigger',
+  name: 'Событие репозитория',
+  description: 'Срабатывает на коммиты в ветке, завершившийся CI-прогон или опубликованный пакет',
+  docs: repositoryTriggerDocs,
+  category: 'Agentiz',
+  kind: 'trigger',
+  ports: { inputs: 0, outputs: ['out'] },
+  // The generated form can only offer a free-text repository id; the picker that turns that into a
+  // click is a separate bundle, and the node works identically without it.
+  ui: { module: '/dashboard/modules/AgentizRepositoryTriggerForm.js' },
+  configSchema: {
+    type: 'object',
+    properties: {
+      event: {
+        title: 'Событие',
+        description: 'Что слушать: пуш коммитов или завершение CI-прогона',
+        enum: [AGENTIZ_REPOSITORY_PUSHED, AGENTIZ_REPOSITORY_CI_RUN, AGENTIZ_REPOSITORY_PACKAGE],
+        default: AGENTIZ_REPOSITORY_PUSHED,
+      },
+      projectId: {
+        type: 'string',
+        title: 'Проект (id)',
+        description: 'Пусто = любой проект, к которому подключён репозиторий',
+      },
+      repositoryId: {
+        type: 'string',
+        title: 'Репозиторий (id)',
+        description: 'AgentRepository.id. Пусто = любой репозиторий проекта',
+      },
+      branches: {
+        type: 'string',
+        title: 'Ветки',
+        description: 'Маски через запятую: main, release/*. Пусто = любая ветка',
+      },
+      conclusion: {
+        type: 'string',
+        title: 'Исход CI',
+        description:
+          'Только для события «завершился CI». Через запятую: success, failure, cancelled,'
+          + ' timed_out, skipped, neutral, action_required, stale. Пусто = любой исход',
+      },
+      workflowName: {
+        type: 'string',
+        title: 'Название CI-воркфлоу',
+        description: 'Только для события «завершился CI». Точное совпадение. Пусто = любое',
+      },
+      packageName: {
+        type: 'string',
+        title: 'Пакет',
+        description:
+          'Только для события «опубликован пакет». Маски через запятую: api, *-worker.'
+          + ' Пусто = любой пакет репозитория',
+      },
+      tag: {
+        type: 'string',
+        title: 'Тег образа',
+        description:
+          'Только для события «опубликован пакет». Маски через запятую: latest, v*.'
+          + ' Пусто = любой тег. Пакет без тега (не контейнер) под непустую маску не подходит',
+      },
+      ignoreOwnRuns: {
+        type: 'boolean',
+        title: 'Пропускать события собственных запусков',
+        description:
+          'Не поднимать флоу на том, что сделал наш же запуск. По умолчанию включено для пуша'
+          + ' (иначе флоу кормит сам себя) и выключено для CI (упавшая сборка нашей ветки — это'
+          + ' и есть повод для доработки)',
+      },
+    },
+  },
+  trigger: {
+    bind(ctx: TriggerBindingContext): void {
+      const eventKey = String(ctx.config.event ?? AGENTIZ_REPOSITORY_PUSHED);
+      const projectId = String(ctx.config.projectId ?? '').trim();
+      const repositoryId = String(ctx.config.repositoryId ?? '').trim();
+      const branches = stringList(ctx.config.branches);
+      const packageNames = stringList(ctx.config.packageName);
+      const tags = stringList(ctx.config.tag);
+      const conclusions = new Set(stringList(ctx.config.conclusion).map((item) => item.toLowerCase()));
+      const workflowName = String(ctx.config.workflowName ?? '').trim();
+      const ignoreOwnRuns = ctx.config.ignoreOwnRuns === undefined
+        ? defaultIgnoreOwnRuns(eventKey)
+        : ctx.config.ignoreOwnRuns !== false;
+
+      boundRepositoryTriggers.get(ctx.listenerKey)?.();
+      const off = ctx.eventBus.on(eventKey, (raw) => {
+        const payload = raw as
+          | (AgentizRepositoryPushedPayload & AgentizRepositoryCiRunPayload & AgentizRepositoryPackagePayload)
+          | undefined;
+        if (!payload || typeof payload.repositoryId !== 'string') return;
+        if (projectId && payload.projectId !== projectId) return;
+        if (repositoryId && payload.repositoryId !== repositoryId) return;
+        // A package has no branch, and `ignoreOwnRuns` has nothing to read on it either — there is
+        // no attribution for an image (see `publishRepositoryPackage`). Both checks are skipped
+        // rather than made to pass by accident, so the fields simply do not apply on that event.
+        if (eventKey === AGENTIZ_REPOSITORY_PACKAGE) {
+          if (!globMatches(String(payload.packageName ?? ''), packageNames)) return;
+          if (!globMatches(String(payload.tag ?? ''), tags)) return;
+        } else {
+          if (!branchMatches(String(payload.branch ?? ''), branches)) return;
+          if (ignoreOwnRuns && payload.ownRunId) return;
+        }
+        if (eventKey === AGENTIZ_REPOSITORY_CI_RUN) {
+          if (conclusions.size > 0 && !conclusions.has(String(payload.conclusion ?? '').toLowerCase())) return;
+          if (workflowName && payload.workflowName !== workflowName) return;
+        }
+
+        // The emit is synchronous inside whoever published the event (a poll pass or a webhook
+        // request); starting the flow out of band keeps a slow graph from holding either up —
+        // tracked for the same reason as the task trigger above.
+        void trackDetachedWork(ctx.fire({ payload })).catch((error) => {
+          console.error(`[AppAgentiz] workflow trigger ${ctx.listenerKey} failed to start:`, error);
+        });
+      });
+      boundRepositoryTriggers.set(ctx.listenerKey, off);
+    },
+    unbind(ctx: TriggerBindingContext): void {
+      boundRepositoryTriggers.get(ctx.listenerKey)?.();
+      boundRepositoryTriggers.delete(ctx.listenerKey);
     },
   },
 };
@@ -941,6 +1135,7 @@ export const taskCreateNode: NodeTypeDefinition = {
 
 export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   taskEventTriggerNode,
+  repositoryEventTriggerNode,
   taskMatchNode,
   taskRunNode,
   pipelineNode,

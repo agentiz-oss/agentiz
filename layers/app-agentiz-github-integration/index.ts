@@ -1,6 +1,7 @@
 import { AbstractApp, AppManager, Collection } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
-import { AdminizerRouteMiddleware, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
+import { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
+import { agentizModelConfig } from '../app-agentiz/lib/panel/modelConfigs';
 import cron, { type ScheduledTask } from 'node-cron';
 import { migrations } from './migrations';
 import { GithubOAuthApp } from './models/GithubOAuthApp';
@@ -8,7 +9,10 @@ import { GithubOAuthState } from './models/GithubOAuthState';
 import { GithubOAuthService, GithubOAuthError } from './services/GithubOAuthService';
 import { GithubRepositorySyncService, githubConnectionAuthority } from './services/GithubRepositorySyncService';
 import { GithubIssueSyncService } from './services/GithubIssueSyncService';
+import { GithubRepositoryEventService } from './services/GithubRepositoryEventService';
+import { githubRepositoryWebhookMapper } from './services/GithubWebhookService';
 import { maskModelForUI, restoreMaskedSecrets } from './lib/secrets';
+import { githubProviderPanel } from './lib/panel';
 import { DEFAULT_GITHUB_BASE_URL, DEFAULT_GITHUB_SCOPES } from './types/github';
 import { GitSyncService } from '../app-agentiz/services/GitSyncService';
 import { guardGlobal } from '../app-agentiz/lib/access/panelGuard';
@@ -17,6 +21,7 @@ import {
   registerGitConnectionAuthority,
   unregisterGitConnectionAuthority,
 } from '../app-agentiz/lib/git';
+import { legacyRedirect } from '../app-agentiz/lib/panel/legacyRedirect';
 
 const APP_ID = 'app-agentiz-github-integration';
 /** Route under the Adminizer prefix, e.g. /dashboard/agentiz-github. */
@@ -79,6 +84,23 @@ export class AppAgentizGithubIntegration extends AbstractApp {
 
   @Collection
   models: any[] = [GithubOAuthApp, GithubOAuthState];
+
+  /**
+   * How a GitHub delivery is decoded. Contributed as data through app-agentiz's `webhookMappers`
+   * collection, so this layer needs no import of the layer that actually serves the URL — and with
+   * that layer absent the mapper is simply never asked for anything, while the poll carries on.
+   */
+  @Collection
+  webhookMappers: any[] = [githubRepositoryWebhookMapper];
+
+  /**
+   * How GitHub reads on the shared «Git-провайдеры» screen: the name, the OAuth application form,
+   * where such an application is created, the scopes. Data, not a module — the screen itself lives
+   * in app-agentiz, which must not import this layer. Absent layer ⇒ no card, while the
+   * connections it authorized stay visible, because those are core rows.
+   */
+  @Collection
+  gitProviderPanels: any[] = [githubProviderPanel];
 
   // No `gitProviders` entry: app-agentiz ships the GitHub adapter itself (githubProviderAdapter),
   // because GitHub is also usable with a plain personal access token and no layer at all.
@@ -149,12 +171,9 @@ export class AppAgentizGithubIntegration extends AbstractApp {
           });
         }
 
-        return req.Inertia.render({
-          component: 'module',
-          props: {
-            moduleComponent: '/dashboard/modules/AgentizGithub.js',
-          },
-        });
+        // This layer's own page is gone: «Git-провайдеры» is one screen in the core, and what
+        // this layer contributes to it is a `gitProviderPanels` descriptor, not markup.
+        return legacyRedirect(req, res, 'integrations.git');
       },
     },
     {
@@ -238,7 +257,7 @@ export class AppAgentizGithubIntegration extends AbstractApp {
   }
 
   async mount(): Promise<void> {
-    const configs = [generateAdminizerModelConfig(GithubOAuthApp)].map((item) => ({ appId: this.appId, item }));
+    const configs = [agentizModelConfig(GithubOAuthApp)].map((item) => ({ appId: this.appId, item }));
     await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 
     // The one thing the core cannot do with a GitHub connection by itself: renew its token and
@@ -251,6 +270,11 @@ export class AppAgentizGithubIntegration extends AbstractApp {
         void (async () => {
           await GithubRepositorySyncService.syncAllActiveConnections();
           await GithubIssueSyncService.syncAll();
+          // Last, and deliberately after the repository sync: that pass is what refreshes
+          // `AgentRepository.lastActivityAt` from GitHub's `pushed_at`, and the poller uses it to
+          // skip repositories nothing happened in — so on a quiet tick this costs no API calls at
+          // all. It is the safety net behind the webhooks, not the primary path (§3).
+          await GithubRepositoryEventService.pollAll();
         })().catch((error) => {
           console.error(`[${APP_ID}] scheduled sync failed:`, error);
         });

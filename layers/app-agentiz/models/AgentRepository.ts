@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentGitConnection } from './AgentGitConnection';
 import { AgentProjectRepository } from './AgentProjectRepository';
-import type { GitProviderType } from '../types/agentiz';
+import type { GitProviderType, RepositoryWatchCursor, RepositoryWebhookState } from '../types/agentiz';
 
 /**
  * Local mirror of a repository reachable through a connection, refreshed by the provider layer so
@@ -100,6 +100,35 @@ export class AgentRepository extends Model<
   @AdminizerField({ title: 'Raw payload', type: 'jsoneditor', views: { list: false, add: false, edit: false } })
   @Column({ type: DataType.JSONB, allowNull: true })
   declare raw: Record<string, unknown> | null;
+
+  /**
+   * Where the repository watcher left off — branch heads and the last CI run reported.
+   *
+   * Shared by both sources of a repository event (the poll and the webhook), which is what keeps
+   * them from reporting the same push twice; see `RepositoryWatchCursor`. Read-only in the panel:
+   * editing it by hand means either replaying history or silently skipping it.
+   */
+  @AdminizerField({ title: 'Watch cursor', type: 'jsoneditor', views: { list: false, add: false, edit: false } })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare watchCursor: RepositoryWatchCursor | null;
+
+  /**
+   * The installed webhook, or the reason there is none.
+   *
+   * Never rendered from this column directly — it holds the delivery secret we issued to the
+   * platform, so every surface goes through `maskRepositoryWebhook` (lib/webhooks). Hidden from
+   * the generic CRUD in all three views for the same reason `AgentGitConnection.secrets` is, and
+   * restricted to `admin` on top of that: a jsoneditor on this column would print the secret.
+   */
+  @AdminizerField({
+    title: 'Webhook',
+    type: 'jsoneditor',
+    tooltip: '{ hookId, endpointId, url, secret, lastError } — секрет маскируется на всех экранах',
+    views: { list: false, add: false, edit: false },
+    groupsAccessRights: ['admin'],
+  })
+  @Column({ type: DataType.JSONB, allowNull: true })
+  declare webhook: RepositoryWebhookState | null;
 
   @Column({ type: DataType.DATE, defaultValue: DataType.NOW })
   declare createdAt: CreationOptional<Date>;

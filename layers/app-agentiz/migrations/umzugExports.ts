@@ -115,6 +115,10 @@ import {
   down as downSubscriptionKeepWindowsOpen,
 } from './umzug/1788001500000_subscription_keep_windows_open';
 import {
+  up as upRepositoryWatch,
+  down as downRepositoryWatch,
+} from './umzug/1788001700000_repository_watch';
+import {
   up as upHarnessLimitChangeAt,
   down as downHarnessLimitChangeAt,
 } from './umzug/1788001600000_harness_limit_change_at';
@@ -352,6 +356,12 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001600000,
     up: upHarnessLimitChangeAt,
     down: downHarnessLimitChangeAt,
+  },
+  {
+    name: 'repository_watch',
+    timestamp: 1788001700000,
+    up: upRepositoryWatch,
+    down: downRepositoryWatch,
   },
   {
     name: 'harness_auth_state',

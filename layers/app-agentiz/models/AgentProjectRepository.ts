@@ -1,10 +1,14 @@
-import { Table, Column, Model, DataType, BelongsTo, ForeignKey, Default } from 'sequelize-typescript';
+import {
+  Table, Column, Model, DataType, BelongsTo, ForeignKey, Default,
+  AfterCreate, AfterUpdate, AfterDestroy,
+} from 'sequelize-typescript';
 import { InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { AdminizerField, AdminizerModel } from '@nodeknit/app-adminizer';
 import { AgentProject } from './AgentProject';
 import { AgentGitConnection } from './AgentGitConnection';
 import { AgentRepository } from './AgentRepository';
+import { scheduleRepositoryWebhookSync } from '../lib/webhooks/repositoryWebhook';
 import type { GitProviderType, ProjectRepositoryConfig, ProjectRepositoryRole } from '../types/agentiz';
 
 /**
@@ -120,6 +124,39 @@ export class AgentProjectRepository extends Model<
 
   @BelongsTo(() => AgentRepository, 'repositoryId')
   declare repository: AgentRepository;
+
+  /**
+   * The webhook of the repository follows the links, and follows them from **here**.
+   *
+   * A link is written by four different callers (the panel, MCP, Adminizer's generic CRUD and a
+   * provider layer's own bookkeeping); a model hook is the only place all four pass through, which
+   * is the same argument that put the task events on `AgentTask`'s hooks. Fire-and-forget on
+   * purpose: this runs inside whatever transaction linked the repository, and a platform being
+   * slow or unreachable must not be able to fail that write.
+   *
+   * `@AfterUpdate` fires for every save, not only for `isActive` — the reconciliation is a cheap
+   * "is it linked at all" count, and it is what quietly repairs a repository whose hook fell off.
+   *
+   * **After the commit, never inside it.** These hooks run within whatever transaction wrote the
+   * link, and the work here is a network round trip to a platform plus writes of its own. Started
+   * inline it would either hold the transaction open for the length of a GitHub call, or — on
+   * sqlite, which serializes one connection — run its queries *beside* the open transaction and
+   * break it outright ("cannot commit - no transaction is active"). `afterCommit` is also the only
+   * point at which the count this reconciliation is based on is the truth: inside the transaction
+   * the row may still be rolled back.
+   */
+  @AfterCreate
+  @AfterUpdate
+  @AfterDestroy
+  static syncRepositoryWebhook(link: AgentProjectRepository, options?: { transaction?: any }): void {
+    const repositoryId = link.repositoryId;
+    const transaction = options?.transaction;
+    if (transaction && typeof transaction.afterCommit === 'function') {
+      transaction.afterCommit(() => scheduleRepositoryWebhookSync(repositoryId));
+      return;
+    }
+    scheduleRepositoryWebhookSync(repositoryId);
+  }
 
   /**
    * Keeps the "one primary per project" invariant. Called after any write that may have set it;

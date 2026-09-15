@@ -20,22 +20,51 @@ import { ApprovalService } from '../../services/ApprovalService';
  * use that node silently loses the invariant.
  */
 export class AgentizWorkflowRunStore implements WorkflowRunStore {
+  /**
+   * Which runs this process is walking **right now** — see `walksInFlight()`.
+   *
+   * Per instance rather than global: a store is the state of one engine, and an engine that was
+   * thrown away must not go on answering for the one that replaced it.
+   */
+  private readonly walking = new Set<string>();
+
+  /**
+   * How many graph walks this process has in flight.
+   *
+   * The engine walks a graph **detached** — `start()` hands the walk to `void this.advance(...)` so
+   * that a trigger's `fire()` does not wait for the whole flow — and the walk is therefore
+   * unnameable from the outside, exactly like the detached work in `lib/detachedWork.ts`. This
+   * store is the one place that sees every transition of it (that is already why the task
+   * bookkeeping lives here), so it is also the only place that can say whether the walk is still
+   * going: a run enters `running` when it starts and leaves it when it parks, finishes or fails.
+   *
+   * Counted around the whole store call, not just the write, because the terminal call is where
+   * the task is released and the approvals are cancelled — work that is part of the walk.
+   */
+  walksInFlight(): number {
+    return this.walking.size;
+  }
+
   async create(run: WorkflowRunRecord): Promise<void> {
-    await AgentWorkflowRun.create(toRow(run));
-    await claimTask(run);
+    return this.walk(run, async () => {
+      await AgentWorkflowRun.create(toRow(run));
+      await claimTask(run);
+    });
   }
 
   async update(run: WorkflowRunRecord): Promise<void> {
-    // upsert, not update: a store installed mid-flight (or a run created before it arrived) would
-    // otherwise silently write nothing and the run would be invisible to `completeExternal`.
-    await AgentWorkflowRun.upsert(toRow(run));
-    // Only the terminal transition touches Agentiz's own bookkeeping. Doing it on *every*
-    // transition would be both wasteful — the store is written on each node — and wrong: the
-    // `agentiz.task.comment` node deliberately releases the task before writing the remark that
-    // starts the next round, and a per-transition sync would immediately claim it back.
-    if (!isTerminalWorkflowStatus(run.status)) return;
-    await releaseTask(run);
-    await releaseApprovals(run);
+    return this.walk(run, async () => {
+      // upsert, not update: a store installed mid-flight (or a run created before it arrived) would
+      // otherwise silently write nothing and the run would be invisible to `completeExternal`.
+      await AgentWorkflowRun.upsert(toRow(run));
+      // Only the terminal transition touches Agentiz's own bookkeeping. Doing it on *every*
+      // transition would be both wasteful — the store is written on each node — and wrong: the
+      // `agentiz.task.comment` node deliberately releases the task before writing the remark that
+      // starts the next round, and a per-transition sync would immediately claim it back.
+      if (!isTerminalWorkflowStatus(run.status)) return;
+      await releaseTask(run);
+      await releaseApprovals(run);
+    });
   }
 
   async get(runId: string): Promise<WorkflowRunRecord | null> {
@@ -63,6 +92,27 @@ export class AgentizWorkflowRunStore implements WorkflowRunStore {
       limit,
     });
     return rows.map(toRecord);
+  }
+
+  /**
+   * Write one transition, holding the walk open across it.
+   *
+   * The mark is taken **before** the write and dropped **after** the whole call, which is what
+   * makes the bracket seamless: the engine calls `create()` and then reaches its first `get()`
+   * without yielding to the event loop, so there is no instant in which a walk that is running
+   * looks finished.
+   */
+  private async walk(run: WorkflowRunRecord, write: () => Promise<void>): Promise<void> {
+    if (run.status === 'running') this.walking.add(run.id);
+    try {
+      await write();
+    } catch (error) {
+      // A transition that could not be written is the end of the walk as far as anybody watching is
+      // concerned: the engine has nothing left to continue from.
+      this.walking.delete(run.id);
+      throw error;
+    }
+    if (run.status !== 'running') this.walking.delete(run.id);
   }
 }
 

@@ -2,6 +2,7 @@ import { AgentGitConnection } from '../../app-agentiz/models/AgentGitConnection'
 import { AgentRepository } from '../../app-agentiz/models/AgentRepository';
 import type { GitConnectionAuthority, RepositorySyncResult } from '../../app-agentiz/lib/git';
 import { GithubOAuthService } from './GithubOAuthService';
+import { GithubWebhookService } from './GithubWebhookService';
 import { splitFullName } from '../types/github';
 
 export type { RepositorySyncResult };
@@ -108,4 +109,8 @@ export const githubConnectionAuthority: GitConnectionAuthority = {
   disconnect: async (connection) => {
     await GithubOAuthService.disconnect(connection.id);
   },
+  // Installing the repository webhook is the one thing here that needs both an API dialect and a
+  // token, so it belongs on the authority beside the other two. The core decides *whether* a hook
+  // should exist (any active project link) and never learns how one is made.
+  syncWebhook: (repository, desired) => GithubWebhookService.syncWebhook(repository, desired),
 };
