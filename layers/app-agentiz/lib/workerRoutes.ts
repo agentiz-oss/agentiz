@@ -1,26 +1,16 @@
 import type { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
-import { AgentHarnessSubscription } from '../models/AgentHarnessSubscription';
 import { AgentWorkerApiService } from '../services/AgentWorkerApiService';
 import { AgentWorkerRegistryService, WorkerRegistryError } from '../services/AgentWorkerRegistryService';
 import { AgentHarnessAdminService, HarnessAdminError } from '../services/AgentHarnessAdminService';
-import { subscriptionView, usageHistory, workerHarnessView } from './capacityViews';
-import { WORKER_API_BASE } from './workerApiRouter';
+import { subscriptionView, usageHistory } from './capacityViews';
+import { listWorkers, workerApiUrl, workerCapacity } from './workerBoard';
 import { maskWorkerForUI } from './secrets';
 import { guardGlobal, requirePanelUser } from './access/panelGuard';
 import { GLOBAL_TOKENS } from './access/tokens';
+import { legacyRedirect } from './panel/legacyRedirect';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-/**
- * Base URL a worker should dial. Behind a proxy the request host is the internal one, so an
- * explicitly configured public origin always wins — the panel pastes this into a copyable command.
- */
-function workerApiUrl(req: any): string {
-  const configured = process.env.AGENTIZ_PUBLIC_URL?.replace(/\/+$/, '');
-  const origin = configured || `${req.protocol}://${req.get('host')}`;
-  return `${origin}${WORKER_API_BASE}`;
 }
 
 /**
@@ -48,9 +38,10 @@ export const workerRoutes: AdminizerRouteMiddleware[] = [
       if (!requirePanelUser(req, res)) return undefined;
 
       if (method === 'getWorkers') {
-        const workers = await AgentWorkerRegistryService.list();
+        // The same assembly `lib/panel/render.ts` paints the first frame with, so what a poll
+        // replaces is shaped exactly like what the page was opened with.
         return res.json({
-          data: workers.map(maskWorkerForUI),
+          data: await listWorkers(),
           // The panel prints a ready-to-run register command, so it needs the URL the worker will
           // actually dial — the public origin when one is configured.
           meta: {
@@ -63,15 +54,7 @@ export const workerRoutes: AdminizerRouteMiddleware[] = [
       // The "Harness и лимиты" block: bindings + subscription state per worker, and the
       // cross-worker subscription list for the separate section on the same page.
       if (method === 'getCapacity') {
-        const [workers, subscriptions] = await Promise.all([
-          AgentWorkerRegistryService.list(),
-          AgentHarnessSubscription.findAll({ order: [['name', 'ASC']] }),
-        ]);
-        const harnesses: Record<string, unknown> = {};
-        for (const worker of workers) {
-          harnesses[worker.id] = await workerHarnessView(worker);
-        }
-        return res.json({ data: { harnesses, subscriptions: subscriptions.map(subscriptionView) } });
+        return res.json({ data: await workerCapacity() });
       }
 
       // Sample series for the usage chart of one worker × harness.
@@ -84,10 +67,9 @@ export const workerRoutes: AdminizerRouteMiddleware[] = [
         return res.json({ data: await usageHistory({ workerId, harnessKey, from, limit: 1000 }) });
       }
 
-      return req.Inertia.render({
-        component: 'module',
-        props: { moduleComponent: '/dashboard/modules/AgentizWorkers.js' },
-      });
+      // The fleet screen, and «Обвязки и лимиты» with it — that half never had an address of its
+      // own and is a tab of the new one.
+      return legacyRedirect(req, res, 'workers');
     },
   },
   {

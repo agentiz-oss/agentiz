@@ -26,6 +26,9 @@ import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentApprovalRequest } from '../models/AgentApprovalRequest';
 import { ApprovalError, ApprovalService } from '../services/ApprovalService';
 import type { AgentRunExecutorOverride } from '../types/agentiz';
+import { legacyRedirect } from './panel/legacyRedirect';
+import { panelTaskInbox } from './panel/inboxPanel';
+import { taskViewStatuses } from './taskViews';
 
 /** Whoever is driving the admin panel — recorded as the author of manual changes. */
 function actorOf(req: any): { id: number | null; name: string } {
@@ -171,6 +174,10 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
           if (requested && !await guardProject(req, res, requested, PROJECT_TOKENS.read)) return undefined;
           const result = await AgentTaskService.list({
             projectId: requested || undefined,
+            // A board tab, which is several stored statuses at once («Ждут человека» is two).
+            // Absent — as it is in every request the old screen makes — leaves the query exactly
+            // as it was; `status` alone still works and still wins.
+            statuses: req.query.view ? taskViewStatuses(str(req.query.view)) : undefined,
             // No project asked for means "everything I can see", not "everything": the panel's
             // own generic CRUD is filtered by the access graph, but this endpoint reads Sequelize
             // directly and the graph never sees it.
@@ -191,14 +198,29 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
             limit: req.query.limit ? Number(req.query.limit) : undefined,
             offset: req.query.offset ? Number(req.query.offset) : undefined,
           });
-          return res.json({ data: result.items, meta: { total: result.total } });
+          // `statusCounts` is what the board writes beside every tab; an older screen reads only
+          // `total` and is unaffected by its arrival.
+          return res.json({ data: result.items, meta: { total: result.total, statusCounts: result.statusCounts } });
         }
 
         if (method === 'getTask') {
           const taskId = str(req.query.taskId);
           if (!taskId) return res.status(400).json({ message: 'taskId is required' });
-          if (!await guardTask(req, res, taskId, PROJECT_TOKENS.read)) return undefined;
-          return res.json({ data: await AgentTaskService.details(taskId) });
+          const task = await guardTask(req, res, taskId, PROJECT_TOKENS.read);
+          if (!task) return undefined;
+          const [details, project] = await Promise.all([
+            AgentTaskService.details(taskId),
+            AgentProject.findByPk(task.projectId),
+          ]);
+          return res.json({
+            data: {
+              ...details,
+              // The same rows the inbox and the phone show, narrowed to this task — see
+              // `lib/panel/inboxPanel.ts`. Computed from the live entities on every request, never
+              // from the activity journal, so an answered question leaves by itself.
+              actionRequired: await panelTaskInbox(req, task, project),
+            },
+          });
         }
 
         if (method === 'getTaskManagers') {
@@ -246,12 +268,10 @@ export const taskRoutes: AdminizerRouteMiddleware[] = [
           });
         }
 
-        return req.Inertia.render({
-          component: 'module',
-          props: {
-            moduleComponent: '/dashboard/modules/AgentizTasks.js',
-          },
-        });
+        // A task board belongs to a project now, and this address never carried one of its own
+        // beyond `?projectId=` — so the bare form lands on the project list, which is where the
+        // choice it silently made for you is now made explicitly.
+        return legacyRedirect(req, res, 'projects');
       } catch (error) {
         return errorResponse(res, error);
       }

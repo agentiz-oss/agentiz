@@ -1,0 +1,42 @@
+[
+  {
+    "kind": "question",
+    "activityType": "interaction.created",
+    "badge": "вопрос",
+    "dismissible": false,
+    "dismissedAt": null,
+    "notify": {
+      "typeLabel": "Агент задал вопрос",
+      "push": "on",
+      "dashboard": "on",
+      "scope": "builtin",
+      "mutedByScope": false,
+      "pipelineSpecId": null,
+      "label": "пуш включён по умолчанию"
+    },
+    "projectName": "Биллинг",
+    "taskId": "<taskId>",
+    "taskTitle": "Починить счётчик",
+    "priority": 0,
+    "interactionId": "<interactionId>",
+    "proposalId": null,
+    "approvalId": null,
+    "revision": null,
+    "url": null,
+    "expiresAt": null,
+    "explain": "Агент остановился посреди работы и ждёт ответа. Пока вы не ответите, запуск стоит и ничего не делает.",
+    "id": "<id>",
+    "headline": "Ставить ли зависимость?",
+    "facts": "Запуск на паузе · этап implement",
+    "projectId": "<projectId>",
+    "runId": "<runId>",
+    "waitingSince": "<date>",
+    "actions": [
+      {
+        "key": "answer",
+        "label": "Ответить",
+        "style": "primary"
+      }
+    ]
+  }
+]

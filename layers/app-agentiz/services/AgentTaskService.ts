@@ -9,7 +9,7 @@ import { AgentTaskComment } from '../models/AgentTaskComment';
 import { AgentTaskSource } from '../models/AgentTaskSource';
 import { AgentWorkflowRun } from '../models/AgentWorkflowRun';
 import { AgentApprovalRequest } from '../models/AgentApprovalRequest';
-import { buildRunOptions } from '../lib/runOptions';
+import { buildRunOptions, type RunOptionsView } from '../lib/runOptions';
 import {
   createTaskManager,
   getTaskManagerAdapter,
@@ -25,7 +25,8 @@ import { TaskSourceSyncService } from './TaskSourceSyncService';
 import { AgentPipelineService } from './AgentPipelineService';
 import type { AgentTaskCommentAuthorKind, AgentTaskPriority, AgentTaskStatus } from '../types/agentiz';
 
-const TASK_STATUSES: AgentTaskStatus[] = [
+/** Every stored task status, in lifecycle order — the vocabulary the filters and the edit form offer. */
+export const TASK_STATUSES: AgentTaskStatus[] = [
   'new',
   'queued',
   'running',
@@ -37,7 +38,7 @@ const TASK_STATUSES: AgentTaskStatus[] = [
   'ignored',
 ];
 
-const TASK_PRIORITIES: AgentTaskPriority[] = ['low', 'normal', 'high', 'urgent'];
+export const TASK_PRIORITIES: AgentTaskPriority[] = ['low', 'normal', 'high', 'urgent'];
 
 /** Statuses a run currently owns — changing them by hand would fight the pipeline. */
 const PIPELINE_OWNED = new Set<AgentTaskStatus>(['queued', 'running', 'waiting_input']);
@@ -52,6 +53,16 @@ export interface TaskListFilters {
    */
   projectIds?: string[];
   status?: string;
+  /**
+   * Several stored statuses at once — what a board tab means («Ждут человека» is two of them).
+   *
+   * Narrows the same column as `status` and is applied in SQL for the same reason the run board's
+   * filter is: the page is capped, so a tab filtered in the browser would answer «упавших нет»
+   * while the failure sits past the limit. Absent (and an empty array) means no condition at all,
+   * which is byte-identical to the query before this field existed. The vocabulary itself lives in
+   * `lib/taskViews.ts`, not here — this service only takes statuses.
+   */
+  statuses?: string[];
   priority?: string;
   sourceType?: string;
   assigneeId?: number | null;
@@ -110,22 +121,30 @@ export class AgentTaskService {
     };
   }
 
-  static async list(filters: TaskListFilters): Promise<{ items: unknown[]; total: number }> {
-    const where: Record<string, unknown> = {};
-    if (filters.projectId) where.projectId = filters.projectId;
-    else if (filters.projectIds) where.projectId = { [Op.in]: filters.projectIds };
-    if (filters.status) where.status = filters.status;
-    if (filters.priority) where.priority = filters.priority;
-    if (filters.sourceType) where.sourceType = filters.sourceType;
-    if (filters.assigneeId !== undefined) where.assigneeId = filters.assigneeId;
+  static async list(
+    filters: TaskListFilters,
+  ): Promise<{ items: unknown[]; total: number; statusCounts: Record<string, number> }> {
+    // Everything except the status condition, kept apart because the per-status tally below has to
+    // answer for the *other* tabs too: counted inside the current one, every tab but the open one
+    // would report zero.
+    const scope: Record<string, unknown> = {};
+    if (filters.projectId) scope.projectId = filters.projectId;
+    else if (filters.projectIds) scope.projectId = { [Op.in]: filters.projectIds };
+    if (filters.priority) scope.priority = filters.priority;
+    if (filters.sourceType) scope.sourceType = filters.sourceType;
+    if (filters.assigneeId !== undefined) scope.assigneeId = filters.assigneeId;
     if (filters.search) {
       const needle = `%${filters.search}%`;
-      where[Op.or as unknown as string] = [
+      scope[Op.or as unknown as string] = [
         { title: { [Op.like]: needle } },
         { description: { [Op.like]: needle } },
         { externalId: { [Op.like]: needle } },
       ];
     }
+
+    const where: Record<string, unknown> = { ...scope };
+    if (filters.status) where.status = filters.status;
+    else if (filters.statuses?.length) where.status = { [Op.in]: filters.statuses };
 
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
     const offset = Math.max(filters.offset ?? 0, 0);
@@ -145,9 +164,10 @@ export class AgentTaskService {
       ? rows.filter((task) => (task.tags ?? []).includes(filters.tag as string))
       : rows;
 
-    const [commentCounts, attachmentCounts] = await Promise.all([
+    const [commentCounts, attachmentCounts, statusCounts] = await Promise.all([
       this.commentCounts(filtered.map((t) => t.id)),
       this.attachmentCounts(filtered.map((t) => t.id)),
+      this.statusCounts(scope),
     ]);
 
     return {
@@ -162,7 +182,29 @@ export class AgentTaskService {
         attachmentCount: attachmentCounts.get(task.id) ?? 0,
       })),
       total: filters.tag ? filtered.length : count,
+      statusCounts,
     };
+  }
+
+  /**
+   * How many tasks each stored status holds inside the same scope — what the board writes beside
+   * every tab.
+   *
+   * Everything narrows it except the status itself and the `tag` filter: `tags` is a JSON column
+   * and is filtered over the loaded page (see above), so a tally computed in SQL could not honour
+   * it. That is the same limitation `total` already has under a tag filter, and the board does not
+   * offer one.
+   */
+  private static async statusCounts(scope: Record<string, unknown>): Promise<Record<string, number>> {
+    const rows = (await AgentTask.findAll({
+      attributes: ['status', [AgentTask.sequelize!.fn('COUNT', '*'), 'count']],
+      where: scope,
+      group: ['status'],
+      raw: true,
+    })) as unknown as Array<{ status: string; count: number | string }>;
+    const counts: Record<string, number> = {};
+    for (const row of rows) counts[row.status] = Number(row.count);
+    return counts;
   }
 
   private static async commentCounts(taskIds: string[]): Promise<Map<string, number>> {
@@ -202,7 +244,13 @@ export class AgentTaskService {
       AgentRun.findAll({ where: { taskId }, order: [['createdAt', 'DESC']], limit: 50 }),
       AgentTaskComment.findAll({ where: { taskId } }),
       task.sourceId ? AgentTaskSource.findByPk(task.sourceId) : Promise.resolve(null),
-      buildRunOptions(task),
+      // A project with no active pipeline spec is an ordinary state — a project that has just been
+      // created has none — and `buildRunOptions` answers it by throwing, because it resolves the
+      // spec a launch would use. Letting that reject here failed the **whole** payload, so a task
+      // in such a project could not be opened at all: no description, no thread, no files, just
+      // «No active pipeline spec for project …». The launch options are the one part that really
+      // is unavailable, so only they go missing.
+      buildRunOptions(task).catch((): RunOptionsView | null => null),
       listTaskAttachments(taskId),
       // "Покажи воркфлоу этой задачи" became a SQL question the day `taskId` moved out of the
       // engine's `msg` jsonb onto a column. It is also the visible form of the rounds counter: the
@@ -233,7 +281,7 @@ export class AgentTaskService {
       source: source ? { id: source.id, name: source.name, type: source.type, isActive: source.isActive } : null,
       // Kept under its old name for the panel, which reads only this list; everything a launch may
       // choose (model, thinking level, and what runs when nothing is chosen) is in `runOptions`.
-      manualExecutorOptions: runOptions.executors,
+      manualExecutorOptions: runOptions?.executors ?? [],
       runOptions,
       runs: runs.map((run) => run.toJSON()),
       latestRun: latestRun

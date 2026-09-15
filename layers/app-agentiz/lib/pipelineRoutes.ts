@@ -2,8 +2,11 @@ import type { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
 import { AgentRole } from '../models/AgentRole';
 import { PipelineSpec } from '../models/PipelineSpec';
 import { assertValidSpec, PipelineSpecError } from '../services/PipelineSpecResolver';
-import { guardProject, requirePanelUser } from './access/panelGuard';
+import { guardProject, panelActor, requestAccessCache, requirePanelUser } from './access/panelGuard';
+import { can } from './access/projectAccess';
 import { PROJECT_TOKENS } from './access/tokens';
+import { legacyRedirect } from './panel/legacyRedirect';
+import { pipelineBoard, pipelineRowPatch } from './panel/pipelinesPanel';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -45,10 +48,28 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
         });
       }
 
-      return req.Inertia.render({
-        component: 'module',
-        props: { moduleComponent: '/dashboard/modules/AgentizPipelines.js' },
-      });
+      // What `lib/panel/render.ts` paints the first frame with, so the reload after a write is
+      // shaped exactly like the page it replaces. Separate from `getPipelineConfiguration` above
+      // rather than folded into it: that answer is also read by the `agentiz.repository.trigger`
+      // node's config form and by the previous editor, and widening a payload two other screens
+      // pick fields out of is how they break with nothing failing.
+      if (method === 'getPipelineBoard') {
+        const projectId = str(req.query.projectId);
+        if (!await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
+        const specId = str(req.query.specId);
+        return res.json({
+          data: await pipelineBoard(projectId, {
+            // Reading the pipelines of a project is `project-read`; changing any of them is
+            // `project-configure`, so the flag only decides which controls the screen draws.
+            canConfigure: await can(panelActor(req), projectId, PROJECT_TOKENS.projectConfigure, requestAccessCache(req)),
+            specId: specId || undefined,
+          }),
+        });
+      }
+
+      // A spec belongs to a project and never moves between projects, so the bare address — which
+      // used to open a project picker — lands on the project list.
+      return legacyRedirect(req, res, 'projects');
     },
   },
   {
@@ -66,7 +87,17 @@ export const pipelineRoutes: AdminizerRouteMiddleware[] = [
           const pipelineSpec = await PipelineSpec.findByPk(specId);
           if (!pipelineSpec) return res.status(404).json({ message: 'Pipeline Spec not found' });
           if (!await guardProject(req, res, pipelineSpec.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
-          await pipelineSpec.update({ spec });
+          // The row's own columns (name, matchTags, isActive) travel beside the document, because
+          // they are the same edit to the person making it — but only the ones actually named in
+          // the body are written, so a caller sending just `{specId, spec}` (which is every call
+          // the previous editor made) updates exactly what it always did. `projectId` is not in
+          // that list: the model refuses to move a spec between projects.
+          const patch = pipelineRowPatch(req.body);
+          if (spec !== undefined) patch.spec = spec;
+          if (Object.keys(patch).length === 0) {
+            return res.status(400).json({ message: 'Nothing to update: send `spec`, `name`, `matchTags` or `isActive`' });
+          }
+          await pipelineSpec.update(patch);
           return res.json({ data: pipelineSpec.toJSON() });
         }
 

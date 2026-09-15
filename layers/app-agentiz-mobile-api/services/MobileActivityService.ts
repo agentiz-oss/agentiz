@@ -1,37 +1,23 @@
 import { Op } from 'sequelize';
 import { AgentActivity } from '../../app-agentiz/models/AgentActivity';
-import { AgentStageExecution } from '../../app-agentiz/models/AgentStageExecution';
 import { AgentActivitySeen } from '../../app-agentiz/models/AgentActivitySeen';
 import { AgentProject } from '../../app-agentiz/models/AgentProject';
 import { AgentRun } from '../../app-agentiz/models/AgentRun';
-import { AgentRunDiff } from '../../app-agentiz/models/AgentRunDiff';
-import { AgentRunInteraction } from '../../app-agentiz/models/AgentRunInteraction';
 import { AgentTask } from '../../app-agentiz/models/AgentTask';
-import { AgentApprovalRequest } from '../../app-agentiz/models/AgentApprovalRequest';
-import { AgentWorkspaceProposal } from '../../app-agentiz/models/AgentWorkspaceProposal';
-import { AgentRunJob } from '../../app-agentiz/models/AgentRunJob';
-import { AgentWorker } from '../../app-agentiz/models/AgentWorker';
-import { AgentWorkerHarness } from '../../app-agentiz/models/AgentWorkerHarness';
-import { harnessTitle } from '../../app-agentiz/lib/harnessCatalog';
-import { MIXED_HARNESS_KEY } from '../../app-agentiz/lib/harness';
-import { AgentWorkspaceProposalService } from '../../app-agentiz/services/AgentWorkspaceProposalService';
 import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/policySettings';
 import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileAuthError } from './MobileAuthService';
-import { canInProject, visibleProjectIds } from '../lib/mobileScope';
+import { visibleProjectIds } from '../lib/mobileScope';
 import {
   applyDismissal,
-  approvalItem,
-  harnessAuthItem,
-  heldDiffItem,
+  collectInboxItems,
+  collectRunInboxItems,
+  collectTaskInboxItems,
   isBlockingInboxItem,
-  proposalItem,
-  pullRequestItem,
-  questionItem,
-  runFailureItem,
   sortInboxItems,
+  workerAlerts,
   type InboxItem,
-} from '../lib/inboxItems';
+} from '../../app-agentiz/lib/inbox';
 
 const PAGE_LIMIT_DEFAULT = 50;
 const PAGE_LIMIT_MAX = 200;
@@ -171,93 +157,18 @@ export class MobileActivityService {
       return {
         items: [], interactions: [], proposals: [], heldRuns: [],
         actionableCount: 0, dismissedCount: 0, unseen: 0,
-        workerAlerts: await this.workerAlerts(),
+        workerAlerts: await workerAlerts(),
       };
     }
 
-    const [interactions, proposals, approvals, heldDiffs, openedPrs, failedTasks, unseen] = await Promise.all([
-      AgentRunInteraction.findAll({
-        where: { projectId: { [Op.in]: projectIds }, status: 'pending' },
-        order: [['createdAt', 'ASC']],
-        limit: 200,
-      }),
-      AgentWorkspaceProposal.findAll({
-        where: { projectId: { [Op.in]: projectIds }, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
-        order: [['updatedAt', 'DESC']],
-        limit: 200,
-      }),
-      // Approvals are the one row here whose visibility is not the caller's read scope: a decision
-      // belongs to whoever may make it. Filtered by the request's own token below rather than by a
-      // narrower project query, because a graph may address one to a token of its choosing.
-      AgentApprovalRequest.findAll({
-        where: { projectId: { [Op.in]: projectIds }, status: 'pending' },
-        order: [['createdAt', 'ASC']],
-        limit: 200,
-      }),
-      this.heldDiffs(projectIds),
-      // `pr.opened` is `action_required` in the catalogue but has no live entity of its own — see
-      // openPullRequests for what makes one of these go away.
-      AgentActivity.findAll({
-        where: { projectId: { [Op.in]: projectIds }, type: 'pr.opened' },
-        order: [['createdAt', 'DESC']],
-        limit: 100,
-      }),
-      // A failed run leaves its task in `failed` and a re-run moves it out again (queued →
-      // running), so this status *is* "последняя попытка упала и с тех пор никто ничего не сделал"
-      // — one row per stuck task instead of one per failed attempt, without ranking runs here.
-      AgentTask.findAll({
-        where: { projectId: { [Op.in]: projectIds }, status: 'failed' },
-        order: [['updatedAt', 'DESC']],
-        limit: 100,
-      }),
+    // The rows themselves are the core's — the panel reads exactly the same ones. What stays here
+    // is the *mobile* shape of the answer: the three legacy arrays, the dismissals and the
+    // unseen-feed counter, none of which the panel has.
+    const [collected, unseen] = await Promise.all([
+      collectInboxItems({ projectIds, actor: ownerId }),
       this.unseenCount(ownerId, userId),
     ]);
-
-    const failedRuns = await this.latestRunPerTask(failedTasks.map((task) => task.id));
-    const authBlocked = await this.authBlockedRuns(projectIds);
-
-    const runIds = new Set<string>([
-      ...authBlocked.map((item) => item.run.id),
-      ...interactions.map((item) => item.runId),
-      ...proposals.map((item) => item.latestRunId),
-      ...approvals.map((item) => item.runId).filter(Boolean) as string[],
-      ...heldDiffs.map((item) => item.diff.runId),
-      ...openedPrs.map((row) => row.runId).filter(Boolean) as string[],
-    ]);
-    const [runs, projects, stages, diffs] = await Promise.all([
-      AgentRun.findAll({ where: { id: { [Op.in]: [...runIds] } } }),
-      AgentProject.findAll({ where: { id: { [Op.in]: projectIds } } }),
-      // Only to name the stage a question came from: "этап implement" is what tells a reader which
-      // half of the pipeline is parked.
-      AgentStageExecution.findAll({
-        where: { id: { [Op.in]: [...new Set(interactions.map((item) => item.stageExecutionId).filter(Boolean))] as string[] } },
-      }),
-      AgentRunDiff.findAll({
-        where: { id: { [Op.in]: [...new Set(proposals.map((item) => item.latestDiffId).filter(Boolean))] as string[] } },
-      }),
-    ]);
-    const runById = new Map(runs.map((run) => [run.id, run]));
-    const projectById = new Map(projects.map((project) => [project.id, project]));
-    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
-    const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
-
-    const taskIds = new Set<string>([
-      ...authBlocked.map((item) => item.run.taskId),
-      ...proposals.map((item) => item.taskId),
-      ...approvals.map((item) => item.taskId).filter(Boolean) as string[],
-      ...[...runById.values()].map((run) => run.taskId),
-      ...openedPrs.map((row) => row.taskId).filter(Boolean) as string[],
-    ]);
-    const tasks = await AgentTask.findAll({ where: { id: { [Op.in]: [...taskIds] } } });
-    const taskById = new Map([...tasks, ...failedTasks].map((task) => [task.id, task]));
-    // The pipeline goes into the context for one reason: the notification policy resolves
-    // `pipelines[specId]` before the project scope, so a row that skipped it could tell a reader
-    // "пуш включён" about an event their pipeline rule had switched off.
-    const contextOf = (projectId: string, taskId: string | null | undefined, pipelineSpecId?: string | null) => ({
-      project: projectById.get(projectId) ?? null,
-      task: taskId ? taskById.get(taskId) ?? null : null,
-      pipelineSpecId: pipelineSpecId ?? null,
-    });
+    const { items: built, interactions, proposals, heldDiffs, taskById, runById } = collected;
 
     const interactionRows = interactions.map((item) => ({
       id: item.id,
@@ -291,50 +202,6 @@ export class MobileActivityService {
       operations: diff.ops?.length ?? 0,
       finishedAt: run.finishedAt,
     }));
-
-    const built = sortInboxItems([
-      // First in the list and first here: while a machine is logged out, nothing of that harness
-      // runs on it, so every other row is downstream of this one.
-      ...authBlocked.map(({ run, info }) => harnessAuthItem(run, info,
-        contextOf(run.projectId, run.taskId, run.pipelineSpecId))),
-      ...interactions.map((item) => questionItem(item, {
-        ...contextOf(item.projectId, runById.get(item.runId)?.taskId, runById.get(item.runId)?.pipelineSpecId),
-        run: runById.get(item.runId) ?? null,
-        stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
-      })),
-      ...proposals.map((item) => {
-        const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
-        return proposalItem(item, {
-          ...contextOf(item.projectId, item.taskId, runById.get(item.latestRunId)?.pipelineSpecId),
-          diff,
-          approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
-        });
-      }),
-      ...(await this.decidableApprovals(approvals, ownerId)).map((item) => {
-        const run = item.runId ? runById.get(item.runId) ?? null : null;
-        return approvalItem(item, {
-          ...contextOf(item.projectId, item.taskId, run?.pipelineSpecId),
-          verdict: run?.verdict ?? null,
-          verdictReason: run?.verdictReason ?? null,
-          branch: run?.branch ?? null,
-        });
-      }),
-      ...heldDiffs.map(({ diff, run }) => heldDiffItem(diff, run, contextOf(run.projectId, run.taskId, run.pipelineSpecId))),
-      // A stuck task is only actionable while its proposal is not: an unapprovable proposal on the
-      // same run already says "освободите папку", and two rows for one dead end read as two.
-      ...failedTasks.flatMap((task) => {
-        const run = failedRuns.get(task.id);
-        if (!run || proposals.some((proposal) => proposal.taskId === task.id)) return [];
-        return [runFailureItem(run, contextOf(task.projectId, task.id, run.pipelineSpecId))];
-      }),
-      ...this.openPullRequests(openedPrs, taskById).map((row) => pullRequestItem({
-        id: row.id,
-        projectId: row.projectId,
-        url: typeof (row.data as any)?.prUrl === 'string' ? (row.data as any).prUrl : row.body,
-        createdAt: row.createdAt,
-        runId: row.runId,
-      }, contextOf(row.projectId, row.taskId, row.runId ? runById.get(row.runId)?.pipelineSpecId : null))),
-    ]);
 
     // What the reader has already read and waved through. Dismissed rows are dropped rather than
     // greyed out — «я этим не занимаюсь» means gone from the list — but they are still counted, so
@@ -374,7 +241,7 @@ export class MobileActivityService {
        * without opening the workers screen — that was exactly the failure this whole state
        * answers: a queue that stopped moving with nothing anywhere saying so.
        */
-      workerAlerts: await this.workerAlerts(),
+      workerAlerts: await workerAlerts(),
     };
   }
 
@@ -457,53 +324,10 @@ export class MobileActivityService {
   }
 
   /**
-   * PR rows that still deserve a person's attention.
+   * Everything waiting on a person because of **one run**, minus what this reader has dismissed.
    *
-   * A pull request is the one actionable event whose resolution happens outside Agentiz — nothing
-   * here learns that it was merged. Its stand-in is the task: closing the task is what a person
-   * does after the PR is dealt with, so an `open` task with an opened PR keeps the row and a
-   * done/cancelled/ignored one drops it. A task that never gets closed keeps a visible PR, which is
-   * the honest reading of "никто на него не посмотрел".
-   */
-  private static openPullRequests(rows: AgentActivity[], taskById: Map<string, AgentTask>): AgentActivity[] {
-    const closed = new Set(['done', 'cancelled', 'ignored']);
-    const seenRuns = new Set<string>();
-    return rows.filter((row) => {
-      const task = row.taskId ? taskById.get(row.taskId) : null;
-      if (!task || closed.has(task.status)) return false;
-      // One row per run: a re-opened PR for the same run is the same thing to look at.
-      const key = row.runId ?? row.id;
-      if (seenRuns.has(key)) return false;
-      seenRuns.add(key);
-      return true;
-    });
-  }
-
-  /**
-   * The newest run of each of the given tasks, in one query.
-   *
-   * Sorted client-side rather than with a window function: sqlite and postgres are both supported
-   * deployments here, and the caller's list is bounded (the failed tasks of one owner).
-   */
-  private static async latestRunPerTask(taskIds: string[]): Promise<Map<string, AgentRun>> {
-    if (taskIds.length === 0) return new Map();
-    const runs = await AgentRun.findAll({
-      where: { taskId: { [Op.in]: taskIds } },
-      order: [['createdAt', 'DESC']],
-    });
-    const byTask = new Map<string, AgentRun>();
-    for (const run of runs) if (!byTask.has(run.taskId)) byTask.set(run.taskId, run);
-    return byTask;
-  }
-
-  /**
-   * Everything waiting on a person because of **one run** — what the run screen puts above its own
-   * result, so that a run somebody opened from a notification states what to do about itself
-   * instead of leaving the reader to work it out from a status word and a log.
-   *
-   * Same projection as the inbox, narrowed to this run: its pending questions, the proposal it
-   * produced, a diff `requireApproval` held back, and the run's own failure when nothing else has
-   * happened on the task since.
+   * The projection is the core's (`collectRunInboxItems`); what this adds is the reader, which is
+   * a mobile-only idea — the panel has no dismissals.
    */
   static async itemsForRun(
     run: AgentRun,
@@ -512,52 +336,7 @@ export class MobileActivityService {
     /** The reader, when known: their dismissed rows are hidden here as well as in the inbox. */
     userId?: number,
   ): Promise<InboxItem[]> {
-    const [interactions, proposal, held, authBlocked] = await Promise.all([
-      AgentRunInteraction.findAll({ where: { runId: run.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
-      AgentWorkspaceProposal.findOne({
-        where: { latestRunId: run.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
-      }),
-      this.heldDiffs([run.projectId]),
-      this.authBlockedRuns([run.projectId]),
-    ]);
-    const [stages, diff] = await Promise.all([
-      AgentStageExecution.findAll({
-        where: { id: { [Op.in]: [...new Set(interactions.map((item) => item.stageExecutionId).filter(Boolean))] as string[] } },
-      }),
-      proposal?.latestDiffId ? AgentRunDiff.findByPk(proposal.latestDiffId) : Promise.resolve(null),
-    ]);
-    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
-    const context = { task: task ?? null, project, pipelineSpecId: run.pipelineSpecId ?? null };
-
-    // "Открыть запуск" is the reader's current location here, so it is dropped rather than drawn as
-    // a button that does nothing. Everything else is the same projection the inbox renders.
-    const here = (items: InboxItem[]) => items.map((item) => ({
-      ...item,
-      actions: item.actions.filter((action) => action.key !== 'open_run'),
-    }));
-
-    return this.visible(userId, here(sortInboxItems([
-      // The run screen is exactly where "он просто стоит и ничего не пишет" is read, so the
-      // reason it stands is the first thing on it.
-      ...authBlocked.filter((entry) => entry.run.id === run.id)
-        .map((entry) => harnessAuthItem(entry.run, entry.info, context)),
-      ...interactions.map((item) => questionItem(item, {
-        ...context,
-        run,
-        stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
-      })),
-      ...(proposal
-        ? [proposalItem(proposal, {
-            ...context,
-            diff,
-            approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
-          })]
-        : []),
-      ...held.filter((entry) => entry.diff.runId === run.id).map((entry) => heldDiffItem(entry.diff, entry.run, context)),
-      // Only when the task is still sitting on this failure: a task re-run since then is out of
-      // `failed`, and offering "запустить ещё раз" on an old attempt would compete with it.
-      ...(!proposal && run.status === 'failed' && task?.status === 'failed' ? [runFailureItem(run, context)] : []),
-    ])));
+    return this.visible(userId, await collectRunInboxItems(run, task, project));
   }
 
   /** Everything waiting on a person within one task — the "что дальше" strip on the task screen. */
@@ -566,69 +345,7 @@ export class MobileActivityService {
     project: AgentProject | null,
     userId?: number,
   ): Promise<InboxItem[]> {
-    const [interactions, proposals, approvals, runs, authBlocked] = await Promise.all([
-      AgentRunInteraction.findAll({ where: { projectId: task.projectId, status: 'pending' }, order: [['createdAt', 'ASC']] }),
-      AgentWorkspaceProposal.findAll({
-        where: { taskId: task.id, status: { [Op.in]: [...ACTIONABLE_PROPOSAL_STATUSES] } },
-        order: [['updatedAt', 'DESC']],
-      }),
-      AgentApprovalRequest.findAll({ where: { taskId: task.id, status: 'pending' }, order: [['createdAt', 'ASC']] }),
-      AgentRun.findAll({ where: { taskId: task.id }, attributes: ['id', 'pipelineSpecId', 'verdict', 'verdictReason'] }),
-      this.authBlockedRuns([task.projectId]),
-    ]);
-    const runById = new Map(runs.map((run) => [run.id, run]));
-    const runIds = new Set(runs.map((run) => run.id));
-    const pipelineOfRun = new Map(runs.map((run) => [run.id, run.pipelineSpecId ?? null]));
-    const ownInteractions = interactions.filter((item) => runIds.has(item.runId));
-
-    const [stages, diffs, held] = await Promise.all([
-      AgentStageExecution.findAll({
-        where: { id: { [Op.in]: [...new Set(ownInteractions.map((item) => item.stageExecutionId).filter(Boolean))] as string[] } },
-      }),
-      AgentRunDiff.findAll({
-        where: { id: { [Op.in]: [...new Set(proposals.map((item) => item.latestDiffId).filter(Boolean))] as string[] } },
-      }),
-      this.heldDiffs([task.projectId]),
-    ]);
-    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
-    const diffById = new Map(diffs.map((diff) => [diff.id, diff]));
-    // One task can hold rows from runs of different pipelines, so the policy scope is per row.
-    const context = (pipelineSpecId?: string | null) => ({ task, project, pipelineSpecId: pipelineSpecId ?? null });
-
-    const latestRun = task.status === 'failed' && proposals.length === 0
-      ? (await this.latestRunPerTask([task.id])).get(task.id) ?? null
-      : null;
-
-    return this.visible(userId, sortInboxItems([
-      // Same reason as on the run screen: this strip is what a person reads after launching from
-      // the phone, and a queue that is not moving has to say so here rather than nowhere.
-      ...authBlocked.filter((entry) => entry.run.taskId === task.id)
-        .map((entry) => harnessAuthItem(entry.run, entry.info, context(entry.run.pipelineSpecId))),
-      ...ownInteractions.map((item) => questionItem(item, {
-        ...context(pipelineOfRun.get(item.runId)),
-        stageRole: item.stageExecutionId ? stageById.get(item.stageExecutionId)?.role ?? null : null,
-      })),
-      ...(latestRun ? [runFailureItem(latestRun, context(latestRun.pipelineSpecId))] : []),
-      ...proposals.map((item) => {
-        const diff = item.latestDiffId ? diffById.get(item.latestDiffId) ?? null : null;
-        return proposalItem(item, {
-          ...context(pipelineOfRun.get(item.latestRunId)),
-          diff,
-          approvable: AgentWorkspaceProposalService.isApprovableDiff(diff),
-        });
-      }),
-      ...(userId === undefined ? [] : (await this.decidableApprovals(approvals, userId)).map((item) => {
-        const run = item.runId ? runById.get(item.runId) ?? null : null;
-        return approvalItem(item, {
-          ...context(run?.pipelineSpecId),
-          verdict: run?.verdict ?? null,
-          verdictReason: run?.verdictReason ?? null,
-          branch: run?.branch ?? null,
-        });
-      })),
-      ...held.filter(({ run }) => run.taskId === task.id)
-        .map(({ diff, run }) => heldDiffItem(diff, run, context(run.pipelineSpecId))),
-    ]));
+    return this.visible(userId, await collectTaskInboxItems(task, project, userId));
   }
 
   /**
@@ -658,123 +375,6 @@ export class MobileActivityService {
       .filter(isBlockingInboxItem)
       .filter((item) => effectiveActivityPolicy(item.activityType, item.projectId).push !== 'off')
       .length;
-  }
-
-  /** Diffs `requireApproval` parked in Agentiz: stored, never applied, from a succeeded repository run. */
-  /**
-   * Of the project's pending approvals, the ones **this** caller may actually decide.
-   *
-   * Filtered per row and not by the project query, because the addressee is a property of the
-   * request (`assigneeToken`, plus an optional `assigneeUserId` naming one person). Showing a row
-   * somebody cannot act on is worse here than anywhere else in the inbox: it is blocking, so it
-   * would be counted in `actionableCount` and would never go away for that reader.
-   */
-  private static async decidableApprovals(
-    approvals: AgentApprovalRequest[],
-    userId: number | string,
-  ): Promise<AgentApprovalRequest[]> {
-    const decisions = await Promise.all(approvals.map(async (approval) => {
-      if (approval.assigneeUserId !== null && Number(approval.assigneeUserId) !== Number(userId)) return false;
-      return canInProject(approval.projectId, userId, approval.assigneeToken);
-    }));
-    return approvals.filter((_approval, index) => decisions[index]);
-  }
-
-  /**
-   * The two states of a worker that a person has to do something about, counted for the ambient
-   * badge. Both are limited to `active` machines: a paused or revoked one being silent is the
-   * operator's own decision, not a fault.
-   *
-   * `needLogin` — a harness on that machine cannot authenticate at all (`HarnessAuthState`), which
-   * closes its claim gate until somebody opens a browser there. `offline` — a machine that is
-   * supposed to be polling and has stopped, which is the other way work quietly stops moving.
-   */
-  private static async workerAlerts(): Promise<{ needLogin: number; offline: number }> {
-    const workers = await AgentWorker.findAll({ where: { status: 'active' } });
-    if (workers.length === 0) return { needLogin: 0, offline: 0 };
-    const needLogin = await AgentWorkerHarness.count({
-      where: { authState: 'expired', workerId: { [Op.in]: workers.map((worker) => worker.id) } },
-    });
-    return {
-      needLogin,
-      offline: workers.filter((worker) => worker.contactState() === 'offline').length,
-    };
-  }
-
-  /**
-   * Runs that are parked because the machine they need is logged out of its harness.
-   *
-   * Read from the **live** binding, never from the journal, like every other row here: the run
-   * carries `waitingReason: 'harness_auth'` (written by the capacity sweep or by the stage that
-   * failed on the credential), and the row only survives while a binding is still `expired`. That
-   * is what closes it — the worker's first healthy report clears the binding and the row is gone
-   * on the next refresh, with nobody having pressed anything.
-   *
-   * Matching a run to a machine goes through its job: a pinned job names the worker outright, and
-   * an unpinned one is only here because no worker could log in at all, so any expired binding for
-   * that harness names the problem correctly.
-   */
-  private static async authBlockedRuns(projectIds: string[]): Promise<Array<{
-    run: AgentRun;
-    info: { harnessKey: string; harnessTitle: string; workerName: string; since: Date | null; detail: string | null };
-  }>> {
-    const expired = await AgentWorkerHarness.findAll({ where: { authState: 'expired' } });
-    if (expired.length === 0) return [];
-    const runs = await AgentRun.findAll({
-      where: {
-        projectId: { [Op.in]: projectIds },
-        waitingReason: 'harness_auth',
-        status: { [Op.notIn]: ['succeeded', 'failed', 'cancelled'] },
-      },
-      order: [['updatedAt', 'DESC']],
-      limit: 100,
-    });
-    if (runs.length === 0) return [];
-
-    const jobs = await AgentRunJob.findAll({ where: { runId: { [Op.in]: runs.map((run) => run.id) } } });
-    const jobByRun = new Map(jobs.map((job) => [job.runId, job]));
-    const workers = await AgentWorker.findAll({
-      where: { id: { [Op.in]: [...new Set(expired.map((binding) => binding.workerId))] } },
-    });
-    const workerById = new Map(workers.map((worker) => [worker.id, worker]));
-
-    return runs.flatMap((run) => {
-      const job = jobByRun.get(run.id) ?? null;
-      const binding = expired.find((item) => (job?.requiredWorkerId ? item.workerId === job.requiredWorkerId : true)
-        && (!job?.harnessKey || job.harnessKey === MIXED_HARNESS_KEY || item.harnessKey === job.harnessKey));
-      // Nothing expired matches this run any more — its binding recovered while the run kept a
-      // stale `waitingReason` (that is cleared when the run actually restarts). Nothing is
-      // blocked, so nothing is shown, and the row closes itself with nobody pressing anything.
-      if (!binding) return [];
-      return [{
-        run,
-        info: {
-          harnessKey: binding.harnessKey,
-          harnessTitle: harnessTitle(binding.harnessKey),
-          workerName: workerById.get(binding.workerId)?.name ?? binding.workerId,
-          since: binding.authFailedSince ?? null,
-          detail: binding.authDetail ?? null,
-        },
-      }];
-    });
-  }
-
-  private static async heldDiffs(projectIds: string[]): Promise<Array<{ diff: AgentRunDiff; run: AgentRun }>> {
-    const diffs = await AgentRunDiff.findAll({
-      where: { projectId: { [Op.in]: projectIds }, appliedAt: null, proposalId: null },
-      order: [['createdAt', 'DESC']],
-      limit: 200,
-    });
-    if (diffs.length === 0) return [];
-    const runs = await AgentRun.findAll({ where: { id: { [Op.in]: diffs.map((diff) => diff.runId) } } });
-    const runById = new Map(runs.map((run) => [run.id, run]));
-    return diffs.flatMap((diff) => {
-      const run = runById.get(diff.runId);
-      if (!run || run.status !== 'succeeded') return [];
-      const action = run.pipelineSnapshot?.finalAction;
-      if (action?.requireApproval !== true) return [];
-      return [{ diff, run }];
-    });
   }
 
   private static cursorOf(row: AgentActivity): string {

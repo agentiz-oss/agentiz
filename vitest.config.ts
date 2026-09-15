@@ -20,6 +20,8 @@ export default defineConfig({
       'smoke.test.ts',
       'layers/app-agentiz/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-mobile-api/**/*.{test,spec}.{ts,tsx}',
+      'layers/app-agentiz-github-integration/**/*.{test,spec}.{ts,tsx}',
+      'layers/app-agentiz-webhooks/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-claude-limits/**/*.{test,spec}.{ts,tsx}',
       'layers/app-agentiz-codex-limits/**/*.{test,spec}.{ts,tsx}',
       // app-adminizer is a package of its own, but it is developed from this checkout and carries

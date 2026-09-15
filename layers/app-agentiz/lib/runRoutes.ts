@@ -1,24 +1,24 @@
 import type { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
-import { Op } from 'sequelize';
 import { AgentRun } from '../models/AgentRun';
 import { AgentRunJob } from '../models/AgentRunJob';
 import { AgentWorker } from '../models/AgentWorker';
 import { AgentStageExecution } from '../models/AgentStageExecution';
-import { AgentRunLog } from '../models/AgentRunLog';
 import { AgentRunDiff } from '../models/AgentRunDiff';
 import { AgentRunInteraction } from '../models/AgentRunInteraction';
 import { AgentProject } from '../models/AgentProject';
 import { AgentTask } from '../models/AgentTask';
+import { PipelineSpec } from '../models/PipelineSpec';
 import { AgentPipelineService } from '../services/AgentPipelineService';
 import { AgentRunInteractionService, InteractionError, type InteractionActor } from '../services/AgentRunInteractionService';
 import { AgentWorkspaceProposalService, WorkspaceProposalError } from '../services/AgentWorkspaceProposalService';
-import { adminizerModuleUrl } from './adminizerModuleUrl';
+import { listRuns } from './runBoard';
 import { listRunLogs, type RunLogPage } from './runLogs';
 import { runUsage } from './runUsage';
 import { guardProject, panelActor, requirePanelUser, requestAccessCache } from './access/panelGuard';
 import { projectIdsForUser } from './access/projectAccess';
 import { PROJECT_TOKENS } from './access/tokens';
 import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
+import { legacyRedirect } from './panel/legacyRedirect';
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -54,100 +54,6 @@ function routeError(res: any, error: unknown) {
   if (error instanceof InteractionError) return res.status(error.status).json({ message: error.message });
   if (error instanceof WorkspaceProposalError) return res.status(error.statusCode).json({ message: error.message });
   return res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
-}
-
-/** A run is "in flight" while it is in one of these states — the board's top section. */
-const ACTIVE_RUN_STATUSES = ['pending', 'running', 'waiting_input'];
-
-/**
- * The run board: everything currently in flight plus the last finished runs, in one payload.
- * Each row carries what makes a running agent legible without opening it — its stages, the worker
- * that claimed the job, the newest log line and whether it is blocked on a question.
- */
-async function listRuns(projectId: string, visibleProjectIds?: string[]) {
-  // One project when the caller named one (its right has been checked), otherwise every project
-  // they may see. This endpoint reads Sequelize directly, so the panel's access graph — which
-  // only covers generic CRUD — never sees it.
-  const scope = projectId ? { projectId } : visibleProjectIds ? { projectId: visibleProjectIds } : {};
-  const [active, recent] = await Promise.all([
-    AgentRun.findAll({ where: { ...scope, status: { [Op.in]: ACTIVE_RUN_STATUSES } }, order: [['createdAt', 'DESC']], limit: 100 }),
-    AgentRun.findAll({ where: { ...scope, status: { [Op.notIn]: ACTIVE_RUN_STATUSES } }, order: [['createdAt', 'DESC']], limit: 25 }),
-  ]);
-  const runs = [...active, ...recent];
-  if (runs.length === 0) return { active: [], recent: [] };
-
-  const runIds = runs.map((run) => run.id);
-  const activeIds = active.map((run) => run.id);
-  const [stages, tasks, projects, jobs, interactions, logs] = await Promise.all([
-    AgentStageExecution.findAll({ where: { runId: runIds }, order: [['stageIndex', 'ASC']] }),
-    AgentTask.findAll({ where: { id: [...new Set(runs.map((run) => run.taskId))] } }),
-    AgentProject.findAll({ where: { id: [...new Set(runs.map((run) => run.projectId))] } }),
-    AgentRunJob.findAll({ where: { runId: runIds }, order: [['createdAt', 'ASC']] }),
-    AgentRunInteraction.findAll({ where: { runId: runIds, status: 'pending' } }),
-    // Only the live runs get a "last line" — for a finished run the result summary says more, and
-    // the log table is the biggest one here.
-    activeIds.length > 0
-      ? AgentRunLog.findAll({ where: { runId: activeIds }, order: [['createdAt', 'DESC']], limit: 500 })
-      : Promise.resolve([]),
-  ]);
-  const workerIds = [...new Set(jobs.map((job) => job.workerId).filter((id): id is string => Boolean(id)))];
-  const workers = workerIds.length > 0 ? await AgentWorker.findAll({ where: { id: workerIds } }) : [];
-
-  const taskMap = new Map(tasks.map((task) => [task.id, task]));
-  const projectMap = new Map(projects.map((project) => [project.id, project]));
-  const workerMap = new Map(workers.map((worker) => [worker.id, worker]));
-  const stagesByRun = new Map<string, AgentStageExecution[]>();
-  for (const stage of stages) {
-    const list = stagesByRun.get(stage.runId) ?? [];
-    list.push(stage);
-    stagesByRun.set(stage.runId, list);
-  }
-  const jobByRun = new Map(jobs.map((job) => [job.runId, job]));
-  const pendingByRun = new Map<string, number>();
-  for (const interaction of interactions) {
-    pendingByRun.set(interaction.runId, (pendingByRun.get(interaction.runId) ?? 0) + 1);
-  }
-  // Logs arrive newest first, so the first row seen for a run is its latest line.
-  const lastLogByRun = new Map<string, AgentRunLog>();
-  for (const log of logs) {
-    if (!lastLogByRun.has(log.runId)) lastLogByRun.set(log.runId, log);
-  }
-
-  const toCard = (run: AgentRun) => {
-    const job = jobByRun.get(run.id);
-    const lastLog = lastLogByRun.get(run.id);
-    return {
-      usage: runUsage(run),
-      id: run.id,
-      status: run.status,
-      trigger: run.trigger,
-      createdAt: run.createdAt,
-      startedAt: run.startedAt,
-      finishedAt: run.finishedAt,
-      currentStageIndex: run.currentStageIndex,
-      errorMessage: run.errorMessage,
-      resultSummary: run.resultSummary,
-      verdict: run.verdict,
-      task: taskMap.get(run.taskId) ? { id: run.taskId, title: taskMap.get(run.taskId)!.title } : null,
-      project: projectMap.get(run.projectId) ? { id: run.projectId, name: projectMap.get(run.projectId)!.name } : null,
-      stages: (stagesByRun.get(run.id) ?? []).map((stage) => ({
-        stageIndex: stage.stageIndex,
-        role: stage.role,
-        status: stage.status,
-      })),
-      job: job
-        ? {
-            status: job.status,
-            lastError: job.lastError,
-            worker: job.workerId ? { id: job.workerId, name: workerMap.get(job.workerId)?.name ?? job.workerId } : null,
-          }
-        : null,
-      pendingInteractions: pendingByRun.get(run.id) ?? 0,
-      lastLog: lastLog ? { level: lastLog.level, message: lastLog.message, createdAt: lastLog.createdAt } : null,
-    };
-  };
-
-  return { active: active.map(toCard), recent: recent.map(toCard) };
 }
 
 /**
@@ -196,6 +102,7 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
             data: await listRuns(
               requested,
               requested ? undefined : await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req)),
+              str(req.query.status) || undefined,
             ),
           });
         }
@@ -234,6 +141,17 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
           });
           const diff = await AgentRunDiff.findOne({ where: { runId } });
           const interactions = await AgentRunInteraction.findAll({ where: { runId }, order: [['createdAt', 'ASC']] });
+          // Three names the screen would otherwise print as ids: the task the run belongs to, the
+          // machine that claimed it and the spec it came from. The newest job is the one that
+          // matters — a `worker_workspace` run gets a second one for the delivery.
+          const [task, job, spec] = await Promise.all([
+            AgentTask.findByPk(run.taskId, { attributes: ['id', 'title', 'status'] }),
+            AgentRunJob.findOne({ where: { runId }, order: [['createdAt', 'DESC']] }),
+            run.pipelineSpecId
+              ? PipelineSpec.findByPk(run.pipelineSpecId, { attributes: ['id', 'name'] })
+              : Promise.resolve(null),
+          ]);
+          const worker = job?.workerId ? await AgentWorker.findByPk(job.workerId, { attributes: ['id', 'name'] }) : null;
           const workspaceReview = await AgentWorkspaceProposalService.detailsForRun(run);
           const latestWorkspaceDiff = workspaceReview
             ? workspaceReview.revisions.find((revision) => revision.id === workspaceReview.proposal.latestDiffId) ?? null
@@ -242,6 +160,18 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
             data: {
               run: run.toJSON(),
               usage: runUsage(run),
+              task: task ? { id: task.id, title: task.title, status: task.status } : null,
+              pipeline: spec ? { id: spec.id, name: spec.name } : null,
+              job: job
+                ? {
+                    id: job.id,
+                    status: job.status,
+                    jobKind: job.jobKind,
+                    lastError: job.lastError,
+                    harnessKey: job.harnessKey,
+                    worker: worker ? { id: worker.id, name: worker.name } : job.workerId ? { id: job.workerId, name: job.workerId } : null,
+                  }
+                : null,
               stages: stages.map((stage) => stage.toJSON()),
               ...logPayload(logs),
               diff: diff?.toJSON() ?? null,
@@ -253,14 +183,9 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
           });
         }
 
-        // Same URL serves both screens: one run when `runId` names it (every existing link does),
-        // the board of everything running when it does not.
-        return req.Inertia.render({
-          component: 'module',
-          props: {
-            moduleComponent: adminizerModuleUrl(str(req.query.runId) ? 'AgentizRunDetail' : 'AgentizRuns'),
-          },
-        });
+        // Nothing renders here any more: this address is one run when `runId` names it (every
+        // existing link does) and the board when it does not, and both of those moved.
+        return legacyRedirect(req, res, 'runs');
       } catch (error) {
         return routeError(res, error);
       }
@@ -382,10 +307,9 @@ export const runRoutes: AdminizerRouteMiddleware[] = [
             }),
           });
         }
-        return req.Inertia.render({
-          component: 'module',
-          props: { moduleComponent: adminizerModuleUrl('AgentizInteractions') },
-        });
+        // «Нужен ответ» became one tab of «Входящие», which shows the other nine kinds of waiting
+        // row beside the agent's questions.
+        return legacyRedirect(req, res, 'inbox');
       } catch (error) {
         return routeError(res, error);
       }

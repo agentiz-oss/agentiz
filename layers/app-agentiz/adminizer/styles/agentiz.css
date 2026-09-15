@@ -1,0 +1,109 @@
+/*
+ * The stylesheet of every Agentiz panel module.
+ *
+ * The panel's own Tailwind is built in the adminizer repository, scanning adminizer's sources, and
+ * reaches us as a finished file — so a class only our modules use is never in it. Measured before
+ * this file existed: 22 of the 114 classes our modules already used had no rule anywhere
+ * (`w-64`, `min-w-72`, `sm:grid-cols-2`, `space-y-6`, `break-all`, …). Nothing errors in that
+ * state; the element simply renders unstyled.
+ *
+ * Delivered as `moduleComponentCSS` — adminizer's `pages/module.tsx` inserts a `<link>` and
+ * deduplicates it by path. That link is **global to the document**, which dictates everything
+ * below:
+ *
+ *  - no preflight. A reset from here would travel across every page of the panel, ours or not.
+ *  - `theme(reference)` on the theme import: utilities compile to `var(--text-sm, 0.875rem)` and
+ *    this file writes **nothing** into `:root`. The panel's palette is not touched even by
+ *    accident.
+ *  - `@theme inline` below only *maps* panel variables to Tailwind namespaces so the utilities
+ *    exist. It never assigns a value. In particular `--radius: var(--radius)` — the shape
+ *    adminizer's own docs used to suggest — compiles to a self-referencing `:root` property and
+ *    squares every corner of the panel; the four `--radius-*` lines are the correct form, and
+ *    they are what Tailwind actually reads.
+ */
+
+@layer theme, base, components, utilities;
+
+/* `theme(reference)` = declare the namespaces, emit no custom properties. Needs tailwindcss v4 as
+   a direct dependency: resolved from this file upwards, v3 has no `theme.css` at all. */
+@import "tailwindcss/theme.css" layer(theme) theme(reference);
+
+/*
+ * Our utilities go into `components`, one layer **below** the panel's own utilities — and that is
+ * the single most important line in this file.
+ *
+ * Both stylesheets are global and both write into Tailwind's `utilities` layer. Inside one layer
+ * the later sheet wins, and ours is always the later one. So any class present in *both* was
+ * decided by us, and any class present in **only the panel's** could be overridden by ours — which
+ * is not symmetric and breaks things that have nothing to do with Agentiz.
+ *
+ * It already did: the panel's sidebar is `hidden md:block`. `AgentizTasks` uses `hidden`, so our
+ * sheet emits `.hidden{display:none}`; no module uses `md:block`, so ours does not emit it. Our
+ * later `.hidden` beat the panel's, the panel's `.md\:block` stayed behind its own `.hidden`, and
+ * the sidebar disappeared from every Agentiz page at every width. Nothing was logged.
+ *
+ * With ours in `components` the panel always wins a shared class — harmless, because a class both
+ * sheets emit compiles to the same declaration — and ours still apply wherever the panel has no
+ * rule at all, which is the only reason this file exists.
+ */
+@import "tailwindcss/utilities.css" layer(components);
+
+/* The panel switches themes with a `.dark` class on an ancestor, not with a media query. */
+@custom-variant dark (&:is(.dark *));
+
+/* Scanned sources. Only our own modules — pointing this at the repository would pull in classes
+   from markdown and from adminizer's own sources, and the build assert would stop meaning
+   anything. Each layer that ships a module needs its line here, and the same list is repeated as
+   `MODULE_DIRS` in `vite.config.ts`, which reads the files to check the built sheet covers them:
+   a line here without one there means unchecked markup, one there without one here means a build
+   that fails on a directory Tailwind never scanned. The git provider layers ship no module at all
+   — what they contribute to «Git-провайдеры» is a `gitProviderPanels` descriptor, not markup. */
+@source "../modules";
+@source "../../../app-agentiz-mobile-api/adminizer/modules";
+
+/*
+ * Mapping only — every value comes from the panel's `:root`/`.dark` (adminizer's `app.css`).
+ * Kept in the same order as the original so the two can be diffed after an adminizer upgrade.
+ * `--warning` included: it landed in the panel's palette in adminizer 5.1.0-build.28, which is
+ * our floor, so we map it like any other colour instead of declaring our own.
+ */
+@theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+}

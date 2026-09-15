@@ -3,11 +3,13 @@ import { NotificationPolicyService, type PolicyScopeRef } from '../services/Noti
 import { PipelineSpec } from '../models/PipelineSpec';
 import { guardGlobal, guardProject, requirePanelUser } from './access/panelGuard';
 import { GLOBAL_TOKENS, PROJECT_TOKENS } from './access/tokens';
+import { legacyRedirect } from './panel/legacyRedirect';
 
 /**
  * The notification policy in the panel: the `defaults` scope on its own page, plus the endpoints
- * every scope editor uses — the project card (AgentizHome), the pipeline editor (AgentizPipelines)
- * and this page are the same component pointed at different scopes, so they share one route.
+ * every scope editor uses — a project's «Уведомления» (`…/settings/notifications`), the pipeline
+ * editor and the installation-wide page are the same component pointed at different scopes, so
+ * they share one route.
  *
  * The page also lists **where the document is overridden**. Nothing else ever walks it, and an
  * override made months ago inside a project card is otherwise unfindable — silence with no visible
@@ -75,10 +77,9 @@ export const notificationRoutes: AdminizerRouteMiddleware[] = [
         return res.status(400).json({ message: error?.message ?? String(error) });
       }
 
-      return req.Inertia.render({
-        component: 'module',
-        props: { moduleComponent: '/dashboard/modules/AgentizNotifications.js' },
-      });
+      // The `defaults` scope has a page of its own in the new tree; a project's own rules live in
+      // that project's settings and are reached through `?projectId=`.
+      return legacyRedirect(req, res, 'settings.notifications');
     },
   },
   {

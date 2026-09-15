@@ -55,7 +55,7 @@ COPY --from=deps /app/.yarnrc.yml ./.yarnrc.yml
 
 # Build adminizer UI modules consumed from /dashboard/modules/*.
 RUN npm run build:vite \
-    && test -f /app/dist/modules/AgentizHome.js
+    && test -f /app/dist/modules/AgentizApp.js
 
 
 # Stage 3: Only prod modules

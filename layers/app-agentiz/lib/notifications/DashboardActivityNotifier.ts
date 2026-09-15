@@ -1,5 +1,6 @@
 import type { ActivityEvent, ActivityNotifier } from '../activityNotifiers';
 import { dashboardNotificationsEnabled, sendDashboardNotification } from './dashboardNotifications';
+import { href } from '../panel/routeTree';
 
 /**
  * The Adminizer bell as an activity channel, alongside the phone.
@@ -47,8 +48,10 @@ export class DashboardActivityNotifier implements ActivityNotifier {
           projectId: activity.projectId,
           projectName: context.projectName,
           // Nothing renders this today; it is here so the record identifies what happened, and so a
-          // link can be built from it the day the panel learns to open one.
-          url: activity.interactionId ? '/dashboard/agentiz-interactions' : '/dashboard/agentiz',
+          // link can be built from it the day the panel learns to open one. Through `href()` like
+          // every other address: notifications outlive releases, and one written by hand here
+          // would be the address of the day it was sent rather than of the screen.
+          url: href(activity.interactionId ? 'inbox' : 'overview'),
           ...(activity.data ?? {}),
         },
       });

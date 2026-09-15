@@ -105,11 +105,13 @@ describe('the agentiz access graph', () => {
 
   it('registers every model it covers as a panel resource', () => {
     // A model in `include` that nobody registered is the graph's only fail-soft branch: a warning
-    // at boot and the model left outside the boundary. `generateAdminizerModelConfig(X)` in the
-    // layer's mount is what makes it a resource, so that list is what this reads.
+    // at boot and the model left outside the boundary. `agentizModelConfig(X)` in the layer's
+    // mount is what makes it a resource, so that list is what this reads — and the wrapper is the
+    // only spelling the panel accepts from us (see `lib/panel/modelConfigs.ts`), so matching the
+    // raw generator instead would pass on a registration that no longer happens.
     const index = fs.readFileSync(path.join(repoRoot, 'layers/app-agentiz/index.ts'), 'utf-8');
     const registered = new Set(
-      [...index.matchAll(/generateAdminizerModelConfig\((\w+)\)/g)].map((match) => match[1]),
+      [...index.matchAll(/agentizModelConfig\((\w+)\)/g)].map((match) => match[1]),
     );
     for (const model of [graph.root, ...Object.keys(graph.include ?? {})]) {
       expect(registered.has(model), `${model} is in the graph but not registered in the panel`).toBe(true);

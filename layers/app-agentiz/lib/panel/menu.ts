@@ -1,0 +1,220 @@
+import { AgentProject } from '../../models/AgentProject';
+import { can, projectIdsForUser, type AccessCache } from '../access/projectAccess';
+import { hasGlobalToken, panelActor, requestAccessCache } from '../access/panelGuard';
+import { GLOBAL_TOKENS, PROJECT_TOKENS } from '../access/tokens';
+import { panelInboxCount } from './inboxPanel';
+import { href, PROJECT_SETTINGS_TITLES, type RouteMatch } from './routeTree';
+
+/**
+ * The sidebar of an Agentiz screen, built on the server and handed to the page as a **page prop**.
+ *
+ * That is the whole mechanism, and it needs no change in adminizer: page props override shared
+ * props (`allProps = {..._sharedProps, ...props}` in adminizer's `inertiaAdapter`), and
+ * `menu`/`menuSections` are ordinary shared props that the sidebar component reads from
+ * `usePage()`. Our render simply supplies its own.
+ *
+ * It is **not** `navbar.handleAdditionalLinks`: that hook is synchronous, never sees `req`, and is
+ * evaluated in middleware registered before our routes — a context-dependent menu built there
+ * lags one navigation behind, invisibly, and only on a machine with more than one project.
+ */
+
+/** The shape adminizer's `nav-main.tsx` renders. Icons are Material Icons names, not lucide. */
+export interface AgentizMenuItem {
+  id: string;
+  title: string;
+  link: string;
+  icon: string;
+  section: string;
+  /** Rendered as `SidebarMenuBadge` since 5.1.0-build.28; `0` and `undefined` draw nothing. */
+  badge?: number;
+  /** No sub-items anywhere in our tree: a second level would hide the thing it groups. */
+  actions: never[];
+  accessRightsToken: string | null;
+  type: 'self';
+}
+
+/**
+ * Section headers. `order` is explicit for all of ours so they never interleave with what other
+ * apps contribute — the panel's default ordering is alphabetical, and «Автоматизация» sorting
+ * between «Админ» and «Моя работа» reads as noise.
+ */
+export const AGENTIZ_SECTIONS: Record<string, { icon: string; order: number }> = {
+  'Моя работа': { icon: 'inbox', order: 10 },
+  Проект: { icon: 'dashboard', order: 10 },
+  Проекты: { icon: 'workspaces', order: 20 },
+  Автоматизация: { icon: 'account_tree', order: 20 },
+  Код: { icon: 'folder_copy', order: 30 },
+  Инфраструктура: { icon: 'dns', order: 30 },
+  Интеграции: { icon: 'power', order: 40 },
+  Настройки: { icon: 'settings', order: 50 },
+  Админ: { icon: 'database', order: 90 },
+};
+
+function item(
+  id: string,
+  title: string,
+  link: string,
+  icon: string,
+  section: string,
+  badge?: number,
+): AgentizMenuItem {
+  return { id, title, link, icon, section, badge, actions: [], accessRightsToken: null, type: 'self' };
+}
+
+/** The project the sidebar is currently "inside", or null in the global mode. */
+async function projectOfRoute(match: RouteMatch | null, actor: any, cache: AccessCache) {
+  const slug = match?.params.slug;
+  if (!slug) return null;
+  const project = await AgentProject.findOne({ where: { slug } });
+  if (!project) return null;
+  return (await can(actor, project.id, PROJECT_TOKENS.read, cache)) ? project : null;
+}
+
+/**
+ * The rest of the panel — Documentation, Users, Groups, whatever another app registered. Without
+ * it a person who opened Agentiz has no way back to the users or the knowledge base, because our
+ * `menu` replaced the panel's own wholesale.
+ *
+ * Built from the **public** `adminizer.menuHelper`, not from the `InertiaMenuHelper` the panel uses
+ * for itself: that class and the `listAccessibleMenuItems` behind it sit at subpaths the package
+ * does not export (`ERR_PACKAGE_PATH_NOT_EXPORTED`, verified, same trap as `adminizer/ui/*`). So
+ * the raw items come from the helper and the two things it leaves to the caller are done here:
+ * the access filter and the translation.
+ *
+ * The filter is `checkAnyPermission` — never `hasPermission`/`enoughPermissions`, which are frozen
+ * synchronous and deny a contextual token in silence (see AGENTS.md).
+ */
+async function restOfPanel(req: any): Promise<AgentizMenuItem[]> {
+  const adminizer = req?.adminizer ?? req?.runtime;
+  const helper = adminizer?.menuHelper;
+  if (!helper || typeof helper.getMenuItems !== 'function' || !req.user) return [];
+
+  const translate = (text: string) => (typeof req.i18n?.__ === 'function' ? req.i18n.__(text) : text);
+
+  try {
+    const raw: any[] = helper.getMenuItems(req.user) ?? [];
+    const allowed = await Promise.all(raw.map(async (entry) => {
+      // Ours are replaced by the tree above; the raw CRUD of our own models is reachable through
+      // «Админ → Модели данных» instead of one sidebar section per model.
+      if (entry?.section === 'Agentiz') return null;
+      const token = entry?.accessRightsToken;
+      if (token && adminizer.accessRightsHelper) {
+        const ok = await adminizer.accessRightsHelper.checkAnyPermission([token], req.user);
+        if (!ok) return null;
+      }
+      return {
+        ...entry,
+        title: translate(entry.title),
+        section: entry.section ? translate(entry.section) : 'Platform',
+        actions: entry.actions ?? [],
+        // `badge` may be a resolver, which cannot travel to the browser as JSON. Resolving it here
+        // would mean a query per item on every Agentiz page; a number that is simply absent is the
+        // pre-existing behaviour for these items anyway.
+        badge: typeof entry.badge === 'function' ? undefined : entry.badge,
+      } as AgentizMenuItem;
+    }));
+    return allowed.filter(Boolean) as AgentizMenuItem[];
+  } catch {
+    // A menu that cannot be built must not take the page down with it.
+    return [];
+  }
+}
+
+/**
+ * How many rows of the inbox actually hold something — the number the screen prints in its own
+ * header, from the same `lib/inbox/` the phone reads. `0` draws nothing, which is what the badge
+ * should do when there is nothing waiting.
+ *
+ * It costs the queries of a whole inbox on every Agentiz page, so a failure must not take the menu
+ * with it: a sidebar without a number is a smaller loss than a page that will not render.
+ */
+async function blockingInboxCount(req: any): Promise<number | undefined> {
+  try {
+    return (await panelInboxCount(req)) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function buildAgentizMenu(req: any, match: RouteMatch | null): Promise<AgentizMenuItem[]> {
+  const actor = panelActor(req);
+  const cache = requestAccessCache(req);
+  const project = await projectOfRoute(match, actor, cache);
+
+  const items: AgentizMenuItem[] = [];
+
+  if (project) {
+    const slug = project.slug;
+    const p = { slug };
+    items.push(
+      item('agentiz-project-overview', 'Обзор', href('project.overview', p), 'dashboard', 'Проект'),
+      item('agentiz-project-tasks', 'Задачи', href('project.tasks', p), 'checklist', 'Проект'),
+      item('agentiz-project-runs', 'Запуски', href('project.runs', p), 'play_circle', 'Проект'),
+    );
+
+    if (await can(actor, project.id, PROJECT_TOKENS.projectConfigure, cache)) {
+      items.push(
+        item('agentiz-project-pipelines', 'Пайплайны', href('project.pipelines', p), 'account_tree', 'Автоматизация'),
+        item('agentiz-project-workflows', 'Воркфлоу', href('project.workflows', p), 'schema', 'Автоматизация'),
+        item('agentiz-project-repos', 'Репозитории', href('project.repositories', p), 'folder_copy', 'Код'),
+      );
+    }
+
+    // Названия секций — из `routeTree.ts`: те же слова печатают крошка и заголовок экрана.
+    if (await can(actor, project.id, PROJECT_TOKENS.projectMembers, cache)) {
+      items.push(item('agentiz-project-members', PROJECT_SETTINGS_TITLES.members, href('project.settings', { ...p, section: 'members' }), 'group', 'Настройки'));
+    }
+    if (await can(actor, project.id, PROJECT_TOKENS.projectConfigure, cache)) {
+      items.push(
+        item('agentiz-project-sources', PROJECT_SETTINGS_TITLES.sources, href('project.settings', { ...p, section: 'sources' }), 'power', 'Настройки'),
+        item('agentiz-project-notifications', PROJECT_SETTINGS_TITLES.notifications, href('project.settings', { ...p, section: 'notifications' }), 'notifications', 'Настройки'),
+        item('agentiz-project-general', PROJECT_SETTINGS_TITLES.general, href('project.settings', { ...p, section: 'general' }), 'settings', 'Настройки'),
+      );
+    }
+  } else {
+    items.push(
+      item('agentiz-overview', 'Обзор', href('overview'), 'dashboard', 'Моя работа'),
+      item('agentiz-inbox', 'Входящие', href('inbox'), 'inbox', 'Моя работа', await blockingInboxCount(req)),
+      item('agentiz-runs', 'Запуски', href('runs'), 'play_circle', 'Моя работа'),
+    );
+
+    const projectCount = (await projectIdsForUser(actor, PROJECT_TOKENS.read, cache)).length;
+    items.push(item('agentiz-projects', 'Проекты', href('projects'), 'workspaces', 'Проекты', projectCount || undefined));
+
+    if (hasGlobalToken(req, GLOBAL_TOKENS.workersManage)) {
+      items.push(
+        item('agentiz-workers', 'Воркеры', href('workers'), 'dns', 'Инфраструктура'),
+        item('agentiz-harnesses', 'Обвязки и лимиты', href('harnesses'), 'speed', 'Инфраструктура'),
+      );
+    }
+    if (hasGlobalToken(req, GLOBAL_TOKENS.connectionsManage)) {
+      items.push(item('agentiz-git', 'Git-провайдеры', href('integrations.git'), 'folder_copy', 'Интеграции'));
+    }
+    if (hasGlobalToken(req, GLOBAL_TOKENS.notificationsManage)) {
+      items.push(item('agentiz-notifications', 'Уведомления', href('settings.notifications'), 'notifications', 'Настройки'));
+    }
+    items.push(item('agentiz-data', 'Модели данных', href('admin.data'), 'database', 'Админ'));
+  }
+
+  return [...items, ...(await restOfPanel(req))];
+}
+
+/**
+ * Section headers for the page prop. Ours plus the panel's own, so the items appended by
+ * `restOfPanel` keep their icons and ordering — the sidebar looks up a section by its *translated*
+ * name, which is why the panel's keys are translated here the same way its own helper does it.
+ */
+export function buildAgentizSections(req: any): Record<string, { icon?: string; order?: number }> {
+  const helper = (req?.adminizer ?? req?.runtime)?.menuHelper;
+  const translate = (text: string) => (typeof req?.i18n?.__ === 'function' ? req.i18n.__(text) : text);
+  let panelSections: Record<string, any> = {};
+  try {
+    panelSections = Object.fromEntries(
+      Object.entries(helper?.getSections?.() ?? {}).map(([name, section]) => [translate(name), section]),
+    );
+  } catch {
+    panelSections = {};
+  }
+  // Ours win on a name collision: the order values above are chosen against each other.
+  return { ...panelSections, ...AGENTIZ_SECTIONS };
+}

@@ -14,6 +14,7 @@ import { MobileInboxDismissal } from './models/MobileInboxDismissal';
 import { MobilePushService } from './services/MobilePushService';
 import { PushSettingsService } from './services/PushSettingsService';
 import type { ActivityNotifier } from '../app-agentiz/lib/activityNotifiers';
+import { adminizerModuleStylesheet } from '../app-agentiz/lib/adminizerModuleUrl';
 
 /**
  * Mobile API layer for Agentiz.
@@ -81,7 +82,7 @@ export class AppAgentizMobileApi extends AbstractApp {
     handler: async (req: any, res: any) => {
       if (!req.user) return res.sendStatus(401);
       if (!await req.adminizer.accessRightsHelper.checkPermission('ai-assistant-agentiz-assistant', req.user)) return res.sendStatus(403);
-      return req.Inertia.render({ component: 'module', props: { moduleComponent: '/dashboard/modules/MobileAssistant.js' } });
+      return req.Inertia.render({ component: 'module', props: { moduleComponent: '/dashboard/modules/MobileAssistant.js', moduleComponentCSS: adminizerModuleStylesheet() } });
     },
   }];
 

@@ -5,8 +5,10 @@ section: Agentiz
 keywords: [запуск, лог, diff, ревью, proposal, вопрос, вердикт]
 models: [AgentRun, AgentRunLog, AgentRunDiff, AgentRunInteraction]
 urls:
-  - /dashboard/agentiz-runs
-  - /dashboard/agentiz-interactions
+  - /dashboard/agentiz/runs
+  - /dashboard/agentiz/projects/:slug/runs
+  - /dashboard/agentiz/projects/:slug/runs/:runId
+  - /dashboard/agentiz/inbox
 ---
 
 # Запуски: лог, ревью и вопросы агента
@@ -36,8 +38,8 @@ urls:
 
 ## Вопросы агента
 
-Агент может спросить человека; такой запуск ждёт ответа и виден на странице «Нужен ответ» и в
-мобильном приложении. Ответ возвращается в ту же стадию, запуск продолжается с места вопроса.
+Агент может спросить человека; такой запуск ждёт ответа и виден во «Входящих» и в мобильном
+приложении. Ответ возвращается в ту же стадию, запуск продолжается с места вопроса.
 
 ## Ревью изменений в папке воркера
 

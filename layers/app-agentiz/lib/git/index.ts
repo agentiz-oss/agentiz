@@ -15,6 +15,14 @@ export {
   unregisterGitConnectionAuthority,
 } from './connections';
 export type { GitConnectionAuthority, RepositorySyncResult } from './connections';
+export {
+  getGitProviderPanel,
+  gitProviderTitle,
+  listGitProviderPanels,
+  registerGitProviderPanel,
+  unregisterGitProviderPanel,
+} from './providerPanels';
+export type { GitProviderPanel, GitProviderPanelField } from './providerPanels';
 export type {
   GitCredentials,
   NormalizedExternalTask,

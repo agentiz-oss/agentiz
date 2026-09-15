@@ -145,7 +145,7 @@ NULL`, поэтому двое одновременно не захватят), 
 
 Поверхности:
 
-- **мобильный** — `InboxItemKind = 'approval'` в `layers/app-agentiz-mobile-api/lib/inboxItems.ts`.
+- **мобильный** — `InboxItemKind = 'approval'` в `layers/app-agentiz/lib/inbox/items.ts`.
   Строка **блокирующая**: считается в `actionableCount`, `dismiss` ей запрещён. Отбор — по каждой
   строке, а не по проекту (`decidableApprovals` в `MobileActivityService`): показать решение тому,
   кто не вправе его принять, здесь хуже, чем где-либо ещё — оно бы висело у него навсегда.

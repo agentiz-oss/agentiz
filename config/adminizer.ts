@@ -57,6 +57,15 @@ export const adminizerConfig: AdminizerConfig = {
             type: 'self',
         },
     },
+    // The door to Agentiz from the panel's own pages, and deliberately a single one.
+    //
+    // There used to be seven, one per old screen, and every one of them is now an address that
+    // answers `302`. Agentiz builds its own sidebar for its own pages — context-dependent, per
+    // request, from `layers/app-agentiz/lib/panel/menu.ts` — and that sidebar is where its
+    // sections live; a second, flat copy of part of it in the panel's navigation could only
+    // disagree with it. `section: 'Agentiz'` is load-bearing: `restOfPanel()` in `menu.ts` drops
+    // exactly that section when it appends the panel's remaining items to ours, so this row is
+    // seen only where our own menu is not.
     navbar: {
         additionalLinks: [
             {
@@ -65,55 +74,6 @@ export const adminizerConfig: AdminizerConfig = {
                 link: '/dashboard/agentiz',
                 type: 'self',
                 icon: 'smart_toy',
-                section: 'Agentiz',
-            },
-            {
-                id: 'agentiz-tasks',
-                title: 'Задачи',
-                link: '/dashboard/agentiz-tasks',
-                type: 'self',
-                icon: 'checklist',
-                section: 'Agentiz',
-            },
-            {
-                id: 'agentiz-runs',
-                title: 'Запуски',
-                link: '/dashboard/agentiz-runs',
-                type: 'self',
-                icon: 'directions_run',
-                section: 'Agentiz',
-            },
-            {
-                id: 'agentiz-interactions',
-                title: 'Нужен ответ',
-                link: '/dashboard/agentiz-interactions',
-                type: 'self',
-                icon: 'live_help',
-                section: 'Agentiz',
-            },
-            {
-                id: 'agentiz-members',
-                title: 'Участники',
-                link: '/dashboard/agentiz-members',
-                type: 'self',
-                icon: 'group',
-                section: 'Agentiz',
-                accessRightsToken: 'agentiz-access',
-            },
-            {
-                id: 'workflows',
-                title: 'Воркфлоу',
-                link: '/dashboard/workflows',
-                type: 'self',
-                icon: 'account_tree',
-                section: 'Agentiz',
-            },
-            {
-                id: 'agentiz-gitlab',
-                title: 'GitLab-интеграции',
-                link: '/dashboard/agentiz-gitlab',
-                type: 'self',
-                icon: 'hub',
                 section: 'Agentiz',
             },
         ],

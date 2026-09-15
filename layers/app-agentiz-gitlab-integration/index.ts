@@ -1,6 +1,7 @@
 import { AbstractApp, AppManager, Collection } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
-import { AdminizerRouteMiddleware, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
+import { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
+import { agentizModelConfig } from '../app-agentiz/lib/panel/modelConfigs';
 import cron, { type ScheduledTask } from 'node-cron';
 import { migrations } from './migrations';
 import { GitlabOAuthApp } from './models/GitlabOAuthApp';
@@ -9,6 +10,7 @@ import { GitlabOAuthService, GitlabOAuthError } from './services/GitlabOAuthServ
 import { GitlabRepositorySyncService, gitlabConnectionAuthority } from './services/GitlabRepositorySyncService';
 import { GitlabIssueSyncService } from './services/GitlabIssueSyncService';
 import { maskModelForUI, restoreMaskedSecrets } from './lib/secrets';
+import { gitlabProviderPanel } from './lib/panel';
 import { AgentProject } from '../app-agentiz/models/AgentProject';
 import { gitlabProviderAdapter } from './lib/GitLabProvider';
 import { gitlabIssuesTaskManagerAdapter } from './lib/GitlabIssuesTaskManager';
@@ -22,6 +24,7 @@ import {
 } from '../app-agentiz/lib/git';
 import type { GitProviderAdapter } from '../app-agentiz/lib/git';
 import type { TaskManagerAdapter } from '../app-agentiz/lib/taskManager';
+import { legacyRedirect } from '../app-agentiz/lib/panel/legacyRedirect';
 
 const APP_ID = 'app-agentiz-gitlab-integration';
 /** Route under the Adminizer prefix, e.g. /dashboard/agentiz-gitlab. */
@@ -96,6 +99,15 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
   @Collection
   taskManagers: TaskManagerAdapter[] = [gitlabIssuesTaskManagerAdapter];
 
+  /**
+   * How GitLab reads on the shared «Git-провайдеры» screen: the name, the OAuth application form,
+   * where such an application is created, the scopes. Data, not a module — the screen itself lives
+   * in app-agentiz, which must not import this layer. Absent layer ⇒ no card, while the
+   * connections it authorized stay visible, because those are core rows.
+   */
+  @Collection
+  gitProviderPanels: any[] = [gitlabProviderPanel];
+
   @Collection
   adminizerMiddlewares: AdminizerRouteMiddleware[] = [
     {
@@ -161,12 +173,9 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
           });
         }
 
-        return req.Inertia.render({
-          component: 'module',
-          props: {
-            moduleComponent: '/dashboard/modules/AgentizGitlab.js',
-          },
-        });
+        // This layer's own page is gone: «Git-провайдеры» is one screen in the core, and what
+        // this layer contributes to it is a `gitProviderPanels` descriptor, not markup.
+        return legacyRedirect(req, res, 'integrations.git');
       },
     },
     {
@@ -268,7 +277,7 @@ export class AppAgentizGitlabIntegration extends AbstractApp {
   }
 
   async mount(): Promise<void> {
-    const configs = [generateAdminizerModelConfig(GitlabOAuthApp)].map((item) => ({ appId: this.appId, item }));
+    const configs = [agentizModelConfig(GitlabOAuthApp)].map((item) => ({ appId: this.appId, item }));
     await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 
     // Plug into app-agentiz: issues of linked repositories are part of a project sync, and the core

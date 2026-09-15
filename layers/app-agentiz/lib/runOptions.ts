@@ -38,6 +38,13 @@ export interface RunStageOption {
 }
 
 export interface RunOptionsView {
+  /**
+   * The spec a launch from here would actually resolve to (`resolveSpecForTask`: the task's tags,
+   * falling back to the project's default) — not `AgentTask.pipelineSpecId`, which records the
+   * spec of the *last* run and would name the wrong pipeline on a task whose tags have changed
+   * since. It is what the screens print as «Пайплайн» beside the launch button.
+   */
+  pipeline: { id: string; name: string };
   /** What runs if the dialog is submitted untouched, taken from the first LLM stage. */
   defaults: {
     harnessKey: string | null;
@@ -108,6 +115,7 @@ export async function buildRunOptions(task: AgentTask): Promise<RunOptionsView> 
   ].filter((key): key is string => !!key))];
 
   return {
+    pipeline: { id: spec.id, name: spec.name },
     defaults: {
       harnessKey: leading?.harnessKey ?? null,
       harnessTitle: leading?.harnessTitle ?? null,

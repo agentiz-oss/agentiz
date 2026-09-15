@@ -5,14 +5,17 @@ section: Agentiz
 keywords: [задачи, запуск, комментарии, вложения, трекер]
 models: [AgentTask, AgentTaskComment, AgentTaskAttachment]
 urls:
-  - /dashboard/agentiz-tasks
   - /dashboard/agentiz
+  - /dashboard/agentiz/projects/:slug/tasks
+  - /dashboard/agentiz/projects/:slug/tasks/:taskId
+  - /dashboard/agentiz/projects/:slug
+  - /dashboard/agentiz/projects/:slug/settings/sources
 ---
 
 # Задачи и запуск пайплайна
 
-Задача — единица работы агента. Она либо приходит из внешнего трекера (источники задач
-настраиваются на странице «Задачи»), либо заводится прямо в панели. Статус задачи в Agentiz
+Задача — единица работы агента. Она либо приходит из внешнего трекера (источники задач живут в
+настройках проекта — «Настройки → Источники задач»), либо заводится прямо в панели. Статус задачи в Agentiz
 (`new`, `queued`, `running`, `waiting_input`, `waiting_review`, `done`, `failed`, `cancelled`,
 `ignored`) живёт отдельно от статуса в трекере: мы отслеживаем свой жизненный цикл и не пытаемся
 навязать его чужой системе.

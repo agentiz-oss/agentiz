@@ -160,6 +160,48 @@ const DEFS: ActivityTypeDef[] = [
     badge: 'запушено',
   },
   {
+    /**
+     * A repository fact, journalled for the same reason every other event is: without a feed row
+     * "в репозитории запушили, а флоу не стартовал" has no evidence on either side. Delivery is
+     * `silent` by default — a push happens whenever somebody else feels like it, and a repository
+     * that is merely busy must not wake a phone; a project that wants to be woken raises it in the
+     * policy.
+     */
+    type: 'repository.pushed',
+    kind: 'info',
+    defaults: { push: 'silent', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_RESULTS,
+    label: 'В репозиторий пришли коммиты',
+    badge: 'коммиты',
+  },
+  {
+    /**
+     * One type for every outcome, not one per conclusion: the catalogue is what the policy schema
+     * and the UI hints are generated from, and it must not grow a row per CI verdict. *Which*
+     * outcome it was is in the row's own title and `data.conclusion`.
+     */
+    type: 'repository.ci_run',
+    kind: 'info',
+    defaults: { push: 'silent', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_RESULTS,
+    label: 'Завершился CI-прогон',
+    badge: 'CI',
+  },
+  {
+    /**
+     * One type for every package ecosystem and both actions (`published`/`updated`), same rule as
+     * the CI one above: *what* was published is in the row's title and `data.tag`/`data.digest`.
+     * Silent by default because a repository that builds an image on every merge would otherwise
+     * buzz a phone for its own routine.
+     */
+    type: 'repository.package',
+    kind: 'info',
+    defaults: { push: 'silent', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_RESULTS,
+    label: 'Опубликован пакет репозитория',
+    badge: 'пакет',
+  },
+  {
     type: 'run.cancelled',
     kind: 'info',
     defaults: { push: 'off', dashboard: 'off' },

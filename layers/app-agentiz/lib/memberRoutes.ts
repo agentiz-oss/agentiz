@@ -1,11 +1,10 @@
 import type { AdminizerRouteMiddleware } from '@nodeknit/app-adminizer';
-import type { ModelStatic, Model, Sequelize } from 'sequelize';
-import { Op } from 'sequelize';
 import { AgentProject } from '../models/AgentProject';
 import { AgentProjectMember } from '../models/AgentProjectMember';
-import { guardProject, panelActor, requirePanelUser } from './access/panelGuard';
-import { can } from './access/projectAccess';
-import { PROJECT_TOKENS, ROLE_PRESETS, ownerRolePreset } from './access/tokens';
+import { guardProject, panelActor, requestAccessCache, requirePanelUser } from './access/panelGuard';
+import { PROJECT_TOKENS } from './access/tokens';
+import { legacyRedirect } from './panel/legacyRedirect';
+import { memberCandidates, projectMembersView } from './panel/settingsPanel';
 
 /**
  * The members screen's HTTP surface: `/dashboard/agentiz-members`.
@@ -27,67 +26,6 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function systemModel(name: string): ModelStatic<Model> | null {
-  const sequelize = AgentProjectMember.sequelize as Sequelize | undefined;
-  if (!sequelize || !sequelize.isDefined(name)) return null;
-  return sequelize.model(name) as ModelStatic<Model>;
-}
-
-function plain(record: Model | null | undefined): Record<string, unknown> | null {
-  return record ? (record.get({ plain: true }) as Record<string, unknown>) : null;
-}
-
-/** Only what a person-picker needs; a member list is not a way to read the user table. */
-function publicUser(user: Record<string, unknown> | null) {
-  if (!user) return null;
-  return {
-    id: user.id,
-    login: user.login ?? null,
-    fullName: user.fullName ?? null,
-    email: user.email ?? null,
-    avatar: user.avatar ?? null,
-  };
-}
-
-const tokensOf = (group: Record<string, unknown> | null): string[] =>
-  Array.isArray(group?.tokens)
-    ? (group!.tokens as unknown[])
-        .map((grant) => (typeof grant === 'string' ? grant : (grant as any)?.tokenId))
-        .filter((token): token is string => typeof token === 'string')
-        .map((token) => token.toLowerCase())
-    : [];
-
-/**
- * Which rung of the ladder a group is, by comparing token sets. A group whose set matches no
- * preset is labelled «Особая роль» rather than guessed at — and because each preset contains the
- * previous one, "matches" can only be the exact set, never a prefix.
- */
-function presetKeyOf(group: Record<string, unknown> | null): string | null {
-  const tokens = new Set(tokensOf(group));
-  for (const preset of ROLE_PRESETS) {
-    if (preset.tokens.length !== tokens.size) continue;
-    if (preset.tokens.every((token) => tokens.has(token))) return preset.key;
-  }
-  return null;
-}
-
-async function loadGroups(): Promise<Record<string, unknown>[]> {
-  const Group = systemModel('GroupAP');
-  if (!Group) return [];
-  const groups = await Group.findAll({ order: [['name', 'ASC']] });
-  return groups.map((group) => plain(group)!).filter(Boolean);
-}
-
-async function loadUsers(ids: number[]): Promise<Map<number, Record<string, unknown>>> {
-  const User = systemModel('UserAP');
-  if (!User || ids.length === 0) return new Map();
-  const users = await User.findAll({ where: { id: ids as any } });
-  return new Map(users.map((user) => {
-    const row = plain(user)!;
-    return [Number(row.id), row];
-  }));
-}
-
 export const memberRoutes: AdminizerRouteMiddleware[] = [
   {
     route: ROUTE,
@@ -99,82 +37,24 @@ export const memberRoutes: AdminizerRouteMiddleware[] = [
         const projectId = str(req.query?.projectId);
         if (!await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
 
-        const project = await AgentProject.findByPk(projectId);
-        if (!project) return res.status(404).json({ message: 'Проект не найден' });
-
-        const rows = await AgentProjectMember.findAll({ where: { projectId }, order: [['createdAt', 'ASC']] });
-        const groups = await loadGroups();
-        const groupById = new Map(groups.map((group) => [Number(group.id), group]));
-        const users = await loadUsers([
-          ...new Set([
-            ...rows.map((row) => Number(row.userId)),
-            ...rows.map((row) => Number(row.grantedByUserId)).filter(Number.isFinite),
-            ...(project.ownerId !== null ? [Number(project.ownerId)] : []),
-          ]),
-        ]);
-
-        const canManage = await can(panelActor(req), projectId, PROJECT_TOKENS.projectMembers);
-
-        return res.json({
-          data: rows.map((row) => {
-            const group = groupById.get(Number(row.groupId)) ?? null;
-            return {
-              id: row.id,
-              userId: row.userId,
-              user: publicUser(users.get(Number(row.userId)) ?? null),
-              groupId: row.groupId,
-              groupName: (group?.name as string) ?? null,
-              presetKey: presetKeyOf(group),
-              tokens: tokensOf(group),
-              grantedBy: publicUser(users.get(Number(row.grantedByUserId)) ?? null),
-              createdAt: row.createdAt,
-              // The owner's row is what makes their own project visible to them; taking it away
-              // is the one removal nobody can undo from this screen.
-              isOwner: project.ownerId !== null && Number(project.ownerId) === Number(row.userId),
-            };
-          }),
-          meta: {
-            canManage,
-            owner: publicUser(project.ownerId !== null ? users.get(Number(project.ownerId)) ?? null : null),
-            ownerRoleName: ownerRolePreset().name,
-            presets: ROLE_PRESETS.map(({ key, name, description }) => ({ key, name, description })),
-            roles: groups.map((group) => ({
-              id: group.id,
-              name: group.name,
-              description: group.description ?? null,
-              presetKey: presetKeyOf(group),
-            })),
-          },
-        });
+        // Built by `lib/panel/settingsPanel.ts`, which is also what paints the first frame of the
+        // «Участники» section — so the rows a person sees after pressing a button are the rows
+        // the page was rendered with.
+        const view = await projectMembersView(projectId, panelActor(req), requestAccessCache(req));
+        if (!view) return res.status(404).json({ message: 'Проект не найден' });
+        return res.json({ data: view.items, meta: view.meta });
       }
 
       if (method === 'candidates') {
         const projectId = str(req.query?.projectId);
         if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectMembers)) return undefined;
-
-        const User = systemModel('UserAP');
-        if (!User) return res.json({ data: [] });
-        const query = str(req.query?.q).trim();
-        // No e-mail invitations: a person is added only if they already have a panel account, and
-        // an empty result says so instead of offering to create one.
-        const where = query
-          ? {
-              [Op.or]: [
-                { login: { [Op.like]: `%${query}%` } },
-                { fullName: { [Op.like]: `%${query}%` } },
-                { email: { [Op.like]: `%${query}%` } },
-              ],
-            }
-          : {};
-        const users = await User.findAll({ where: where as any, order: [['login', 'ASC']], limit: 20 });
-        return res.json({ data: users.map((user) => publicUser(plain(user))) });
+        return res.json({ data: await memberCandidates(str(req.query?.q).trim()) });
       }
 
       if (!requirePanelUser(req, res)) return undefined;
-      return req.Inertia.render({
-        component: 'module',
-        props: { moduleComponent: '/dashboard/modules/AgentizMembers.js' },
-      });
+      // Membership is a section of a project's settings now, so without `?projectId=` there is
+      // nothing to open but the project list.
+      return legacyRedirect(req, res, 'projects');
     },
   },
   {

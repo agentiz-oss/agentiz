@@ -3,12 +3,15 @@ import { AgentProject } from '../models/AgentProject';
 import { AgentGitConnection } from '../models/AgentGitConnection';
 import { AgentProjectRepository } from '../models/AgentProjectRepository';
 import { AgentRepository } from '../models/AgentRepository';
-import { getGitConnectionAuthority, listGitConnectionProviders, requireGitConnectionAuthority } from './git';
+import { getGitConnectionAuthority, listGitProviderPanels, requireGitConnectionAuthority } from './git';
 import { maskConnectionForUI } from './secrets';
+import { maskRepositoryWebhook } from './webhooks';
 import type { GitProviderType } from '../types/agentiz';
 import { guardGlobal, guardProject, panelActor, requirePanelUser, requestAccessCache } from './access/panelGuard';
 import { projectIdsForUser } from './access/projectAccess';
 import { GLOBAL_TOKENS, PROJECT_TOKENS } from './access/tokens';
+import { legacyRedirect } from './panel/legacyRedirect';
+import { projectRepositoryRows } from './panel/repositoriesPanel';
 
 /**
  * The shared repositories screen: connections, their mirrored repositories and the links to
@@ -30,13 +33,32 @@ function mayManageConnections(req: any, res: any): boolean {
 }
 const ROUTE = '/agentiz-repos';
 
+/**
+ * A mirrored repository as the panel may see it.
+ *
+ * `webhook` holds the delivery secret we issued to the platform, so the column never leaves the
+ * server as it is: what a screen needs is whether a hook is installed, where it points and why it
+ * is not — which is exactly what the mask keeps.
+ */
+function repositoryForUI(repository: AgentRepository): Record<string, unknown> {
+  return { ...repository.toJSON(), webhook: maskRepositoryWebhook(repository) };
+}
+
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-/** Where each platform's OAuth application is configured, so the UI can offer "add a connection". */
+/**
+ * Where each platform's OAuth application is configured, so the UI can offer "add a connection".
+ *
+ * Read from the descriptors the layers contribute (`gitProviderPanels`) rather than assembled as
+ * `/agentiz-${provider}` from the list of mounted authorities: that string was the core guessing a
+ * layer's route, and it is exactly the guess the collection replaces. A platform that supplies an
+ * authority but no descriptor is therefore not offered here — the button would open a page nobody
+ * declared.
+ */
 function providerPages(): Array<{ provider: GitProviderType; route: string }> {
-  return listGitConnectionProviders().map((provider) => ({ provider, route: `/agentiz-${provider}` }));
+  return listGitProviderPanels().map((panel) => ({ provider: panel.provider, route: panel.apiRoute }));
 }
 
 export const repositoryRoutes: AdminizerRouteMiddleware[] = [
@@ -78,7 +100,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         const filtered = search
           ? repositories.filter((repository) => repository.pathWithNamespace.toLowerCase().includes(search))
           : repositories;
-        return res.json({ data: filtered.map((repository) => repository.toJSON()) });
+        return res.json({ data: filtered.map(repositoryForUI) });
       }
 
       if (method === 'getProjectRepositories') {
@@ -98,10 +120,31 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         return res.json({
           data: links.map((link) => ({
             ...link.toJSON(),
-            repository: link.repository?.toJSON() ?? null,
+            repository: link.repository ? repositoryForUI(link.repository) : null,
             connection: maskConnectionForUI(link.connection ?? null),
           })),
         });
+      }
+
+      /**
+       * The same rows `/agentiz/projects/:slug/repositories` is painted with, for the reloads that
+       * follow a write on it.
+       *
+       * A second method beside `getProjectRepositories` rather than a wider answer from it: that
+       * one is read by the pipeline editor and by the repository trigger's config form, which pick
+       * fields out of the raw model (`repository.webhook.hookId`, `link.repositoryId`), so
+       * reshaping it would break a node editor to save an endpoint. This one answers the *screen's*
+       * shape — masked webhook, watch cursor, the last repository event the project actually saw —
+       * and `lib/panel/repositoriesPanel.ts` builds it for both readers, so the first paint and the
+       * reload cannot drift.
+       */
+      if (method === 'getRepositoryBoard') {
+        const projectId = str(req.query.projectId);
+        if (projectId && !await guardProject(req, res, projectId, PROJECT_TOKENS.read)) return undefined;
+        const visible = projectId
+          ? [projectId]
+          : await projectIdsForUser(panelActor(req), PROJECT_TOKENS.read, requestAccessCache(req));
+        return res.json({ data: await projectRepositoryRows(visible) });
       }
 
       if (method === 'getProjects') {
@@ -114,10 +157,9 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
         });
       }
 
-      return req.Inertia.render({
-        component: 'module',
-        props: { moduleComponent: '/dashboard/modules/AgentizRepositories.js' },
-      });
+      // This address mixed two levels that the new tree separates: a project's repositories
+      // (`?projectId=`) and the installation's git accounts. Without a project it is the second.
+      return legacyRedirect(req, res, 'integrations.git');
     },
   },
   {

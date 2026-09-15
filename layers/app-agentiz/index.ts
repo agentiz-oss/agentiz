@@ -1,6 +1,8 @@
 import { AbstractApp, AppManager, Collection, CollectionHandler } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
-import { AdminizerRouteMiddleware, AppAdminizer, generateAdminizerModelConfig } from '@nodeknit/app-adminizer';
+import { AdminizerRouteMiddleware, AppAdminizer } from '@nodeknit/app-adminizer';
+import { agentizModelConfig } from './lib/panel/modelConfigs';
+import { panelInbox } from './lib/panel/inboxPanel';
 import type { DocumentationSource } from '@nodeknit/app-adminizer';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -56,7 +58,9 @@ import {
 } from './lib/git';
 import type { GitProviderAdapter } from './lib/git';
 import { GitProviderCollectionHandler } from './lib/git/GitProviderCollection';
+import { GitProviderPanelCollectionHandler } from './lib/git/GitProviderPanelCollection';
 import { ActivityNotifierCollectionHandler } from './lib/ActivityNotifierCollection';
+import { WebhookMapperCollectionHandler } from './lib/WebhookMapperCollection';
 import { HarnessLimitProviderCollectionHandler } from './lib/HarnessLimitProviderCollection';
 import { registerActivityNotifier, unregisterActivityNotifier } from './lib/activityNotifiers';
 import { DashboardActivityNotifier } from './lib/notifications/DashboardActivityNotifier';
@@ -89,6 +93,8 @@ import { viewerRoutes } from './lib/viewerRoutes';
 import { createWorkerApiRouter, WORKER_API_BASE } from './lib/workerApiRouter';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
+import { adminizerModuleStylesheet } from './lib/adminizerModuleUrl';
+import { renderAgentizApp } from './lib/panel/render';
 
 /** Sync cadence for every active project. Per-project pollIntervalSec is honoured inside the tick. */
 const SYNC_CRON = process.env.AGENTIZ_SYNC_CRON ?? '*/10 * * * *';
@@ -201,6 +207,19 @@ export class AppAgentiz extends AbstractApp {
     gitProviders: GitProviderAdapter[] = [githubProviderAdapter];
 
     /**
+     * How a platform's half of «Git-провайдеры» reads: its name, its OAuth application form, where
+     * that application is created, which scopes it asks for. The screen is one and lives here; the
+     * knowledge is two layers' and arrives as data, because the core importing
+     * app-agentiz-github-integration is exactly the layer boundary this collection exists to keep.
+     *
+     * app-agentiz contributes nothing itself — it hosts no OAuth application — and an empty
+     * collection is a working state: the connections already authorized stay visible and only the
+     * buttons that would need a layer are absent.
+     */
+    @CollectionHandler('gitProviderPanels')
+    gitProviderPanelsHandler = new GitProviderPanelCollectionHandler();
+
+    /**
      * Remote task/project management systems. Separate from `gitProviders` on purpose: a project
      * may read its tasks from Jira and push its code to GitLab, so "where tasks come from" and
      * "where code lives" are independent extension points. app-agentiz ships the GitHub Issues
@@ -226,6 +245,15 @@ export class AppAgentiz extends AbstractApp {
      */
     @CollectionHandler('activityNotifiers')
     activityNotifiersHandler = new ActivityNotifierCollectionHandler();
+
+    /**
+     * Who understands an incoming webhook delivery. A provider layer contributes the format it
+     * knows (GitHub repository events today); the layer that actually serves the public endpoint
+     * reads the same registry. Both sides are optional — with no receiver installed nothing is
+     * served and the repository poll carries everything.
+     */
+    @CollectionHandler('webhookMappers')
+    webhookMappersHandler = new WebhookMapperCollectionHandler();
 
     /**
      * The notification policy slot (AGENTIZ_NOTIFY_POLICY): which event types reach push/bell,
@@ -268,6 +296,13 @@ export class AppAgentiz extends AbstractApp {
             handler: async (req, res) => {
                 const method = req.query._method as string | undefined;
                 if (!requirePanelUser(req, res)) return undefined;
+
+                if (method === 'getInbox') {
+                    // The same rows the screen was rendered with, for the refresh after a decision:
+                    // a row leaves this list because its entity closed, never because time passed,
+                    // so re-reading is the only honest way to find out that it is gone.
+                    return res.json({ data: await panelInbox(req) });
+                }
 
                 if (method === 'getProjects') {
                     // The project picker every Agentiz screen opens with. It reads Sequelize
@@ -328,12 +363,9 @@ export class AppAgentiz extends AbstractApp {
                     });
                 }
 
-                return req.Inertia.render({
-                    component: 'module',
-                    props: {
-                        moduleComponent: '/dashboard/modules/AgentizHome.js',
-                    },
-                });
+                // Everything that is not an `_method` call is an address in the tree — one
+                // registered route serves all of it, because the dispatcher matches a prefix.
+                return renderAgentizApp(req, res);
             },
         },
         {
@@ -404,41 +436,41 @@ export class AppAgentiz extends AbstractApp {
         AgentProjectMember.associate(this.appManager.sequelize);
 
         const configs = [
-            generateAdminizerModelConfig(AgentProject),
-            generateAdminizerModelConfig(AgentRole),
-            generateAdminizerModelConfig(PipelineSpec),
-            generateAdminizerModelConfig(AgentTask),
-            generateAdminizerModelConfig(AgentRun),
-            generateAdminizerModelConfig(AgentStageExecution),
-            generateAdminizerModelConfig(AgentRunLog),
-            generateAdminizerModelConfig(AgentRunJob),
-            generateAdminizerModelConfig(AgentWorker),
-            generateAdminizerModelConfig(AgentTaskSource),
-            generateAdminizerModelConfig(AgentTaskComment),
-            generateAdminizerModelConfig(AgentTaskAttachment),
-            generateAdminizerModelConfig(AgentGitConnection),
-            generateAdminizerModelConfig(AgentRepository),
-            generateAdminizerModelConfig(AgentProjectRepository),
-            generateAdminizerModelConfig(AgentRunDiff),
-            generateAdminizerModelConfig(AgentRunInteraction),
-            generateAdminizerModelConfig(AgentHarnessSubscription),
+            agentizModelConfig(AgentProject),
+            agentizModelConfig(AgentRole),
+            agentizModelConfig(PipelineSpec),
+            agentizModelConfig(AgentTask),
+            agentizModelConfig(AgentRun),
+            agentizModelConfig(AgentStageExecution),
+            agentizModelConfig(AgentRunLog),
+            agentizModelConfig(AgentRunJob),
+            agentizModelConfig(AgentWorker),
+            agentizModelConfig(AgentTaskSource),
+            agentizModelConfig(AgentTaskComment),
+            agentizModelConfig(AgentTaskAttachment),
+            agentizModelConfig(AgentGitConnection),
+            agentizModelConfig(AgentRepository),
+            agentizModelConfig(AgentProjectRepository),
+            agentizModelConfig(AgentRunDiff),
+            agentizModelConfig(AgentRunInteraction),
+            agentizModelConfig(AgentHarnessSubscription),
             // Both carry @AdminizerModel and both are named by the `agentiz` access graph. A model
             // the graph includes but the panel never registered is its one fail-soft branch — a
             // boot warning and the model silently left unfiltered — so registration is what makes
             // the declaration true. They earn their place on their own too: the activity feed is
             // the project's journal, and a workspace proposal is what holds a worker's directory.
-            generateAdminizerModelConfig(AgentActivity),
-            generateAdminizerModelConfig(AgentWorkspaceProposal),
+            agentizModelConfig(AgentActivity),
+            agentizModelConfig(AgentWorkspaceProposal),
             // The graph's membership model. It has to be a registered resource or `resolveMembership`
             // cannot find it and every covered list answers 500 — and it stays *outside* the graph
             // itself, closed by the global `agentiz-project-members` token, because whoever may read
             // membership rows would otherwise read them in every project they belong to.
-            generateAdminizerModelConfig(AgentProjectMember),
+            agentizModelConfig(AgentProjectMember),
             // Named by the graph for the same reason as the two above: a decision waiting for a
             // person carries the reviewer's words about somebody's task, and a model the graph
             // includes but the panel never registered is left outside the boundary with only a
             // warning.
-            generateAdminizerModelConfig(AgentApprovalRequest),
+            agentizModelConfig(AgentApprovalRequest),
         ].map((item) => ({ appId: this.appId, item }));
         await this.appManager.collectionStorage.append('adminizerModelConfigs', configs);
 

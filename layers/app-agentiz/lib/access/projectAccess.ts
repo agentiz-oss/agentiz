@@ -84,6 +84,18 @@ export function createAccessCache(): AccessCache {
   return { tokens: new Map(), projects: new Map() };
 }
 
+/**
+ * The numeric user id behind an actor, whatever shape it arrived in — `null` when there is none.
+ *
+ * Exported because a caller that has an `AccessActor` sometimes also has to compare it to a stored
+ * `userId` (an approval addressed to one person). Doing that with `Number(actor)` works for the
+ * bare-id callers and silently answers `NaN` for the object ones, which reads as "addressed to
+ * somebody else" and hides the row from the only person who could act on it.
+ */
+export function accessActorId(actor: AccessActor): number | null {
+  return actorId(actor);
+}
+
 function actorId(actor: AccessActor): number | null {
   if (actor === null || actor === undefined) return null;
   const raw = typeof actor === 'object' ? actor.id : actor;

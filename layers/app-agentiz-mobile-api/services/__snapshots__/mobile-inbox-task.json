@@ -1,0 +1,177 @@
+[
+  {
+    "kind": "harness_auth",
+    "activityType": "harness.auth_required",
+    "badge": "нужен вход",
+    "dismissible": false,
+    "dismissedAt": null,
+    "notify": {
+      "typeLabel": "Нужен повторный вход в harness на воркере",
+      "push": "on",
+      "dashboard": "on",
+      "scope": "builtin",
+      "mutedByScope": false,
+      "pipelineSpecId": null,
+      "label": "пуш включён по умолчанию"
+    },
+    "projectName": "Биллинг",
+    "taskId": "<taskId>",
+    "taskTitle": "Починить счётчик",
+    "priority": 0,
+    "interactionId": null,
+    "proposalId": null,
+    "approvalId": null,
+    "revision": null,
+    "url": null,
+    "expiresAt": null,
+    "explain": "Авторизация закончилась, и продлить её из Agentiz нельзя: она живёт на машине воркера и обновляется только через браузер. На машине воркера выполните «claude auth login» под тем пользователем, от которого он работает, и подтвердите вход в браузере. Запуск при этом не потерян — он стоит в очереди и продолжится сам через пару минут после входа; пока входа нет, все задачи этого harness'а на этой машине будут просто стоять.",
+    "id": "<id>",
+    "headline": "Нужно заново войти в Claude Code на воркере worker-2",
+    "facts": "Claude Code · воркер worker-2 · refresh token expired",
+    "projectId": "<projectId>",
+    "runId": "<runId>",
+    "waitingSince": "<date>",
+    "actions": [
+      {
+        "key": "open_run",
+        "label": "Открыть запуск",
+        "style": "default"
+      }
+    ]
+  },
+  {
+    "kind": "question",
+    "activityType": "interaction.created",
+    "badge": "вопрос",
+    "dismissible": false,
+    "dismissedAt": null,
+    "notify": {
+      "typeLabel": "Агент задал вопрос",
+      "push": "on",
+      "dashboard": "on",
+      "scope": "builtin",
+      "mutedByScope": false,
+      "pipelineSpecId": null,
+      "label": "пуш включён по умолчанию"
+    },
+    "projectName": "Биллинг",
+    "taskId": "<taskId>",
+    "taskTitle": "Починить счётчик",
+    "priority": 0,
+    "interactionId": "<interactionId>",
+    "proposalId": null,
+    "approvalId": null,
+    "revision": null,
+    "url": null,
+    "expiresAt": null,
+    "explain": "Агент остановился посреди работы и ждёт ответа. Пока вы не ответите, запуск стоит и ничего не делает.",
+    "id": "<id>",
+    "headline": "Ставить ли зависимость?",
+    "facts": "Запуск на паузе · этап implement",
+    "projectId": "<projectId>",
+    "runId": "<runId>",
+    "waitingSince": "<date>",
+    "actions": [
+      {
+        "key": "answer",
+        "label": "Ответить",
+        "style": "primary"
+      }
+    ]
+  },
+  {
+    "kind": "review",
+    "activityType": "proposal.waiting_review",
+    "badge": "ревью",
+    "dismissible": false,
+    "dismissedAt": null,
+    "notify": {
+      "typeLabel": "Изменения ждут ревью",
+      "push": "on",
+      "dashboard": "on",
+      "scope": "builtin",
+      "mutedByScope": false,
+      "pipelineSpecId": null,
+      "label": "пуш включён по умолчанию"
+    },
+    "projectName": "Биллинг",
+    "taskId": "<taskId>",
+    "taskTitle": "Починить счётчик",
+    "priority": 2,
+    "interactionId": null,
+    "proposalId": "<proposalId>",
+    "approvalId": null,
+    "revision": 2,
+    "url": null,
+    "expiresAt": null,
+    "explain": "Изменения лежат в папке воркера (billing) и никуда не поедут сами. «Одобрить» — закоммитить их в ветку agentiz/counter и запушить. «Отклонить» — вернуть папку к исходному состоянию; изменения при этом не пропадают, воркер сначала кладёт их в git stash.",
+    "id": "<id>",
+    "headline": "Обновить зависимости",
+    "facts": "3 файл(ов) · +48/−12 · ветка agentiz/counter · ревизия 2",
+    "projectId": "<projectId>",
+    "runId": "<runId>",
+    "waitingSince": "<date>",
+    "actions": [
+      {
+        "key": "approve",
+        "label": "Одобрить…",
+        "style": "primary"
+      },
+      {
+        "key": "reject",
+        "label": "Отклонить…",
+        "style": "danger"
+      }
+    ]
+  },
+  {
+    "kind": "approval",
+    "activityType": "approval.requested",
+    "badge": "решение",
+    "dismissible": false,
+    "dismissedAt": null,
+    "notify": {
+      "typeLabel": "Требуется решение человека",
+      "push": "on",
+      "dashboard": "on",
+      "scope": "builtin",
+      "mutedByScope": false,
+      "pipelineSpecId": null,
+      "label": "пуш включён по умолчанию"
+    },
+    "projectName": "Биллинг",
+    "taskId": "<taskId>",
+    "taskTitle": "Починить счётчик",
+    "priority": 3,
+    "interactionId": null,
+    "proposalId": null,
+    "approvalId": "<approvalId>",
+    "revision": null,
+    "url": null,
+    "expiresAt": null,
+    "explain": "Работа дошла до вас: посмотрите, что сделано, и решите. «Принять» — задача считается принятой и воркфлоу идёт дальше. «Отклонить» — нужен текст: он уедет разработчику как задание на доработку, и по задаче начнётся новый круг. Пока решения нет, воркфлоу стоит.",
+    "id": "<id>",
+    "headline": "Принять работу?",
+    "facts": "вердикт агента: ок",
+    "projectId": "<projectId>",
+    "runId": "<runId>",
+    "waitingSince": "<date>",
+    "actions": [
+      {
+        "key": "approve",
+        "label": "Принять",
+        "style": "primary"
+      },
+      {
+        "key": "reject",
+        "label": "Отклонить…",
+        "style": "danger"
+      },
+      {
+        "key": "open_run",
+        "label": "Посмотреть изменения",
+        "style": "default"
+      }
+    ]
+  }
+]

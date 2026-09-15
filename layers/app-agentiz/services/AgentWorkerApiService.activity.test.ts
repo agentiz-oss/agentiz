@@ -9,6 +9,7 @@ vi.mock('@nodeknit/app-adminizer', () => ({
     }
   },
 }));
+import type { Model, ModelStatic } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import * as agentizModels from '../models';
 import { AgentActivity } from '../models/AgentActivity';
@@ -34,12 +35,39 @@ describe('AgentWorkerApiService activity emits', () => {
 
   beforeAll(async () => {
     sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false, models: Object.values(agentizModels) as any[] });
+    // Building the schema is ~40 CREATE TABLEs and costs more than everything these nine tests
+    // assert put together, so it happens once for the whole file. What changes between tests is
+    // rows, and `clearAllRows` below is what takes them away again.
+    await sequelize.sync({ force: true });
   });
 
   afterAll(async () => sequelize.close());
 
+  /**
+   * The whole database, emptied. The table list is taken from the Sequelize instance itself rather
+   * than written out here, because a table missing from a hand-kept list is a row surviving into
+   * the next test — one that passes alone and fails in company. sqlite has no TRUNCATE and does
+   * enforce foreign keys on this connection (`PRAGMA foreign_keys = 1`), so this is a plain DELETE
+   * per table in the order sequelize itself drops in: dependents before the rows they point at.
+   */
+  async function clearAllRows(): Promise<void> {
+    const sorted = sequelize.modelManager.getModelsTopoSortedByForeignKey();
+    // Only null when the models gained a foreign-key cycle, in which case no order is safe and
+    // saying so beats deleting in an arbitrary one.
+    if (!sorted) throw new Error('Model graph has a foreign-key cycle: no safe delete order.');
+    for (const model of sorted as unknown as Array<ModelStatic<Model>>) {
+      // `force` matters the day one of these models turns paranoid: a soft delete would leave the
+      // row exactly where the next test can still read it.
+      await model.destroy({ where: {}, force: true });
+    }
+  }
+
+  // Every test starts from an empty database, so none of them can come to lean on a neighbour's
+  // rows — the same guarantee `sync({ force: true })` used to give per test, now at the price of
+  // one DELETE per table instead of a rebuild of the whole schema.
+  beforeEach(clearAllRows);
+
   async function setUp(finalAction: Record<string, unknown>) {
-    await sequelize.sync({ force: true });
     const project = await AgentProject.create({ name: 'Owned', slug: 'owned', ownerId: 1 } as any);
     task = await AgentTask.create({ projectId: project.id, externalId: 'local:1', title: 'Fix auth', status: 'running', priority: 'normal' } as any);
     run = await AgentRun.create({
