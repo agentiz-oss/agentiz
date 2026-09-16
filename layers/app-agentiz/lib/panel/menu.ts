@@ -1,7 +1,12 @@
+import { Op } from 'sequelize';
 import { AgentProject } from '../../models/AgentProject';
+import { AgentRun } from '../../models/AgentRun';
+import { AgentTask } from '../../models/AgentTask';
 import { can, projectIdsForUser, type AccessCache } from '../access/projectAccess';
 import { hasGlobalToken, panelActor, requestAccessCache } from '../access/panelGuard';
 import { GLOBAL_TOKENS, PROJECT_TOKENS } from '../access/tokens';
+import { ACTIVE_RUN_STATUSES } from '../runBoard';
+import { taskViewStatuses } from '../taskViews';
 import { panelInboxCount } from './inboxPanel';
 import { href, PROJECT_SETTINGS_TITLES, type RouteMatch } from './routeTree';
 
@@ -145,6 +150,30 @@ async function blockingInboxCount(req: any): Promise<number | undefined> {
   }
 }
 
+/**
+ * Два числа проектного сайдбара: открытые задачи и идущие запуски — те же, что печатают сами
+ * экраны за этими пунктами.
+ *
+ * Определения не свои: «открытая» — вкладка «Открытые» доски задач (`taskViewStatuses('open')`),
+ * «идёт» — верхняя половина доски запусков (`ACTIVE_RUN_STATUSES` из `lib/runBoard.ts`). Считаются
+ * двумя `COUNT`, а не чтением досок: бейджу нужно число, а не строки. Как и у входящих, отказ здесь
+ * стоит бейджа, но не страницы.
+ */
+async function projectBadges(projectId: string): Promise<{ tasks?: number; runs?: number }> {
+  try {
+    const openStatuses = taskViewStatuses('open') ?? [];
+    const [tasks, runs] = await Promise.all([
+      openStatuses.length > 0
+        ? AgentTask.count({ where: { projectId, status: { [Op.in]: openStatuses } } })
+        : Promise.resolve(0),
+      AgentRun.count({ where: { projectId, status: { [Op.in]: ACTIVE_RUN_STATUSES } } }),
+    ]);
+    return { tasks: tasks || undefined, runs: runs || undefined };
+  } catch {
+    return {};
+  }
+}
+
 export async function buildAgentizMenu(req: any, match: RouteMatch | null): Promise<AgentizMenuItem[]> {
   const actor = panelActor(req);
   const cache = requestAccessCache(req);
@@ -155,10 +184,11 @@ export async function buildAgentizMenu(req: any, match: RouteMatch | null): Prom
   if (project) {
     const slug = project.slug;
     const p = { slug };
+    const badges = await projectBadges(project.id);
     items.push(
       item('agentiz-project-overview', 'Обзор', href('project.overview', p), 'dashboard', 'Проект'),
-      item('agentiz-project-tasks', 'Задачи', href('project.tasks', p), 'checklist', 'Проект'),
-      item('agentiz-project-runs', 'Запуски', href('project.runs', p), 'play_circle', 'Проект'),
+      item('agentiz-project-tasks', 'Задачи', href('project.tasks', p), 'checklist', 'Проект', badges.tasks),
+      item('agentiz-project-runs', 'Запуски', href('project.runs', p), 'play_circle', 'Проект', badges.runs),
     );
 
     if (await can(actor, project.id, PROJECT_TOKENS.projectConfigure, cache)) {

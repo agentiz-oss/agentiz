@@ -19,8 +19,14 @@ import { runUsage } from './runUsage';
  * behind it into places that only want a list of runs.
  */
 
-/** A run is "in flight" while it is in one of these states — the board's top section. */
-const ACTIVE_RUN_STATUSES = ['pending', 'running', 'waiting_input'];
+/**
+ * A run is "in flight" while it is in one of these states — the board's top section.
+ *
+ * Exported because the sidebar prints the same number as a badge (`lib/panel/menu.ts`): a counter
+ * that decided for itself what «идёт» means would disagree with the list it links to the first time
+ * a status was added.
+ */
+export const ACTIVE_RUN_STATUSES = ['pending', 'running', 'waiting_input'];
 
 /**
  * The run board: everything currently in flight plus the last finished runs, in one payload.

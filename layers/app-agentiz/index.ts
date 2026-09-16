@@ -79,6 +79,7 @@ import { TaskManagerCollectionHandler } from './lib/taskManager/TaskManagerColle
 import type { TaskManagerAdapter } from './lib/taskManager';
 import { maskProjectForUI, restoreMaskedSecrets } from './lib/secrets';
 import { GLOBAL_TOKENS, PROJECT_TOKENS, agentizAccessRightTokens } from './lib/access/tokens';
+import { agentizAdminLinks, agentizAdminLinkTemplates, assertScreensAreRootRoutes } from './lib/panel/adminLinks';
 import { guardGlobal, guardProject, panelActor, requirePanelUser, requestAccessCache } from './lib/access/panelGuard';
 import { projectIdsForUser } from './lib/access/projectAccess';
 import { installAgentizAccessRoles } from './lib/access/roleSeed';
@@ -104,6 +105,14 @@ export class AppAgentiz extends AbstractApp {
     name: string = 'App Agentiz';
 
     private syncTask: ScheduledTask | null = null;
+
+    /**
+     * Идентификаторы, которые реестр навигации выдал нашим ссылкам и шаблонам.
+     *
+     * Не вычисляются повторно в `unmount()`: id считает сам adminizer (`slug(type):slug(name)`), и
+     * повторение этой формулы у нас разошлось бы с ней ровно в тот день, когда она изменится.
+     */
+    private registeredAdminLinks: { links: string[]; templates: string[] } = { links: [], templates: [] };
 
     @Collection
     migrations: Migration[] = migrations.umzug;
@@ -551,6 +560,35 @@ export class AppAgentiz extends AbstractApp {
             // and would otherwise fail without a word.
             adminizerApp.adminizer.accessRightsHelper.registerTokens(agentizAccessRightTokens());
 
+            // Экраны Agentiz в реестре навигации — это и есть то, что ищет Ctrl/Cmd+K.
+            //
+            // Наш сайдбар в реестр не попадает: он проп страницы и живёт только на наших адресах.
+            // Измерено до этой правки: палитра не находила ни «воркеров», ни «задач», ни «обзор» —
+            // из всего дерева в ней была одна дверь «Agentiz». Регистрация идёт через тот же
+            // публичный обработчик, что и навыки ассистента ниже, и с тем же владельцем
+            // (`this.appId`), чтобы `unmount()` мог снять её целиком. Подробности и правила —
+            // lib/panel/adminLinks.ts.
+            const linkHandler = (adminizerApp.adminizer as any).adminLinkHandler;
+            if (linkHandler) {
+                assertScreensAreRootRoutes();
+                for (const link of agentizAdminLinks()) {
+                    // Дубликат — не повод падать на старте: adminizer бросает на повторное имя, а
+                    // повторный mount() того же приложения штатен в разработке.
+                    try {
+                        this.registeredAdminLinks.links.push(linkHandler.add(link, this.appId));
+                    } catch (error) {
+                        console.warn(`[AppAgentiz] admin link "${link.name}" not registered: ${(error as Error).message}`);
+                    }
+                }
+                for (const template of agentizAdminLinkTemplates()) {
+                    try {
+                        this.registeredAdminLinks.templates.push(linkHandler.addTemplate(template, this.appId));
+                    } catch (error) {
+                        console.warn(`[AppAgentiz] admin link template "${template.id}" not registered: ${(error as Error).message}`);
+                    }
+                }
+            }
+
             // The role groups and the owners' membership rows. Idempotent, and deliberately here
             // rather than in the migration: migrations do not run in development, and an access
             // boundary present on only one of the two setups is worse than none. See
@@ -604,6 +642,17 @@ export class AppAgentiz extends AbstractApp {
             this.syncTask.stop();
             this.syncTask = null;
         }
+        // Реестр навигации переживает наш аппликейшн: `add()` бросает на повторное имя, поэтому
+        // ссылки надо снять, иначе повторный mount() в разработке зальёт консоль предупреждениями
+        // и оставит в поиске адреса выключенного приложения. Владелец (`this.appId`) — то, что
+        // разрешает `remove()` снять именно наши.
+        const registry = ((this.appManager.appStorage.get('app-adminizer')?.appInstance as AppAdminizer | undefined)
+            ?.adminizer as any)?.adminLinkHandler;
+        if (registry) {
+            for (const id of this.registeredAdminLinks.links) registry.remove(id, this.appId);
+            for (const id of this.registeredAdminLinks.templates) registry.removeTemplate(id, this.appId);
+        }
+        this.registeredAdminLinks = { links: [], templates: [] };
         unregisterTaskGitProviderResolver(this.appId);
         unregisterTaskRepositoryResolver(this.appId);
         unregisterActivityNotifier('app-agentiz:activity-dashboard');
