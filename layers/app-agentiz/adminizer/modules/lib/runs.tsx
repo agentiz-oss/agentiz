@@ -287,7 +287,7 @@ function RunRow({
         )}
       </div>
       {run.pendingInteractions > 0 && link && (
-        <Badge asChild variant="outline" className="border-transparent bg-warning/20 text-warning-foreground">
+        <Badge asChild variant="outline" className="border-transparent bg-warning/20 agentiz-attention">
           <a href={link}>ждёт ответа</a>
         </Badge>
       )}
@@ -425,7 +425,7 @@ export function RunsScreen({
           !projectId ? <span key="scope">по всем проектам</span> : null,
           list.active.length > 0 ? <span key="active">{list.active.length} идут сейчас</span> : null,
           waiting > 0 ? (
-            <span key="waiting" className="text-warning-foreground">
+            <span key="waiting" className="agentiz-attention">
               {waiting} {plural(waiting, 'ждёт', 'ждут', 'ждут')} ответа
             </span>
           ) : null,
@@ -441,7 +441,7 @@ export function RunsScreen({
             : 'идущие целиком, завершённые — последние 25'}
           {needle ? ' · поиск по загруженным строкам' : ''}
         </span>
-        {stale && <span className="text-xs text-warning-foreground">список не обновляется — сервер не отвечает</span>}
+        {stale && <span className="text-xs agentiz-attention">список не обновляется — сервер не отвечает</span>}
       </FilterBar>
 
       {active.length === 0 && recent.length === 0 ? (
@@ -519,7 +519,7 @@ function StageList({ stages, current }: { stages: StageExecution[]; current: num
 const LOG_LEVEL_CLASS: Record<string, string> = {
   info: 'text-foreground',
   debug: 'text-muted-foreground',
-  warn: 'text-warning-foreground',
+  warn: 'agentiz-attention',
   error: 'text-destructive',
 };
 
@@ -644,7 +644,7 @@ function ChangesTab({ diff, canApply, onApply, busy }: {
       />
 
       {diff.truncated && (
-        <p className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm text-warning-foreground">
+        <p className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm agentiz-attention">
           Патч обрезан по лимиту размера — показан не весь. Операции сохранены полностью, применяются именно они.
         </p>
       )}
@@ -1042,7 +1042,7 @@ export function RunScreen({
           ) : null,
           <span key="trigger">{triggerLabel(run.trigger)}</span>,
           <span key="created">{formatDateTime(run.createdAt)}</span>,
-          failed ? <span key="stale" className="text-warning-foreground">не обновляется — сервер не отвечает</span> : null,
+          failed ? <span key="stale" className="agentiz-attention">не обновляется — сервер не отвечает</span> : null,
         ]}
         actions={
           live ? (
@@ -1088,7 +1088,7 @@ export function RunScreen({
         <div key={interaction.id} className="mb-6 rounded-lg border border-warning/50 bg-warning/10 p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm font-medium">
-              <MessageSquare className="size-4 text-warning-foreground" /> Запуск ждёт вашего ответа
+              <MessageSquare className="size-4 agentiz-attention" /> Запуск ждёт вашего ответа
             </div>
             <span className="text-xs text-muted-foreground">
               {stages.find((stage) => stage.id === interaction.stageExecutionId)?.role ?? 'этап'} · {interaction.source}
@@ -1101,7 +1101,7 @@ export function RunScreen({
       {waiting && (
         <div className="mb-6 rounded-lg border border-warning/50 bg-warning/10 p-4">
           <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-            <AlertTriangle className="size-4 text-warning-foreground" /> {waiting.title}
+            <AlertTriangle className="size-4 agentiz-attention" /> {waiting.title}
           </div>
           <p className="text-sm text-muted-foreground">
             {waiting.explain}

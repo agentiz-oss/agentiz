@@ -19,7 +19,7 @@ const TONES: Record<Tone, string> = {
   neutral: 'border-border bg-secondary text-secondary-foreground',
   running: 'border-transparent bg-chart-1/15 text-chart-1',
   success: 'border-transparent bg-chart-2/15 text-chart-2',
-  warn: 'border-transparent bg-warning/20 text-warning-foreground',
+  warn: 'border-transparent bg-warning/20 agentiz-attention',
   danger: 'border-transparent bg-destructive/15 text-destructive',
   muted: 'border-border bg-transparent text-muted-foreground',
 };

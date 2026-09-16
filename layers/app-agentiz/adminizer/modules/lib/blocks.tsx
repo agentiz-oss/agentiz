@@ -43,6 +43,7 @@ export function Filter({
   options,
   className,
   disabled,
+  'aria-label': ariaLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -50,10 +51,12 @@ export function Filter({
   className?: string;
   /** A value somebody may read but not change — shown, not hidden: it explains the behaviour. */
   disabled?: boolean;
+  /** For a filter whose caption is a column header rather than a label beside it. */
+  'aria-label'?: string;
 }) {
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
-      <SelectTrigger size="sm" className={cn('h-8 w-auto min-w-36', className)}>
+      <SelectTrigger size="sm" aria-label={ariaLabel} className={cn('h-8 w-auto min-w-36', className)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

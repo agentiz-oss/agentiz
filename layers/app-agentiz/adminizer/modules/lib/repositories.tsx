@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -457,7 +458,7 @@ export function ProjectRepositoriesScreen({
         description="Здесь только то, с чем работает проект. Учётные записи и OAuth-приложения — в разделе интеграций уровня установки."
         actions={canConfigure && (
           <Button onClick={() => setPicking((value) => !value)} disabled={!canManageConnections}>
-            Добавить репозиторий
+            <Plus /> Добавить репозиторий
           </Button>
         )}
       />

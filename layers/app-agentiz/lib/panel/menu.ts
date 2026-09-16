@@ -38,7 +38,7 @@ export interface AgentizMenuItem {
  * apps contribute — the panel's default ordering is alphabetical, and «Автоматизация» sorting
  * between «Админ» and «Моя работа» reads as noise.
  */
-export const AGENTIZ_SECTIONS: Record<string, { icon: string; order: number }> = {
+export const AGENTIZ_SECTIONS = {
   'Моя работа': { icon: 'inbox', order: 10 },
   Проект: { icon: 'dashboard', order: 10 },
   Проекты: { icon: 'workspaces', order: 20 },
@@ -47,8 +47,17 @@ export const AGENTIZ_SECTIONS: Record<string, { icon: string; order: number }> =
   Инфраструктура: { icon: 'dns', order: 30 },
   Интеграции: { icon: 'power', order: 40 },
   Настройки: { icon: 'settings', order: 50 },
-  Админ: { icon: 'database', order: 90 },
-};
+  // `storage`, не `database`: панель рисует иконку лигатурой шрифта Material Icons Outlined, а
+  // такого имени в нём нет — вместо значка печаталось слово «database» и сдвигало строку.
+  Админ: { icon: 'storage', order: 90 },
+} satisfies Record<string, { icon: string; order: number }>;
+
+/**
+ * The name of a section, as a type. `render.ts` prints these words as the first breadcrumb, so a
+ * section renamed here and not there would have the crumb and the sidebar group disagree — with
+ * `satisfies` above, the keys stay literal and the compiler catches it.
+ */
+export type AgentizSection = keyof typeof AGENTIZ_SECTIONS;
 
 function item(
   id: string,
@@ -193,7 +202,7 @@ export async function buildAgentizMenu(req: any, match: RouteMatch | null): Prom
     if (hasGlobalToken(req, GLOBAL_TOKENS.notificationsManage)) {
       items.push(item('agentiz-notifications', 'Уведомления', href('settings.notifications'), 'notifications', 'Настройки'));
     }
-    items.push(item('agentiz-data', 'Модели данных', href('admin.data'), 'database', 'Админ'));
+    items.push(item('agentiz-data', 'Модели данных', href('admin.data'), 'storage', 'Админ'));
   }
 
   return [...items, ...(await restOfPanel(req))];

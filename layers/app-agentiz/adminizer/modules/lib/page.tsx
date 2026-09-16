@@ -22,7 +22,9 @@ export function Page({
   width?: keyof typeof WIDTH;
   className?: string;
 }) {
-  return <div className={cn('mx-auto w-full px-6 py-5', WIDTH[width], className)}>{children}</div>;
+  // `agentiz-page` не стилевой класс, а метка: по ней `agentiz.css` отличает наши страницы от
+  // чужих и правит геометрию оболочки (высота шапки, отступ обёртки) только на них.
+  return <div className={cn('agentiz-page mx-auto w-full px-6 py-5', WIDTH[width], className)}>{children}</div>;
 }
 
 export function PageHeader({

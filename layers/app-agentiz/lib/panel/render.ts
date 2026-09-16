@@ -9,13 +9,13 @@ import { can, projectIdsForUser } from '../access/projectAccess';
 import { hasGlobalToken, panelActor, requestAccessCache } from '../access/panelGuard';
 import { GLOBAL_TOKENS, PROJECT_TOKENS } from '../access/tokens';
 import { adminizerModuleStylesheet, adminizerModuleUrl } from '../adminizerModuleUrl';
-import { buildAgentizMenu, buildAgentizSections } from './menu';
+import { buildAgentizMenu, buildAgentizSections, type AgentizSection } from './menu';
 import { listRuns } from '../runBoard';
 import { workerFleet } from '../workerBoard';
 import { panelInbox } from './inboxPanel';
 import { gitProviderDetail, gitProvidersOverview, projectRepositoryRows } from './repositoriesPanel';
 import { pipelineBoard } from './pipelinesPanel';
-import { globalOverview, projectOverview } from './overviewPanel';
+import { globalOverview, projectOverview, projectRows } from './overviewPanel';
 import { projectAgentRoles, projectGeneralView, projectMembersView, projectSourcesView } from './settingsPanel';
 import { NotificationPolicyService } from '../../services/NotificationPolicyService';
 import { agentizDataModels } from './modelConfigs';
@@ -56,6 +56,14 @@ function subPathOf(req: any, base: string): string {
  * `entity` is the name of the thing the address opens, when the screen's own data already carries
  * one and it reads better than the id. Optional rather than looked up here: this function must not
  * grow a query per crumb, and an id is always a correct answer.
+ *
+ * The **first** crumb is the sidebar section the screen lives in, not a constant «Agentiz»: that
+ * is what the `ui-1-sol` mock does, and it is the only thing in the header that says which of the
+ * six groups of the sidebar you are inside. Words come from `AGENTIZ_SECTIONS` in `menu.ts`, so
+ * the crumb and the group it names cannot be renamed apart; a section crumb carries no `href`,
+ * because a section is not an address. Inside a project the chain starts at «Проекты» instead —
+ * there the project itself is the context, and the global overview is one click away in the
+ * sidebar.
  */
 function crumbsFor(match: RouteMatch, projectName: string | null, entity?: string | null): Array<{ title: string; href?: string }> {
   const root = { title: 'Agentiz', href: href('overview') };
@@ -63,36 +71,56 @@ function crumbsFor(match: RouteMatch, projectName: string | null, entity?: strin
   const slug = p.slug;
   const project = () => ({ title: projectName ?? slug, href: href('project.overview', { slug }) });
   const projects = () => ({ title: 'Проекты', href: href('projects') });
+  /** A sidebar group as a crumb. The argument is a key of `AGENTIZ_SECTIONS`, checked below. */
+  const section = (name: AgentizSection) => ({ title: name });
+  /** The project chain every project screen starts with: «Проекты › <проект>». */
+  const inProject = () => [projects(), project()];
 
   switch (match.name) {
-    case 'overview': return [{ title: 'Обзор' }];
+    case 'overview': return [root, { title: 'Обзор' }];
     case 'inbox': return [root, { title: 'Входящие' }];
     case 'runs': return [root, { title: 'Запуски' }];
     case 'projects': return [root, { title: 'Проекты' }];
-    case 'project.overview': return [root, projects(), { title: projectName ?? slug }];
-    case 'project.tasks': return [root, project(), { title: 'Задачи' }];
+    case 'project.overview': return [projects(), { title: projectName ?? slug }, { title: 'Обзор' }];
+    case 'project.tasks': return [...inProject(), { title: 'Задачи' }];
     // Same reason as the run below: the id is a uuid, and the crumb bar is not where anybody copies
     // one — the head is enough to recognise what you are on, and the whole string wraps.
-    case 'project.task': return [root, project(), { title: 'Задачи', href: href('project.tasks', { slug }) }, { title: p.taskId.slice(0, 8) }];
-    case 'project.runs': return [root, project(), { title: 'Запуски' }];
+    case 'project.task': return [...inProject(), { title: 'Задачи', href: href('project.tasks', { slug }) }, { title: p.taskId.slice(0, 8) }];
+    case 'project.runs': return [...inProject(), { title: 'Запуски' }];
     // A run is a uuid and the crumb bar is not where anybody copies one: the head is enough to
     // recognise the run you are on, and the whole string wraps onto three lines.
-    case 'project.run': return [root, project(), { title: 'Запуски', href: href('project.runs', { slug }) }, { title: p.runId.slice(0, 8) }];
-    case 'project.pipelines': return [root, project(), { title: 'Пайплайны' }];
-    case 'project.pipeline': return [root, project(), { title: 'Пайплайны', href: href('project.pipelines', { slug }) }, { title: entity ?? p.specId }];
-    case 'project.workflows': return [root, project(), { title: 'Воркфлоу' }];
-    case 'project.workflow': return [root, project(), { title: 'Воркфлоу', href: href('project.workflows', { slug }) }, { title: p.workflowId }];
-    case 'project.repositories': return [root, project(), { title: 'Репозитории' }];
-    case 'project.settings': return [root, project(), { title: 'Настройки' }, { title: PROJECT_SETTINGS_TITLES[p.section as ProjectSettingsSection] ?? p.section }];
-    case 'workers': return [root, { title: 'Воркеры' }];
-    case 'worker': return [root, { title: 'Воркеры', href: href('workers') }, { title: p.workerId }];
-    case 'harnesses': return [root, { title: 'Обвязки и лимиты' }];
-    case 'integrations.git': return [root, { title: 'Git-провайдеры' }];
-    case 'integrations.gitProvider': return [root, { title: 'Git-провайдеры', href: href('integrations.git') }, { title: p.provider }];
-    case 'settings.notifications': return [root, { title: 'Уведомления' }];
-    case 'admin.data': return [root, { title: 'Модели данных' }];
+    case 'project.run': return [...inProject(), { title: 'Запуски', href: href('project.runs', { slug }) }, { title: p.runId.slice(0, 8) }];
+    case 'project.pipelines': return [...inProject(), section('Автоматизация'), { title: 'Пайплайны' }];
+    case 'project.pipeline': return [...inProject(), { title: 'Пайплайны', href: href('project.pipelines', { slug }) }, { title: entity ?? p.specId }];
+    case 'project.workflows': return [...inProject(), section('Автоматизация'), { title: 'Воркфлоу' }];
+    case 'project.workflow': return [...inProject(), { title: 'Воркфлоу', href: href('project.workflows', { slug }) }, { title: entity ?? p.workflowId.slice(0, 8) }];
+    case 'project.repositories': return [...inProject(), { title: 'Репозитории' }];
+    case 'project.settings': return [...inProject(), section('Настройки'), { title: PROJECT_SETTINGS_TITLES[p.section as ProjectSettingsSection] ?? p.section }];
+    case 'workers': return [section('Инфраструктура'), { title: 'Воркеры' }];
+    // The machine's name, not its uuid: the whole id wrapped the crumb bar onto two lines and is
+    // not what anybody recognises a worker by.
+    case 'worker': return [section('Инфраструктура'), { title: 'Воркеры', href: href('workers') }, { title: entity ?? p.workerId.slice(0, 8) }];
+    case 'harnesses': return [section('Инфраструктура'), { title: 'Обвязки и лимиты' }];
+    case 'integrations.git': return [section('Интеграции'), { title: 'Git-провайдеры' }];
+    case 'integrations.gitProvider': return [section('Интеграции'), { title: 'Git-провайдеры', href: href('integrations.git') }, { title: p.provider }];
+    case 'settings.notifications': return [section('Настройки'), { title: 'Уведомления' }];
+    case 'admin.data': return [section('Админ'), { title: 'Модели данных' }];
     default: return [root];
   }
+}
+
+/**
+ * The name of the entity the address opens, for the last crumb. Read from the data the screen was
+ * given anyway — never a query of its own, and `null` is always a legal answer (the crumb then
+ * prints the head of the id).
+ */
+function entityNameOf(match: RouteMatch, data: Record<string, unknown>): string | null {
+  if (match.name === 'project.pipeline') return (data as any)?.board?.spec?.name ?? null;
+  if (match.name === 'worker') {
+    const workers = (data as any)?.fleet?.workers as Array<{ id: string; name: string }> | undefined;
+    return workers?.find((worker) => worker.id === match.params.workerId)?.name ?? null;
+  }
+  return null;
 }
 
 /**
@@ -108,15 +136,9 @@ async function dataFor(req: any, match: RouteMatch, project: AgentProject | null
   if (match.name === 'projects') {
     const ids = await projectIdsForUser(actor, PROJECT_TOKENS.read, cache);
     const projects = await AgentProject.findAll({ where: { id: ids }, order: [['createdAt', 'DESC']] });
-    return {
-      projects: projects.map((project) => ({
-        id: project.id,
-        slug: project.slug,
-        name: project.name,
-        isActive: (project as any).isActive ?? true,
-        href: href('project.overview', { slug: project.slug }),
-      })),
-    };
+    // The counters beside a name come from the same readers the screens behind them use
+    // (`overviewPanel.projectRows`), not from a count written for this list.
+    return { projects: await projectRows(projects) };
   }
 
   // Both overviews are built from other screens' own readers (`overviewPanel.ts`) — the inbox, the
@@ -399,7 +421,7 @@ export async function renderAgentizApp(req: any, res: any): Promise<unknown> {
   // here escapes the dispatcher and kills the process rather than answering 500.
   let breadcrumbs: Array<{ title: string; href?: string }> = [];
   try {
-    breadcrumbs = crumbsFor(match, project?.name ?? null, (data as any)?.board?.spec?.name ?? null);
+    breadcrumbs = crumbsFor(match, project?.name ?? null, entityNameOf(match, data));
   } catch { /* falls back to no crumbs */ }
 
   // Two addresses of this tree draw somebody else's screen. See `foreignModule` below.

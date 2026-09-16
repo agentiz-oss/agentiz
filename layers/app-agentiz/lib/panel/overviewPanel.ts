@@ -1,4 +1,4 @@
-import { Op } from 'sequelize';
+import { col, fn, Op } from 'sequelize';
 import { AgentActivity } from '../../models/AgentActivity';
 import { AgentProject } from '../../models/AgentProject';
 import { AgentTask } from '../../models/AgentTask';
@@ -189,4 +189,72 @@ export async function globalOverview(req: any): Promise<PanelOverview> {
 /** The overview of one project. The caller has already checked that it may be read. */
 export async function projectOverview(req: any, project: AgentProject): Promise<PanelOverview> {
   return build(req, [project.id], project);
+}
+
+/**
+ * One row of «Проекты» — the screen that used to be a wall of cards with a slug under each name.
+ *
+ * The numbers are the same three a person compares projects by on every other screen, and they
+ * come from the same readers: open tasks are the board's «Открытые» tab (`taskViewStatuses`),
+ * runs in flight are `listRuns().active`, and «когда в проекте последний раз что-то было» is the
+ * activity feed — the journal that is written for every event whatever the notification policy
+ * says, so a project nobody is subscribed to still reports its age honestly.
+ */
+export interface ProjectRow {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  openTasks: number;
+  activeRuns: number;
+  /** ISO, or null for a project where nothing has happened yet. */
+  lastActivityAt: string | null;
+  href: string;
+}
+
+/**
+ * The list behind «Проекты». Three grouped queries and one run-board read for the whole list, not
+ * a query per project: the screen is opened by people who have every project in scope.
+ */
+export async function projectRows(projects: AgentProject[]): Promise<ProjectRow[]> {
+  const ids = projects.map((project) => project.id);
+  if (ids.length === 0) return [];
+
+  const [openTasks, runs, lastActivity] = await Promise.all([
+    AgentTask.findAll({
+      where: { projectId: { [Op.in]: ids }, status: { [Op.in]: OPEN_TASK_STATUSES } },
+      attributes: ['projectId', [fn('COUNT', col('id')), 'count']],
+      group: ['projectId'],
+      raw: true,
+    }) as unknown as Promise<Array<{ projectId: string; count: number }>>,
+    listRuns('', ids),
+    AgentActivity.findAll({
+      where: { projectId: { [Op.in]: ids } },
+      attributes: ['projectId', [fn('MAX', col('createdAt')), 'last']],
+      group: ['projectId'],
+      raw: true,
+    }) as unknown as Promise<Array<{ projectId: string; last: string }>>,
+  ]);
+
+  const tasksByProject = new Map(openTasks.map((row) => [row.projectId, Number(row.count) || 0]));
+  const lastByProject = new Map(lastActivity.map((row) => [row.projectId, row.last]));
+  const runsByProject = new Map<string, number>();
+  for (const run of runs.active) {
+    const id = run.project?.id;
+    if (id) runsByProject.set(id, (runsByProject.get(id) ?? 0) + 1);
+  }
+
+  return projects.map((project) => ({
+    id: project.id,
+    slug: project.slug,
+    name: project.name,
+    description: project.description ?? null,
+    isActive: project.isActive !== false,
+    openTasks: tasksByProject.get(project.id) ?? 0,
+    activeRuns: runsByProject.get(project.id) ?? 0,
+    // `MAX()` comes back as whatever the dialect stores — a string on sqlite, a Date on postgres.
+    lastActivityAt: lastByProject.get(project.id) ? new Date(lastByProject.get(project.id)!).toISOString() : null,
+    href: href('project.overview', { slug: project.slug }),
+  }));
 }

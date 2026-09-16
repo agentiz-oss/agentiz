@@ -323,7 +323,7 @@ function AttentionStrip({ items, onDone }: { items: PanelInboxItem[]; onDone: ()
       {items.map((item) => (
         <div key={item.id} className="rounded-lg border border-warning/50 bg-warning/10 p-4">
           <div className="mb-1 flex flex-wrap items-center gap-2 text-sm font-medium">
-            <AlertTriangle className="size-4 text-warning-foreground" />
+            <AlertTriangle className="size-4 agentiz-attention" />
             {item.badge}
             {item.waitingSince && <span className="text-xs font-normal text-muted-foreground">ждёт {ago(item.waitingSince)}</span>}
           </div>
@@ -762,7 +762,7 @@ function NewTaskSheet({
                 </li>
               ))}
             </ul>
-            {progress && <p className="mt-2 text-xs text-warning-foreground">{progress}</p>}
+            {progress && <p className="mt-2 text-xs agentiz-attention">{progress}</p>}
           </div>
         </div>
         <SheetFooter>
@@ -896,7 +896,7 @@ export function TasksScreen({
         title="Задачи"
         meta={[
           <span key="total">{list.total} {plural(list.total, 'задача', 'задачи', 'задач')} под фильтром</span>,
-          stale ? <span key="stale" className="text-warning-foreground">список не обновляется — сервер не отвечает</span> : null,
+          stale ? <span key="stale" className="agentiz-attention">список не обновляется — сервер не отвечает</span> : null,
         ]}
         actions={<Button onClick={() => setNewOpen(true)}><Plus /> Новая задача</Button>}
         tabs={
@@ -1281,7 +1281,7 @@ function FilesTab({ details, onChanged }: { details: TaskDetails; onChanged: () 
             <Paperclip /> Прикрепить
           </Button>
         </div>
-        {progress && <p className="mt-2 text-xs text-warning-foreground">{progress}</p>}
+        {progress && <p className="mt-2 text-xs agentiz-attention">{progress}</p>}
       </div>
 
       {details.attachments.length === 0 ? (
@@ -1418,7 +1418,7 @@ export function TaskScreen({
           task.externalUrl ? (
             <a key="link" href={task.externalUrl} target="_blank" rel="noreferrer" className="underline">открыть в трекере</a>
           ) : null,
-          failed ? <span key="stale" className="text-warning-foreground">не обновляется — сервер не отвечает</span> : null,
+          failed ? <span key="stale" className="agentiz-attention">не обновляется — сервер не отвечает</span> : null,
         ]}
         actions={
           <>
@@ -1449,7 +1449,7 @@ export function TaskScreen({
       {!details.runOptions && (
         <div className="mb-6 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm">
           <div className="mb-1 flex items-center gap-2 font-medium">
-            <AlertTriangle className="size-4 text-warning-foreground" /> Запускать нечего
+            <AlertTriangle className="size-4 agentiz-attention" /> Запускать нечего
           </div>
           <p className="text-muted-foreground">
             У проекта нет активного пайплайна, который подошёл бы этой задаче. Заведите его в разделе «Пайплайны» —

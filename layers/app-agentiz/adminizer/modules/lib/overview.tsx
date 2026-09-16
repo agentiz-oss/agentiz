@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { AlertTriangle, Clock, Play } from 'lucide-react';
+import { AlertTriangle, CircleDot, Clock, MessageSquare, Play, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { href } from '../../../lib/panel/routeTree';
@@ -62,16 +62,30 @@ function currentStage(run: RunCard): string {
   return stage ? stage.role : '—';
 }
 
+/**
+ * Значок строки — по её виду, а не один треугольник на всё.
+ *
+ * Виды приходят с сервера (`InboxItemKind` в `lib/inbox/items.ts`) и уже разделены по смыслу:
+ * вопрос агента — это реплика, ревью и приёмка — решение, а упавший пуш и разлогиненная обвязка —
+ * поломка. Иначе список из трёх разных ожиданий выглядит как три одинаковые аварии.
+ */
+function attentionIcon(kind: string) {
+  if (kind === 'question') return MessageSquare;
+  if (kind === 'push_failed' || kind === 'reset_failed' || kind === 'harness_auth' || kind === 'run_failed') return AlertTriangle;
+  return CircleDot;
+}
+
 /** One row of «требует внимания». The wording is the server's — see `lib/inbox/items.ts`. */
 function AttentionRow({ item, showProject }: { item: PanelInboxItem; showProject: boolean }) {
   const where = [
     showProject ? item.projectSlug ?? item.projectName : null,
     item.taskTitle,
   ].filter(Boolean).join(' · ');
+  const Icon = attentionIcon(item.kind);
 
   return (
     <li className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
-      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning-foreground" />
+      <Icon className="mt-0.5 size-4 shrink-0 agentiz-attention" />
       <div className="min-w-0 flex-1">
         {item.href ? (
           <a href={item.href} className="text-sm font-medium hover:underline">{item.headline}</a>
@@ -135,19 +149,19 @@ function ActivityList({ rows, showProject }: { rows: OverviewActivityRow[]; show
   return (
     <ul className="divide-y rounded-lg border">
       {rows.map((row) => (
+        // Одна строка, а не две: `badge` из `activityTypes.ts` почти всегда пересказывает заголовок
+        // («Сброс воркспейса не удался» · «сброс не прошёл»), и вторая строка добавляла высоты,
+        // а не смысла. Проект остаётся — он единственное, чего в заголовке нет.
         <li key={row.id} className="flex items-center gap-3 px-4 py-2.5">
           <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-          <div className="min-w-0 flex-1">
-            {row.href ? (
-              <a href={row.href} className="block truncate text-sm hover:underline">{row.title}</a>
-            ) : (
-              <span className="block truncate text-sm">{row.title}</span>
-            )}
-            <span className="truncate text-xs text-muted-foreground">
-              {row.badge ?? row.type}
-              {showProject && row.projectSlug ? ` · ${row.projectSlug}` : ''}
-            </span>
-          </div>
+          {row.href ? (
+            <a href={row.href} className="min-w-0 flex-1 truncate text-sm hover:underline">{row.title}</a>
+          ) : (
+            <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
+          )}
+          {showProject && row.projectSlug && (
+            <span className="w-32 shrink-0 truncate text-right text-xs text-muted-foreground max-md:hidden">{row.projectSlug}</span>
+          )}
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{ago(row.createdAt)}</span>
         </li>
       ))}
@@ -187,7 +201,7 @@ export function OverviewScreen({ data }: { data: PanelOverview }) {
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
-              <AlertTriangle className="size-4 text-warning-foreground" /> Требует внимания
+              <AlertTriangle className="size-4 agentiz-attention" /> Требует внимания
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-0">
@@ -264,7 +278,7 @@ export function ProjectOverviewScreen({
         ]}
         actions={
           <Button asChild>
-            <a href={href('project.tasks', { slug }, { new: '1' })}>Новая задача</a>
+            <a href={href('project.tasks', { slug }, { new: '1' })}><Plus /> Новая задача</a>
           </Button>
         }
       />
@@ -272,7 +286,7 @@ export function ProjectOverviewScreen({
       {data.attention.length > 0 && (
         <div className="mb-6 rounded-lg border border-warning/50 bg-warning/10 p-4">
           <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-            <AlertTriangle className="size-4 text-warning-foreground" /> Требует внимания
+            <AlertTriangle className="size-4 agentiz-attention" /> Требует внимания
           </div>
           <ul className="space-y-1.5">
             {data.attention.map((item) => <AttentionRow key={item.id} item={item} showProject={false} />)}

@@ -628,7 +628,7 @@ export function WorkersScreen({ initial }: { initial: WorkerFleet }) {
         meta={[
           <span key="count">{fleet.workers.length} {plural(fleet.workers.length, 'машина', 'машины', 'машин')}</span>,
           <span key="online">{online} на связи</span>,
-          stale ? <span key="stale" className="text-warning-foreground">не обновляется — сервер не отвечает</span> : null,
+          stale ? <span key="stale" className="agentiz-attention">не обновляется — сервер не отвечает</span> : null,
         ]}
         actions={fleet.canManage ? (
           <>
@@ -775,7 +775,7 @@ export function WorkerScreen({ initial, workerId }: { initial: WorkerFleet; work
           <StatusBadge key="status" status={fleetStatus(current)} />,
           <span key="kind">{KIND_LABELS[current.kind] ?? current.kind}</span>,
           <span key="version" className="font-mono text-xs">{versionLabel(current.version)}</span>,
-          stale ? <span key="stale" className="text-warning-foreground">не обновляется — сервер не отвечает</span> : null,
+          stale ? <span key="stale" className="agentiz-attention">не обновляется — сервер не отвечает</span> : null,
         ]}
         actions={readOnly || revoked ? undefined : (
           <>
@@ -1551,7 +1551,7 @@ export function HarnessesScreen({ initial }: { initial: WorkerFleet }) {
         description="Подписка принадлежит аккаунту, а не машине: одна и та же может обслуживать несколько воркеров, и сигнал от любой из них закрывает всех. Секретов здесь нет — авторизация живёт на машинах воркеров."
         meta={[
           <span key="count">{fleet.subscriptions.length} {plural(fleet.subscriptions.length, 'подписка', 'подписки', 'подписок')}</span>,
-          stale ? <span key="stale" className="text-warning-foreground">не обновляется — сервер не отвечает</span> : null,
+          stale ? <span key="stale" className="agentiz-attention">не обновляется — сервер не отвечает</span> : null,
         ]}
       />
 

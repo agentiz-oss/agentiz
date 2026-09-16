@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -331,7 +332,7 @@ function MembersSection({
         title="Люди и роли"
         description="Роль — лестница: каждая ступень содержит предыдущую целиком. Владелец проекта тоже строка участника — без неё проект не виден ему самому."
         footer={canManage && !inviting ? (
-          <Button variant="outline" size="sm" onClick={() => setInviting(true)}>Добавить участника</Button>
+          <Button variant="outline" size="sm" onClick={() => setInviting(true)}><Plus /> Добавить участника</Button>
         ) : undefined}
       >
         {view.items.length === 0 ? (
@@ -541,7 +542,7 @@ function SourcesSection({
       title="Откуда приходят задачи"
       description="Каждый источник — один удалённый таск-менеджер. Раньше это жило прямо на экране задач и делало доску настройкой проекта."
       footer={canConfigure && !adding ? (
-        <Button variant="outline" size="sm" onClick={() => setAdding(true)}>Добавить источник</Button>
+        <Button variant="outline" size="sm" onClick={() => setAdding(true)}><Plus /> Добавить источник</Button>
       ) : undefined}
     >
       {sources.length === 0 ? (
@@ -779,47 +780,60 @@ export function NotificationScopeEditor({
           <span className="text-xs text-muted-foreground">(кроме типов, у которых ниже выбрано явное значение)</span>
         </label>
 
+        {/*
+          * Подписи каналов — шапка списка, а не подпись у каждого селекта.
+          *
+          * Замерено: в узкой колонке настроек строке достаётся 664 px, а «Пуш» + селект +
+          * «Колокольчик» + селект съедали 567 из них. Названию оставалось около сорока, и от
+          * «Агент задал вопрос» на экране было «А…» — двадцать шесть строк, в которых нельзя
+          * прочитать ни одного события. Два слова, вынесенные наверх, отдают эти 127 px названию,
+          * а селекты заодно становятся шире текста «как выше: не слать» (131 px), который до этого
+          * обрезался в каждой строке.
+          */}
         <ul className="divide-y rounded-lg border">
+          <li className="flex items-center gap-3 px-4 py-2 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1">Событие</span>
+            <span className="w-48 shrink-0">Пуш</span>
+            <span className="w-48 shrink-0">Колокольчик</span>
+          </li>
           {view.types.map((row) => {
             const entry = draft[row.type] ?? {};
             return (
               <li key={row.type} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-                <div className="min-w-0 flex-1">
+                <div className="min-w-48 flex-1">
                   <div className="truncate text-sm">{row.label}</div>
-                  <div className="truncate font-mono text-xs text-muted-foreground">{row.type}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    <span className="font-mono">{row.type}</span>
+                    <span className="max-md:hidden">
+                      {' · сейчас: '}{PUSH_LABELS[row.effective.push]} · {DASHBOARD_LABELS[row.effective.dashboard]}
+                    </span>
+                  </div>
                 </div>
-                <span className="w-40 shrink-0 text-right text-xs text-muted-foreground max-lg:hidden">
-                  сейчас: {PUSH_LABELS[row.effective.push]} · {DASHBOARD_LABELS[row.effective.dashboard]}
-                </span>
-                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  Пуш
-                  <Filter
-                    value={entry.push ?? INHERIT}
-                    onChange={(value) => setChannel(row.type, 'push', value)}
-                    disabled={!canEdit || busy}
-                    options={[
-                      { value: INHERIT, label: `наследуется (${PUSH_LABELS[row.inherited.push]})` },
-                      { value: 'on', label: 'будить' },
-                      { value: 'silent', label: 'тихо' },
-                      { value: 'off', label: 'не слать' },
-                    ]}
-                    className="w-44"
-                  />
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  Колокольчик
-                  <Filter
-                    value={entry.dashboard ?? INHERIT}
-                    onChange={(value) => setChannel(row.type, 'dashboard', value)}
-                    disabled={!canEdit || busy}
-                    options={[
-                      { value: INHERIT, label: `наследуется (${DASHBOARD_LABELS[row.inherited.dashboard]})` },
-                      { value: 'on', label: 'слать' },
-                      { value: 'off', label: 'не слать' },
-                    ]}
-                    className="w-44"
-                  />
-                </label>
+                <Filter
+                  value={entry.push ?? INHERIT}
+                  onChange={(value) => setChannel(row.type, 'push', value)}
+                  disabled={!canEdit || busy}
+                  aria-label={`Пуш: ${row.label}`}
+                  options={[
+                    { value: INHERIT, label: `как выше: ${PUSH_LABELS[row.inherited.push]}` },
+                    { value: 'on', label: 'будить' },
+                    { value: 'silent', label: 'тихо' },
+                    { value: 'off', label: 'не слать' },
+                  ]}
+                  className="w-48 shrink-0"
+                />
+                <Filter
+                  value={entry.dashboard ?? INHERIT}
+                  onChange={(value) => setChannel(row.type, 'dashboard', value)}
+                  disabled={!canEdit || busy}
+                  aria-label={`Колокольчик: ${row.label}`}
+                  options={[
+                    { value: INHERIT, label: `как выше: ${DASHBOARD_LABELS[row.inherited.dashboard]}` },
+                    { value: 'on', label: 'слать' },
+                    { value: 'off', label: 'не слать' },
+                  ]}
+                  className="w-48 shrink-0"
+                />
               </li>
             );
           })}

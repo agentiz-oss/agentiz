@@ -38,22 +38,35 @@ interface SplitLinePair {
   hunk?: string;
 }
 
+/**
+ * Цвета — переменные палитры панели, а не фиксированный «тёмный GitHub».
+ *
+ * Хексы, стоявшие здесь раньше, рисовали чёрную плиту дифа посреди светлой страницы: панель (и
+ * макет `ui-1-sol`) красят добавленные строки `bg-chart-2/10 text-chart-2`, удалённые —
+ * `bg-destructive/10 text-destructive`, шапку файла — `bg-muted/40`. Инлайновые стили здесь
+ * остаются (компонент вендорный и не знает про наши классы), но значение берётся из тех же
+ * `--chart-2` / `--destructive` / `--muted`, которые adminizer объявляет в обеих темах — поэтому
+ * теперь диф светлый на светлой теме и тёмный на тёмной, без единой строки про темы.
+ *
+ * `color-mix` — то же, чем tailwind v4 считает модификатор прозрачности (`/10`), так что ничего
+ * нового от браузера это не требует.
+ */
 const palette = {
-  border: "#30363d",
-  background: "#0d1117",
-  text: "#e6edf3",
-  gutterText: "#6e7681",
-  headerBackground: "#161b22",
-  headerText: "#c9d1d9",
-  hunkBackground: "#161b22",
-  hunkText: "#8b949e",
-  addBackground: "rgba(46,160,67,0.18)",
-  addGutter: "rgba(46,160,67,0.32)",
-  addText: "#7ee787",
-  delBackground: "rgba(248,81,73,0.16)",
-  delGutter: "rgba(248,81,73,0.3)",
-  delText: "#ffa198",
-  emptyBackground: "#0b0e13",
+  border: "var(--border)",
+  background: "var(--card)",
+  text: "var(--foreground)",
+  gutterText: "var(--muted-foreground)",
+  headerBackground: "color-mix(in oklab, var(--muted) 40%, transparent)",
+  headerText: "var(--foreground)",
+  hunkBackground: "color-mix(in oklab, var(--muted) 40%, transparent)",
+  hunkText: "var(--muted-foreground)",
+  addBackground: "color-mix(in oklab, var(--chart-2) 12%, transparent)",
+  addGutter: "color-mix(in oklab, var(--chart-2) 22%, transparent)",
+  addText: "var(--chart-2)",
+  delBackground: "color-mix(in oklab, var(--destructive) 12%, transparent)",
+  delGutter: "color-mix(in oklab, var(--destructive) 22%, transparent)",
+  delText: "var(--destructive)",
+  emptyBackground: "color-mix(in oklab, var(--muted) 25%, transparent)",
 };
 
 function parsePatch(patch: string): ParsedFile[] {
@@ -433,8 +446,8 @@ export function DiffViewer({
           }}
         >
           <span className="text-muted-foreground">
-            {parsedFiles.length} файл(ов), <span style={{ color: "#16a34a" }}>+{totals.additions}</span>{" "}
-            <span style={{ color: "#dc2626" }}>−{totals.deletions}</span>
+            {parsedFiles.length} файл(ов), <span style={{ color: palette.addText }}>+{totals.additions}</span>{" "}
+            <span style={{ color: palette.delText }}>−{totals.deletions}</span>
           </span>
           <div style={{ marginLeft: "auto", display: "flex" }}>
             {(["unified", "split"] as const).map((value, index) => (
@@ -447,8 +460,10 @@ export function DiffViewer({
                 style={{
                   borderRadius: index === 0 ? "4px 0 0 4px" : "0 4px 4px 0",
                   marginLeft: index === 0 ? 0 : -1,
+                  // Цвет текста активной кнопки — тот же `--foreground`: белым он был под тёмной
+                  // плитой старой палитры и на светлой подложке стал невидимым.
                   backgroundColor: mode === value ? palette.headerBackground : "transparent",
-                  color: mode === value ? "#fff" : undefined,
+                  color: palette.text,
                 }}
               >
                 {value === "unified" ? "Inline" : "Side-by-side"}

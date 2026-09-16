@@ -1,9 +1,12 @@
 import React from 'react';
 import { usePage } from '@inertiajs/react';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { AlertTriangle, Database, Plus } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { configureRouteTree, type RouteName, type RouteParams } from '../../lib/panel/routeTree';
+import { ago, plural } from './lib/format';
 import { InboxScreen, type PanelInbox } from './lib/inbox';
+import { StatusBadge } from './lib/status';
+import type { ProjectRow } from '../../lib/panel/overviewPanel';
 import { EmptyState, Page, PageHeader } from './lib/page';
 import { OverviewScreen, ProjectOverviewScreen, type PanelOverview } from './lib/overview';
 import {
@@ -48,63 +51,118 @@ interface AgentizPageProps {
 
 const PREFIX: string = (window as any).routePrefix ?? '/dashboard';
 
+/**
+ * «Проекты» — список, а не сетка карточек.
+ *
+ * Карточки говорили только имя и слаг, поэтому выбор между проектами делался наугад. Строка
+ * повторяет строку списка запусков и задач: слева имя и описание, справа состояние и три числа,
+ * по которым проекты и сравнивают — открытые задачи, идущие запуски и когда в проекте последний
+ * раз что-то происходило. Числа считает сервер теми же читателями, что и экраны за ними
+ * (`lib/panel/overviewPanel.ts`, `projectRows`).
+ */
 function ProjectsScreen({ data }: { data: Record<string, any> }) {
-  const projects: Array<{ id: string; slug: string; name: string; href: string; isActive: boolean }> = data.projects ?? [];
+  const projects: ProjectRow[] = data.projects ?? [];
+  const active = projects.filter((project) => project.isActive).length;
   return (
     <>
-      <PageHeader title="Проекты" meta={`${projects.length}`} description="Выберите проект — сайдбар переключится на его разделы." />
+      <PageHeader
+        title="Проекты"
+        meta={[
+          `${projects.length} ${plural(projects.length, 'проект', 'проекта', 'проектов')}`,
+          active < projects.length ? `${active} активных` : null,
+        ]}
+        actions={
+          <Button asChild>
+            <a href={`${PREFIX}/model/AgentProject/add`}><Plus /> Новый проект</a>
+          </Button>
+        }
+      />
       {projects.length === 0 ? (
         <EmptyState title="Проектов пока нет" description="Создайте первый проект, чтобы начать." />
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <ul className="divide-y rounded-lg border">
           {projects.map((project) => (
-            <Card key={project.id}>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <a href={project.href} className="underline">{project.name}</a>
-                  {!project.isActive && <Badge variant="outline">выключен</Badge>}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm text-muted-foreground">{project.slug}</CardContent>
-            </Card>
+            <li key={project.id} className="flex items-center gap-4 px-4 py-3 hover:bg-accent/40">
+              <div className="min-w-0 flex-1">
+                <a href={project.href} className="text-sm font-medium hover:underline">{project.name}</a>
+                <p className="truncate text-xs text-muted-foreground">{project.description || project.slug}</p>
+              </div>
+              <StatusBadge status={project.isActive ? 'active' : 'inactive'} />
+              <span className="w-28 text-right text-xs text-muted-foreground max-md:hidden">
+                {project.openTasks} {plural(project.openTasks, 'задача', 'задачи', 'задач')}
+              </span>
+              <span className="w-28 text-right text-xs text-muted-foreground max-md:hidden">
+                {project.activeRuns} {plural(project.activeRuns, 'запуск', 'запуска', 'запусков')}
+              </span>
+              <span className="w-32 text-right text-xs text-muted-foreground">
+                {project.lastActivityAt ? ago(project.lastActivityAt) : '—'}
+              </span>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </>
   );
 }
 
+/**
+ * «Модели данных» — сырой CRUD, свёрнутый из строки сайдбара на каждую таблицу в один раздел.
+ *
+ * Список, а не сетка карточек: имя таблицы моноширинное, потому что его копируют в MCP-вызов и в
+ * миграцию, а карточка в три колонки делает из двадцати шести имён стену. Врезка сверху — не
+ * украшение: правка строки в обход продуктовых экранов обходит и проверки (спеку, привязку папки
+ * к проекту, лестницу ролей), и это единственное место панели, где так можно.
+ */
 function DataModelsScreen({ data }: { data: Record<string, any> }) {
   const models: Array<{ modelname: string; title: string; icon: string; featured: boolean }> = data.models ?? [];
-  const featured = models.filter((model) => model.featured);
-  const rest = models.filter((model) => !model.featured);
-
-  const card = (model: { modelname: string; title: string }) => (
-    <a key={model.modelname} href={`${PREFIX}/model/${model.modelname}`} className="rounded-lg border p-3 text-sm hover:bg-accent">
-      <span className="font-medium">{model.title}</span>
-      <span className="block text-xs text-muted-foreground">{model.modelname}</span>
-    </a>
-  );
+  const groups: Array<[string, typeof models]> = [
+    ['Рабочие таблицы', models.filter((model) => model.featured)],
+    ['Служебные таблицы', models.filter((model) => !model.featured)],
+  ];
 
   return (
     <>
       <PageHeader
         title="Модели данных"
-        meta={`${models.length}`}
-        description="Сырой CRUD одним разделом вместо строки в сайдбаре на каждую таблицу. Нужен редко и почти всегда для разбора, а не для работы."
+        meta={`${models.length} ${plural(models.length, 'таблица', 'таблицы', 'таблиц')}`}
+        description="Прямой доступ к таблицам. Обычная работа идёт через разделы продукта."
       />
       {models.length === 0 ? (
         <EmptyState title="Ни одной таблицы" description="Либо ничего не зарегистрировано, либо у вас нет прав на чтение." />
       ) : (
-        <div className="space-y-6">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{featured.map(card)}</div>
-          {rest.length > 0 && (
-            <div>
-              <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Служебные таблицы</h2>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{rest.map(card)}</div>
+        <>
+          <div className="mb-6 flex items-start gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4">
+            <AlertTriangle className="agentiz-attention mt-0.5 size-4 shrink-0" />
+            <div className="text-sm">
+              <div className="font-medium">Для продвинутых</div>
+              <p className="mt-1 text-muted-foreground">
+                Правка строк в обход продуктовых экранов обходит и проверки: спеку, привязку папки к проекту,
+                лестницу ролей.
+              </p>
             </div>
-          )}
-        </div>
+          </div>
+          <div className="space-y-6">
+            {groups.map(([group, rows]) => rows.length === 0 ? null : (
+              <div key={group}>
+                <h2 className="mb-2 text-sm font-semibold">{group}</h2>
+                <ul className="divide-y rounded-lg border">
+                  {rows.map((model) => (
+                    <li key={model.modelname} className="flex items-center gap-3 px-4 py-2 hover:bg-accent/40">
+                      <Database className="size-3.5 shrink-0 text-muted-foreground" />
+                      <a
+                        href={`${PREFIX}/model/${model.modelname}`}
+                        className="min-w-0 flex-1 truncate font-mono text-sm hover:underline"
+                      >
+                        {model.modelname}
+                      </a>
+                      <span className="w-48 truncate text-right text-xs text-muted-foreground max-sm:hidden">{model.title}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </>
   );
@@ -113,12 +171,49 @@ function DataModelsScreen({ data }: { data: Record<string, any> }) {
 const WIDE: RouteName[] = ['project.workflow'];
 const NARROW: RouteName[] = ['project.settings', 'settings.notifications'];
 
+/**
+ * Раскрывает все секции сайдбара — временная замена настройке, которой в adminizer пока нет.
+ *
+ * Его `NavMain` рисует каждую секцию свёрнутым `Collapsible` и открывает **ровно одну** — ту, где
+ * активный пункт. Макет `ui-1-sol` показывает все: в глобальном режиме это 10 строк против 6, и
+ * «Воркеры» из «Обзора» достаются не кликом, а двумя. CSS тут бессилен — содержимое закрытой
+ * секции не отрисовано вовсе (`{isOpenNow && …}`), поэтому единственный способ из модуля — тот же
+ * жест, что и у человека: клик по подписи секции.
+ *
+ * Три вещи делают этот костыль безопасным. Он **идемпотентен** — кликает только там, где нет
+ * `sidebar-group-content`, то есть уже открытую секцию не закрывает. Он **не трогает узкий режим**:
+ * в rail-виде у секции нет `sidebar-group-label`, и `querySelector` вернёт `null`. И он
+ * **ограничен нашим деревом** — эффект живёт в нашем модуле и не выполняется на чужих страницах
+ * панели.
+ *
+ * Цена, которую надо знать: секция, свёрнутая человеком вручную, снова раскроется при следующем
+ * переходе. Это осознанный компромисс до просьбы A1 (`menuSections[…].collapsible: false`); когда
+ * она приедет, функцию нужно удалить целиком, а не оставлять «на всякий случай».
+ */
+function useExpandedSidebarSections(key: string): void {
+  React.useEffect(() => {
+    const expand = () => {
+      document.querySelectorAll('[data-slot="sidebar-group"]').forEach((group) => {
+        if (group.querySelector('[data-slot="sidebar-group-content"]')) return;
+        (group.querySelector('[data-slot="sidebar-group-label"]') as HTMLElement | null)?.click();
+      });
+    };
+    expand();
+    // Второй проход кадром позже: сайдбар и наш модуль монтируются в одном коммите, и порядок
+    // между ними ничем не гарантирован — без этого на первой загрузке иногда раскрывать нечего.
+    const frame = requestAnimationFrame(expand);
+    return () => cancelAnimationFrame(frame);
+  }, [key]);
+}
+
 const AgentizApp: React.FC = () => {
   const page = usePage<any>();
   const ctx = (page.props?.agentiz ?? {}) as AgentizPageProps;
 
   // The tree is mounted under the configured `routePrefix`, which only the server knows for sure.
   configureRouteTree(ctx.base ?? `${PREFIX}/agentiz`);
+
+  useExpandedSidebarSections(`${ctx.route}:${ctx.project?.slug ?? ''}`);
 
   const width = WIDE.includes(ctx.route) ? 'wide' : NARROW.includes(ctx.route) ? 'narrow' : 'default';
 

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Plus } from 'lucide-react';
 import { router } from '@inertiajs/react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -200,6 +201,13 @@ export function PipelinesScreen({ initial, slug }: { initial: PanelPipelineBoard
           state.specs.length > 0 ? <span key="active">{active} активных</span> : null,
         ]}
         description="Пайплайн — что и в каком порядке делают агенты над задачей. Когда его запускать, решает воркфлоу или ручной запуск."
+        // Создание спеки живёт в форме CRUD — здесь только адрес на неё, чтобы «завести пайплайн»
+        // не приходилось искать в «Моделях данных». Настраивают спеку уже на её экране.
+        actions={state.canConfigure ? (
+          <Button asChild>
+            <a href={`${PREFIX}/model/PipelineSpec/add`}><Plus /> Новый пайплайн</a>
+          </Button>
+        ) : undefined}
       />
 
       {state.specs.length > 3 && (
@@ -1356,7 +1364,7 @@ function HookEditor({
             </p>
           )}
           {outOfScope.length > 0 && (
-            <p className="text-xs text-warning-foreground">
+            <p className="text-xs agentiz-attention">
               {outOfScope.join(', ')} — здесь будут пустыми: такие переменные появляются у пайплайна другого вида.
             </p>
           )}
