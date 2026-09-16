@@ -9,7 +9,7 @@ import { can, projectIdsForUser } from '../access/projectAccess';
 import { hasGlobalToken, panelActor, requestAccessCache } from '../access/panelGuard';
 import { GLOBAL_TOKENS, PROJECT_TOKENS } from '../access/tokens';
 import { adminizerModuleStylesheet, adminizerModuleUrl } from '../adminizerModuleUrl';
-import { buildAgentizMenu, buildAgentizSections, type AgentizSection } from './menu';
+import { buildAgentizBrand, buildAgentizMenu, buildAgentizSections, type AgentizSection } from './menu';
 import { listRuns } from '../runBoard';
 import { workerFleet } from '../workerBoard';
 import { panelInbox } from './inboxPanel';
@@ -424,12 +424,21 @@ export async function renderAgentizApp(req: any, res: any): Promise<unknown> {
     breadcrumbs = crumbsFor(match, project?.name ?? null, entityNameOf(match, data));
   } catch { /* falls back to no crumbs */ }
 
+  // Левый верхний угол: подпись на кнопке и её выпадающее меню. Тоже расшаренные пропы панели
+  // (`brand` / `section` в `app-sidebar.tsx`), которые проп страницы перебивает, — поэтому
+  // переключатель проекта получается без единой правки в adminizer. Как и крошки, он не имеет права
+  // уронить страницу: не собрался — остаётся бренд панели.
+  let brandProps: { brand: string; section: unknown[] } | null = null;
+  try {
+    brandProps = await buildAgentizBrand(req, match) as { brand: string; section: unknown[] };
+  } catch { /* остаётся панельный бренд */ }
+
   // Two addresses of this tree draw somebody else's screen. See `foreignModule` below.
   const foreign = foreignModule(match, project);
   if (foreign) {
     return req.Inertia.render({
       component: 'module',
-      props: { ...foreign, menu, menuSections: buildAgentizSections(req), breadcrumbs },
+      props: { ...foreign, menu, menuSections: buildAgentizSections(req), breadcrumbs, ...(brandProps ?? {}) },
     });
   }
 
@@ -442,6 +451,7 @@ export async function renderAgentizApp(req: any, res: any): Promise<unknown> {
       menu,
       menuSections: buildAgentizSections(req),
       breadcrumbs,
+      ...(brandProps ?? {}),
       agentiz: {
         base,
         route: match.name,

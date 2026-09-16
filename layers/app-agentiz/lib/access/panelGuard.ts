@@ -31,10 +31,19 @@ export function panelActor(req: any): AccessActor {
  * saying the whole panel is open.
  */
 export function requirePanelUser(req: any, res: any): boolean {
-  if (req.adminizer?.config?.auth?.enable === false) return true;
-  if (req.session?.UserAP?.id || typeof req.user?.id === 'number') return true;
+  if (hasPanelSession(req)) return true;
   res.status(401).json({ message: 'Sign in to the admin panel first' });
   return false;
+}
+
+/**
+ * The question `requirePanelUser` answers, without the answer: true with a session, or with the
+ * panel's auth switched off. For code that has to decide *what* to do about a missing session —
+ * a page address sends the person to the login form, a JSON call answers 401.
+ */
+export function hasPanelSession(req: any): boolean {
+  if (req.adminizer?.config?.auth?.enable === false) return true;
+  return Boolean(req.session?.UserAP?.id) || typeof req.user?.id === 'number';
 }
 
 /** A cache with the lifetime of this request, so one handler asking three questions costs one. */

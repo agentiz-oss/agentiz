@@ -257,3 +257,70 @@ export function buildAgentizSections(req: any): Record<string, { icon?: string; 
   // Ours win on a name collision: the order values above are chosen against each other.
   return { ...panelSections, ...AGENTIZ_SECTIONS };
 }
+
+/**
+ * Переключатель проекта в левом верхнем углу — тот самый, который в макете стоит вместо бренда.
+ *
+ * Оказалось, что менять adminizer для этого не нужно: он уже рисует там **выпадающее меню**, а
+ * заполняют его два обычных расшаренных пропа — `brand` (подпись на кнопке) и `section` (список
+ * пунктов, `app-sidebar.tsx`). Пропы страницы перебивают расшаренные, поэтому наш рендер просто
+ * присылает свои — ровно тем же механизмом, что и `menu`, `menuSections`, `breadcrumbs`.
+ *
+ * Чего этим способом **не** добиться и что остаётся просьбой A3: вторая строка на кнопке
+ * (`brand` — это строка, а не разметка) и своя иконка вместо жёстко зашитой `rocket_launch`.
+ *
+ * Стоит не только под `/agentiz`: `panelShell.ts` кладёт то же самое в расшаренные пропы каждой
+ * страницы панели, поэтому `match` здесь бывает `null` и означает глобальный режим.
+ *
+ * Список специально не бесконечный: `SWITCHER_LIMIT` проектов, дальше — «Все проекты». Выпадашка,
+ * в которой нужно скроллить, перестаёт быть переключателем.
+ */
+const SWITCHER_LIMIT = 10;
+
+export interface AgentizBrandSection {
+  id: string;
+  title: string;
+  link: string;
+  icon: string;
+  type?: 'self' | 'blank';
+}
+
+export async function buildAgentizBrand(req: any, match: RouteMatch | null): Promise<{
+  brand: string;
+  section: AgentizBrandSection[];
+}> {
+  const actor = panelActor(req);
+  const cache = requestAccessCache(req);
+  const current = await projectOfRoute(match, actor, cache);
+
+  let projects: AgentProject[] = [];
+  try {
+    const ids = await projectIdsForUser(actor, PROJECT_TOKENS.read, cache);
+    projects = ids.length > 0
+      ? await AgentProject.findAll({ where: { id: ids }, order: [['name', 'ASC']], limit: SWITCHER_LIMIT })
+      : [];
+  } catch {
+    // Переключатель — удобство. Его отсутствие не повод не отдать страницу.
+    projects = [];
+  }
+
+  const section: AgentizBrandSection[] = projects.map((project) => ({
+    id: `agentiz-switch-${project.slug}`,
+    title: project.name,
+    link: href('project.overview', { slug: project.slug }),
+    // Значок говорит состояние проекта, как точка в макете: открытый — текущий, серый — выключенный.
+    icon: project.id === current?.id ? 'radio_button_checked'
+      : project.isActive === false ? 'radio_button_unchecked'
+        : 'circle',
+  }));
+
+  section.push(
+    { id: 'agentiz-switch-all', title: 'Все проекты', link: href('projects'), icon: 'workspaces' },
+    { id: 'agentiz-switch-global', title: 'Обзор без проекта', link: href('overview'), icon: 'dashboard' },
+    // Двери «в панель администратора» здесь нет намеренно: корень панели — это и есть обзор
+    // (`panelShell.ts`), а страницы самой панели — пользователи, группы, база знаний — стоят
+    // в этом же сайдбаре снизу (`restOfPanel`). Второго контекста, куда вела бы дверь, больше нет.
+  );
+
+  return { brand: current?.name ?? 'Agentiz', section };
+}

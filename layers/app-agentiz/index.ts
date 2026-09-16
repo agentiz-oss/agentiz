@@ -1,8 +1,9 @@
 import { AbstractApp, AppManager, Collection, CollectionHandler } from '@nodeknit/app-manager';
 import type { Migration } from '@nodeknit/app-manager';
-import { AdminizerRouteMiddleware, AppAdminizer } from '@nodeknit/app-adminizer';
+import { AdminizerMiddlewareDefinition, AppAdminizer } from '@nodeknit/app-adminizer';
 import { agentizModelConfig } from './lib/panel/modelConfigs';
 import { panelInbox } from './lib/panel/inboxPanel';
+import { isPageRequest, panelShell, redirectToLogin } from './lib/panel/panelShell';
 import type { DocumentationSource } from '@nodeknit/app-adminizer';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -80,7 +81,7 @@ import type { TaskManagerAdapter } from './lib/taskManager';
 import { maskProjectForUI, restoreMaskedSecrets } from './lib/secrets';
 import { GLOBAL_TOKENS, PROJECT_TOKENS, agentizAccessRightTokens } from './lib/access/tokens';
 import { agentizAdminLinks, agentizAdminLinkTemplates, assertScreensAreRootRoutes } from './lib/panel/adminLinks';
-import { guardGlobal, guardProject, panelActor, requirePanelUser, requestAccessCache } from './lib/access/panelGuard';
+import { guardGlobal, guardProject, hasPanelSession, panelActor, requirePanelUser, requestAccessCache } from './lib/access/panelGuard';
 import { projectIdsForUser } from './lib/access/projectAccess';
 import { installAgentizAccessRoles } from './lib/access/roleSeed';
 import { installAgentizAccessGraph } from './lib/access/accessGraph';
@@ -282,7 +283,12 @@ export class AppAgentiz extends AbstractApp {
     harnessLimitProvidersHandler = new HarnessLimitProviderCollectionHandler();
 
     @Collection
-    adminizerMiddlewares: AdminizerRouteMiddleware[] = [
+    adminizerMiddlewares: AdminizerMiddlewareDefinition[] = [
+        // The shell of the panel: `/dashboard` opens the overview, and every page of the panel —
+        // not only ours — gets the Agentiz sidebar and the project switcher as shared props. A raw
+        // function, not a route: the dispatcher runs it on every request under the prefix, and
+        // it decides for itself what is a page (`lib/panel/panelShell.ts`).
+        panelShell,
         // The built-in task tracker and task-source management live in lib/taskRoutes.ts.
         ...taskRoutes,
         // Connections, mirrored repositories and project links — shared by every platform.
@@ -304,6 +310,9 @@ export class AppAgentiz extends AbstractApp {
             method: 'get',
             handler: async (req, res) => {
                 const method = req.query._method as string | undefined;
+                // A browser without a session goes to the login form and comes back here after it;
+                // the JSON calls below keep answering 401, which is what a script can act on.
+                if (!method && isPageRequest(req) && !hasPanelSession(req)) return redirectToLogin(req, res);
                 if (!requirePanelUser(req, res)) return undefined;
 
                 if (method === 'getInbox') {
