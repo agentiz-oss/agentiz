@@ -839,9 +839,11 @@
   отвечать 200 (поэтому в демо нет ни `AgentWorkspaceProposal`, ни удержанного диффа — их кнопки
   без воркера падают); даты дописываются молчащим `Model.update(..., { silent: true })`, потому что
   Sequelize штампует `updatedAt` и на `create`, и на `update`, и демо иначе читается как
-  «всё случилось минуту назад». Учётку заводит `adminizer.user`, а не этот инструмент: хэш пароля
-  (`login + password + AP_PASSWORD_SALT`) знает только он, а вторая копия этой логики стала бы
-  второй правдой о паролях.
+  «всё случилось минуту назад». Учётку инструмент не создаёт: хэш пароля
+  (`login + password + AP_PASSWORD_SALT`) знает Adminizer, а вторая копия этой логики стала бы
+  второй правдой о паролях. На нашем проде её заводят **формой панели** (`Админ → System → Users`),
+  потому что `adminizer.user` отказывается хэшировать без `AP_PASSWORD_SALT`, а он там не задан —
+  вход считает хэш с литералом `"undefined"` на конце, и форма такой проверки не делает.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

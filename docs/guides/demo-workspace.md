@@ -66,12 +66,20 @@ your app because the account provided was empty»). Поэтому на прод
 строку членства в той же транзакции. Отсюда получается ровно нужная изоляция — в приложении и в
 панели учётка видит один проект и ничего больше.
 
-Саму учётку заводит **`adminizer.user`**, а не этот инструмент: только он знает, как Adminizer
-солит и хэширует пароль (`login + password + AP_PASSWORD_SALT`), и вторая копия этой логики стала
-бы второй правдой о паролях. `agentiz.seedDemo` пользователя только находит по логину и —
-дополнительно — проверяет, что он состоит в группе `Agentiz · Доступ`: это верхняя граница прав, без
-которой разделы Agentiz в панели открываются без полей (подробности —
-[`project-access.md`](./project-access.md)).
+Саму учётку `agentiz.seedDemo` **не создаёт**: пароль хэширует Adminizer
+(`login + password + AP_PASSWORD_SALT`), и вторая копия этой логики стала бы второй правдой о
+паролях. Инструмент только находит пользователя по логину и проверяет, что тот состоит в группе
+`Agentiz · Доступ` — это верхняя граница прав, без которой разделы Agentiz в панели открываются без
+полей (подробности — [`project-access.md`](./project-access.md)).
+
+Завести учётку можно двумя путями, и на нашем проде работает только второй. `adminizer.user`
+отказывается хэшировать пароль, когда `AP_PASSWORD_SALT` не задан
+(`local_modules/app-adminizer/src/mcp/userTool.ts`), а на `agentiz.m42.cx` эта переменная не задана —
+вход там считает хэш от литерала `"undefined"` на конце, потому что Adminizer интерполирует
+`process.env.AP_PASSWORD_SALT` без фолбэка. Форма в панели такой проверки не делает и потому
+остаётся рабочим путём: **Админ → System → Users → add**. Следствие, о котором стоит помнить: если
+на этом деплое когда-нибудь появится `AP_PASSWORD_SALT`, перестанут подходить пароли **всех**
+учёток, а не только демо.
 
 Учётка **не администратор** сознательно: администратор в панели видит все проекты, минуя граф
 доступа.
@@ -94,18 +102,18 @@ your app because the account provided was empty»). Поэтому на прод
 
 ## Перед отправкой сборки
 
+**1. Учётка — один раз, через панель** (`Админ → System → Users → add`): логин
+`demo@agentiz.app`, пароль тот, что уходит в App Store Connect / Play Console, галочки
+«Is confirmed» и группа `Agentiz · Доступ`, «Is Administrator» — **нет** (администратор видит все
+проекты, минуя граф доступа). Почему не `adminizer.user` — абзацем выше.
+
+**2. Демо в исходном виде — перед каждой отправкой:**
+
 ```bash
 source .env
-# 1. Учётка (один раз; пароль тот, что уходит в App Store Connect / Play Console)
 curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
-  -d '{"action":"create","login":"demo@agentiz.app","data":{"password":"<пароль>",
-       "fullName":"Demo reviewer","isActive":true,"isConfirmed":true,"isAdministrator":false,
-       "groups":["Agentiz · Доступ"]}}' \
-  https://agentiz.m42.cx/mcp/call/adminizer.user
-
-# 2. Демо в исходном виде (перед каждой отправкой)
-curl -s -H "X-Mcp-Key: $MCP_KEY" -H 'Content-Type: application/json' \
-  -d '{"reset":true}' https://agentiz.m42.cx/mcp/call/agentiz.seedDemo
+  -d '{"ownerLogin":"demo@agentiz.app","reset":true}' \
+  https://agentiz.m42.cx/mcp/call/agentiz.seedDemo
 ```
 
 Проверка — тем же способом, каким проверяет ревьюер: залогиниться в мобильный API и посмотреть, что
@@ -131,3 +139,10 @@ curl -s -H "Authorization: Bearer $TOKEN" $B/activities/summary | jq '.data.acti
 - **Демо-данные надо убрать совсем.** `{"remove": true}` (и `removeProject: true`, чтобы снести и
   сам проект). Соседние проекты инструмент не трогает: границей служит `projectId` демо-проекта, и
   это зафиксировано тестом.
+- **`adminizer.user` с `action: "read"` отвечает «GroupAP is associated to UserAP using an alias».**
+  Это баг чтения в самом инструменте (include без `as`), к демо отношения не имеет; проверять
+  учётку проще входом в мобильный API.
+
+Что демо-учётке видно помимо её проекта: на «Обзоре» есть общие счётчики («Воркеров на связи»), а
+разделы воркеров, Git-подключений и пользователей отвечают `403`. Списки моделей в «Админ → Модели
+данных» сужены графом до демо-проекта — проверено на проде: проектов 1, задач 6, запусков 4.
