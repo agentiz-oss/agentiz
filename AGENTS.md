@@ -816,6 +816,17 @@
   `lib/inbox/` the phone reads (see the `InboxItem` bullet above): the sidebar badge, «Входящие»,
   the overview and a task's card all count it, and a second implementation of "что меня ждёт" is
   how a screen and a badge start disagreeing.
+- The panel has **one** shell, and it is ours: `panelShell` in `layers/app-agentiz/lib/panel/panelShell.ts`
+  (a raw function first in `adminizerMiddlewares`, so the app-adminizer dispatcher runs it on every
+  request under the prefix) answers `GET /dashboard` with a session as `302` to the overview and, on
+  every panel page outside `/agentiz`, puts the global-mode menu and the project switcher into the
+  **shared** Inertia props (`req.Inertia.shareProps` merges over what adminizer's `bindInertia`
+  shared a moment earlier). Without a session it does nothing, which is what lets adminizer's own
+  `requireAuthUI` send the person to the login form and back to `/dashboard/` after it — nothing in
+  the login controller knows our address. A page request under `/agentiz` without a session is a
+  `302` to that same form with `redirectTo`, not a JSON `401`; the `_method` calls keep the 401.
+  "Page" means `GET`, no `_method`, html in `Accept` or `X-Inertia` — everything else through that
+  middleware must cost nothing, and a failure leaves the panel's own sidebar, never an error.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

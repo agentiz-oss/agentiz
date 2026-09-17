@@ -65,7 +65,8 @@ export const adminizerConfig: AdminizerConfig = {
     // sections live; a second, flat copy of part of it in the panel's navigation could only
     // disagree with it. `section: 'Agentiz'` is load-bearing: `restOfPanel()` in `menu.ts` drops
     // exactly that section when it appends the panel's remaining items to ours, so this row is
-    // seen only where our own menu is not.
+    // seen only where our own menu is not — which, since `panelShell` shares that menu on every
+    // page of the panel, is only the request on which building it failed.
     navbar: {
         additionalLinks: [
             {

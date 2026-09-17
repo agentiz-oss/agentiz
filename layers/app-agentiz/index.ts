@@ -93,6 +93,7 @@ import { workerRoutes } from './lib/workerRoutes';
 import { runRoutes } from './lib/runRoutes';
 import { viewerRoutes } from './lib/viewerRoutes';
 import { createWorkerApiRouter, WORKER_API_BASE } from './lib/workerApiRouter';
+import { createPrivacyPolicyRouter, PRIVACY_POLICY_PATH } from './lib/privacyPolicyRouter';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
 import { adminizerModuleStylesheet } from './lib/adminizerModuleUrl';
@@ -506,6 +507,11 @@ export class AppAgentiz extends AbstractApp {
         // their own bearer tokens, not admin sessions. See lib/workerApiRouter.ts.
         this.appManager.app.use(WORKER_API_BASE, createWorkerApiRouter());
         console.log(`[AppAgentiz] worker API mounted at ${WORKER_API_BASE}`);
+
+        // Same reasoning as the Worker API: a Google Play listing links here directly and must
+        // load with no admin session, so it is mounted outside /dashboard too.
+        this.appManager.app.use(PRIVACY_POLICY_PATH, createPrivacyPolicyRouter());
+        console.log(`[AppAgentiz] privacy policy mounted at ${PRIVACY_POLICY_PATH}`);
 
         AgentWorkerQueueService.start();
         // Runs whether or not the in-process drainer does: with the remote Worker API enabled the
