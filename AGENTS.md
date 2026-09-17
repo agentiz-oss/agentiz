@@ -827,6 +827,21 @@
   `302` to that same form with `redirectTo`, not a JSON `401`; the `_method` calls keep the 401.
   "Page" means `GET`, no `_method`, html in `Accept` or `X-Inertia` — everything else through that
   middleware must cost nothing, and a failure leaves the panel's own sidebar, never an error.
+- Магазины проверяют приложение руками, поэтому на проде живёт **демо-проект с моками** и учётка
+  ревьюера, которая, кроме него, не видит ничего (длинно:
+  [`docs/guides/demo-workspace.md`](docs/guides/demo-workspace.md)). Собирается он MCP-действием
+  `agentiz.seedDemo` (`lib/demo/demoWorkspace.ts`) — не сидом (на проде они выключены жёстко,
+  `FORCE_SEED`) и не миграцией (её нельзя повторить, а демо надо возвращать в исходный вид перед
+  каждой отправкой: прошлый ревьюер ответил на вопрос и принял заявку). Все id фиксированы с
+  префиксом `demo-`, границей удаления служит `projectId` демо-проекта. Три инварианта, каждый из
+  которых ломается молча: записи очереди лежат в `succeeded`, иначе `AgentJobReaperService`
+  осиротит вопрос агента и блокирующая строка исчезнет сама; всё, что ревьюер может нажать, обязано
+  отвечать 200 (поэтому в демо нет ни `AgentWorkspaceProposal`, ни удержанного диффа — их кнопки
+  без воркера падают); даты дописываются молчащим `Model.update(..., { silent: true })`, потому что
+  Sequelize штампует `updatedAt` и на `create`, и на `update`, и демо иначе читается как
+  «всё случилось минуту назад». Учётку заводит `adminizer.user`, а не этот инструмент: хэш пароля
+  (`login + password + AP_PASSWORD_SALT`) знает только он, а вторая копия этой логики стала бы
+  второй правдой о паролях.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 
