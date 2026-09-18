@@ -11,6 +11,11 @@ import { AgentRunJob } from '../../models/AgentRunJob';
 import { AgentRunLog } from '../../models/AgentRunLog';
 import { AgentStageExecution } from '../../models/AgentStageExecution';
 import { AgentTask } from '../../models/AgentTask';
+import { AgentActivity } from '../../models/AgentActivity';
+import { AgentApprovalRequest } from '../../models/AgentApprovalRequest';
+import { AgentRunInteraction } from '../../models/AgentRunInteraction';
+import { AgentTaskComment } from '../../models/AgentTaskComment';
+import { AgentWorkflowSpec } from '../../models/AgentWorkflowSpec';
 import { PipelineSpec } from '../../models/PipelineSpec';
 import { assertValidSpec } from '../../services/PipelineSpecValidation';
 import { collectInboxItems } from '../inbox/collect';
@@ -74,6 +79,60 @@ describe('демо-проект для проверки в App Store / Google Pl
     // Напоминания тоже есть, и они специально не блокирующие.
     expect(kinds).toContain('run_failed');
     expect(kinds).toContain('pr');
+  }, 30_000);
+
+  it('данные демо — английские: их читает ревьюер магазина, а не наш пользователь', async () => {
+    await seedDemoWorkspace({ ownerUserId: OWNER });
+
+    // Интерфейс приложения остаётся русским (строки зашиты в клиент), но всё, что приходит из этой
+    // таблицы, ревьюер Apple или Google должен прочитать. Сторож стоит здесь, потому что следующая
+    // добавленная задача напишется по-русски не задумываясь, а увидит это только ревьюер.
+    const cyrillic = /[А-Яа-яЁё]/;
+    const offenders: string[] = [];
+    const check = (where: string, value: unknown) => {
+      if (typeof value === 'string' && cyrillic.test(value)) offenders.push(`${where}: ${value.slice(0, 60)}`);
+    };
+
+    const project = await AgentProject.findOne({ where: { slug: DEMO_PROJECT_SLUG } });
+    check('project.name', project!.name);
+    check('project.description', project!.description);
+    for (const task of await AgentTask.findAll({ where: { projectId: project!.id } })) {
+      check(`task ${task.id}.title`, task.title);
+      check(`task ${task.id}.description`, task.description);
+    }
+    for (const run of await AgentRun.findAll({ where: { projectId: project!.id } })) {
+      check(`run ${run.id}.resultSummary`, run.resultSummary);
+      check(`run ${run.id}.errorMessage`, run.errorMessage);
+    }
+    for (const stage of await AgentStageExecution.findAll()) {
+      check(`stage ${stage.id}.output`, JSON.stringify(stage.output));
+      check(`stage ${stage.id}.errorMessage`, stage.errorMessage);
+    }
+    for (const line of await AgentRunLog.findAll()) check(`log ${line.id}`, line.message);
+    for (const comment of await AgentTaskComment.findAll()) {
+      check(`comment ${comment.id}.body`, comment.body);
+      check(`comment ${comment.id}.authorName`, comment.authorName);
+    }
+    for (const activity of await AgentActivity.findAll()) {
+      check(`activity ${activity.id}.title`, activity.title);
+      check(`activity ${activity.id}.body`, activity.body);
+    }
+    for (const question of await AgentRunInteraction.findAll()) {
+      check(`interaction ${question.id}.message`, question.message);
+      check(`interaction ${question.id}.requestedSchema`, JSON.stringify(question.requestedSchema));
+    }
+    for (const approval of await AgentApprovalRequest.findAll()) {
+      check(`approval ${approval.id}.title`, approval.title);
+      check(`approval ${approval.id}.message`, approval.message);
+      check(`approval ${approval.id}.links`, JSON.stringify(approval.links));
+    }
+    for (const spec of await PipelineSpec.findAll()) check(`pipelineSpec ${spec.id}.name`, spec.name);
+    for (const workflow of await AgentWorkflowSpec.findAll()) {
+      check(`workflow ${workflow.id}.name`, workflow.name);
+      check(`workflow ${workflow.id}.spec`, JSON.stringify(workflow.spec));
+    }
+
+    expect(offenders).toEqual([]);
   }, 30_000);
 
   it('история выглядит историей: время строк — заданное, а не «только что»', async () => {

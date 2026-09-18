@@ -69,24 +69,24 @@ const ROLES = [
   {
     id: 'demo-role-analyst',
     key: 'analyst',
-    title: 'Аналитик',
-    systemPrompt: 'Разбери задачу и опиши, что и где нужно проверить. Ничего не меняй.',
+    title: 'Analyst',
+    systemPrompt: 'Study the task and describe what has to be checked and where. Change nothing.',
     model: 'claude-sonnet-5',
     allowedTools: ['Read', 'Grep', 'Glob'],
   },
   {
     id: 'demo-role-developer',
     key: 'developer',
-    title: 'Разработчик',
-    systemPrompt: 'Внеси минимальные правки, которые решают задачу, и опиши их.',
+    title: 'Developer',
+    systemPrompt: 'Make the smallest change that solves the task, and describe it.',
     model: 'claude-opus-5',
     allowedTools: ['Read', 'Edit', 'Bash'],
   },
   {
     id: 'demo-role-reviewer',
     key: 'reviewer',
-    title: 'Ревьюер',
-    systemPrompt: 'Проверь результат предыдущих стадий и вынеси вердикт.',
+    title: 'Reviewer',
+    systemPrompt: 'Check what the previous stages produced and return a verdict.',
     model: 'claude-haiku-4-5-20251001',
     allowedTools: ['Read'],
   },
@@ -118,19 +118,19 @@ const QA_PIPELINE = {
 function demoWorkflowGraph(projectId: string) {
   return {
     id: WORKFLOW_ID,
-    name: 'Демо: задача → пайплайн → приёмка',
+    name: 'Demo: task → pipeline → approval',
     active: false,
     nodes: [
       { id: 'arrived', type: 'agentiz.task.trigger', config: { event: 'agentiz.task.created', projectId }, ui: { x: 0, y: 0 } },
-      { id: 'worth', type: 'agentiz.task.match', config: { keywords: 'демо', tags: 'feature', fields: 'both', require: 'any' }, ui: { x: 260, y: 0 } },
+      { id: 'worth', type: 'agentiz.task.match', config: { keywords: 'demo', tags: 'feature', fields: 'both', require: 'any' }, ui: { x: 260, y: 0 } },
       { id: 'run', type: 'agentiz.pipeline', config: { trigger: 'sync', specId: SPEC_DEFAULT_ID }, ui: { x: 520, y: 0 } },
       {
         id: 'accept',
         type: 'agentiz.approval',
-        config: { title: 'Принять работу?', message: 'Агент закончил. Посмотрите результат и примите решение.' },
+        config: { title: 'Accept this work?', message: 'The agent is done. Review the result and make a decision.' },
         ui: { x: 780, y: 0 },
       },
-      { id: 'accepted', type: 'agentiz.task.status', config: { text: 'Принято', alsoComment: true }, ui: { x: 1040, y: -80 } },
+      { id: 'accepted', type: 'agentiz.task.status', config: { text: 'Accepted', alsoComment: true }, ui: { x: 1040, y: -80 } },
       {
         id: 'rework',
         type: 'agentiz.task.comment',
@@ -210,17 +210,19 @@ interface DemoTask {
 }
 
 /**
- * Содержимое демо-проекта: вымышленное приложение для заметок. Тексты русские — как и весь
- * интерфейс; ревьюер оценивает работоспособность, а не язык контента.
+ * Содержимое демо-проекта: вымышленное приложение для заметок. Тексты — **английские**: их читает
+ * ревьюер магазина, а не наш пользователь. Интерфейс самого приложения при этом остаётся русским
+ * (строки зашиты в клиент), так что английские здесь только данные.
  */
 const TASKS: DemoTask[] = [
   {
     id: 'demo-task-dark-theme',
     externalId: 'DEMO-101',
-    title: 'Тёмная тема на экране заметки',
+    title: 'Dark theme on the note screen',
     description:
-      'На светлой теме экран заметки читается, на тёмной — текст сливается с фоном карточки.\n' +
-      'Нужно взять цвета из палитры темы, а не задавать их в разметке экрана.',
+      'On the light theme the note screen is readable; on the dark one the text blends into the\n' +
+      'card background. Take the colours from the theme palette instead of hard-coding them in\n' +
+      'the screen layout.',
     status: 'done',
     priority: 'normal',
     tags: ['feature', 'ui'],
@@ -234,8 +236,8 @@ const TASKS: DemoTask[] = [
         startedMinutes: days(2),
         finishedMinutes: days(2) - 12,
         summary:
-          'Цвета экрана заметки переведены на палитру темы: карточка, текст и разделители берут ' +
-          'значения из темы приложения. Проверено на светлой и тёмной теме, снапшот-тесты обновлены.',
+          'The note screen now takes its colours from the theme palette: card, text and dividers ' +
+          'all read from the app theme. Checked on both light and dark, snapshot tests updated.',
         branch: 'agentiz/demo-dark-theme',
         commitSha: '9f2c41a8b7d3e05c1a6b8f4d2e7c9a30b5d1f6e8',
         usage: { input: 128_400, output: 9_120, cacheRead: 96_300, cacheWrite: 12_800, costUsd: 0.42 },
@@ -243,33 +245,33 @@ const TASKS: DemoTask[] = [
         stages: [
           {
             index: 0, role: 'analyze', roleId: 'demo-role-analyst', status: 'succeeded',
-            summary: 'Цвета заданы прямо в NoteScreen.kt тремя литералами, палитра темы их не видит.',
+            summary: 'Three colour literals sit directly in NoteScreen.kt, out of reach of the theme palette.',
             startedMinutes: days(2), finishedMinutes: days(2) - 3,
           },
           {
             index: 1, role: 'implement', roleId: 'demo-role-developer', status: 'succeeded',
-            summary: 'Литералы заменены на значения темы, добавлен превью-экран для тёмной темы.',
+            summary: 'Literals replaced with theme values, a dark-theme preview screen added.',
             startedMinutes: days(2) - 3, finishedMinutes: days(2) - 9,
           },
           {
             index: 2, role: 'review', roleId: 'demo-role-reviewer', status: 'succeeded',
-            summary: 'Правки минимальные и по месту, тесты зелёные. Замечаний нет.',
+            summary: 'The change is minimal and local, tests are green. Nothing to add.',
             startedMinutes: days(2) - 9, finishedMinutes: days(2) - 12,
           },
         ],
         logs: [
-          { level: 'info', message: 'Run created from spec "Основной пайплайн"', minutes: days(2) },
+          { level: 'info', message: 'Run created from spec "Main pipeline"', minutes: days(2) },
           { level: 'info', message: 'Worker job queued', minutes: days(2) },
           { level: 'info', message: 'Worker job claimed by demo-worker', minutes: days(2) - 1 },
-          { level: 'info', message: 'stage.started: analyze (Аналитик)', stage: 0, minutes: days(2) - 1 },
+          { level: 'info', message: 'stage.started: analyze (Analyst)', stage: 0, minutes: days(2) - 1 },
           { level: 'debug', message: 'stage.tool: Grep "colorScheme" app/src/main', stage: 0, minutes: days(2) - 2 },
           { level: 'debug', message: 'stage.tool: Read app/src/main/ui/NoteScreen.kt', stage: 0, minutes: days(2) - 2 },
           { level: 'info', message: 'stage.completed: analyze', stage: 0, minutes: days(2) - 3 },
-          { level: 'info', message: 'stage.started: implement (Разработчик)', stage: 1, minutes: days(2) - 3 },
+          { level: 'info', message: 'stage.started: implement (Developer)', stage: 1, minutes: days(2) - 3 },
           { level: 'debug', message: 'stage.tool: Edit app/src/main/ui/NoteScreen.kt', stage: 1, minutes: days(2) - 5 },
           { level: 'debug', message: 'stage.tool: Bash ./gradlew :app:testDebugUnitTest', stage: 1, minutes: days(2) - 7 },
           { level: 'info', message: 'stage.completed: implement', stage: 1, minutes: days(2) - 9 },
-          { level: 'info', message: 'stage.started: review (Ревьюер)', stage: 2, minutes: days(2) - 9 },
+          { level: 'info', message: 'stage.started: review (Reviewer)', stage: 2, minutes: days(2) - 9 },
           { level: 'info', message: 'stage.completed: review', stage: 2, minutes: days(2) - 12 },
           { level: 'info', message: 'Run finished: succeeded', minutes: days(2) - 12 },
         ],
@@ -277,15 +279,15 @@ const TASKS: DemoTask[] = [
     ],
     comments: [
       {
-        id: 'demo-comment-dark-theme-1', authorKind: 'human', authorName: 'Ирина, продакт',
-        body: 'На тёмной теме текст заметки почти не виден. Возьмите цвета из темы, пожалуйста.',
+        id: 'demo-comment-dark-theme-1', authorKind: 'human', authorName: 'Irene, product',
+        body: 'On the dark theme the note text is barely visible. Please take the colours from the theme.',
         minutes: days(3),
       },
       {
-        id: 'demo-comment-dark-theme-2', authorKind: 'agent', authorName: 'Ревьюер',
+        id: 'demo-comment-dark-theme-2', authorKind: 'agent', authorName: 'Reviewer',
         body:
-          'Готово. Цвета экрана заметки переведены на палитру темы, превью добавлено для обеих тем, ' +
-          'снапшот-тесты обновлены. Ветка: agentiz/demo-dark-theme.',
+          'Done. The note screen colours now come from the theme palette, a preview was added for ' +
+          'both themes and the snapshot tests are updated. Branch: agentiz/demo-dark-theme.',
         runId: 'demo-run-dark-theme', minutes: days(2) - 12,
       },
     ],
@@ -293,10 +295,10 @@ const TASKS: DemoTask[] = [
   {
     id: 'demo-task-search',
     externalId: 'DEMO-102',
-    title: 'Поиск не находит слова из заголовков',
+    title: 'Search misses words that are in a title',
     description:
-      'Поиск по заметкам ищет только по тексту: заметка с нужным словом в заголовке не находится.\n' +
-      'Ожидание — заголовок участвует в поиске наравне с текстом.',
+      'Note search only looks at the body: a note whose title contains the word is not found.\n' +
+      'Expected — the title takes part in the search just like the body does.',
     status: 'waiting_input',
     priority: 'high',
     tags: ['bug'],
@@ -314,7 +316,7 @@ const TASKS: DemoTask[] = [
         stages: [
           {
             index: 0, role: 'analyze', roleId: 'demo-role-analyst', status: 'succeeded',
-            summary: 'Индекс строится только по полю body; заголовок в него не попадает.',
+            summary: 'The index is built from the body field only; the title never reaches it.',
             startedMinutes: 40, finishedMinutes: 36,
           },
           {
@@ -324,21 +326,21 @@ const TASKS: DemoTask[] = [
           { index: 2, role: 'review', roleId: 'demo-role-reviewer', status: 'pending', startedMinutes: 0, finishedMinutes: null },
         ],
         logs: [
-          { level: 'info', message: 'Run created from spec "Основной пайплайн"', minutes: 40 },
+          { level: 'info', message: 'Run created from spec "Main pipeline"', minutes: 40 },
           { level: 'info', message: 'Worker job queued', minutes: 40 },
           { level: 'info', message: 'Worker job claimed by demo-worker', minutes: 39 },
-          { level: 'info', message: 'stage.started: analyze (Аналитик)', stage: 0, minutes: 39 },
+          { level: 'info', message: 'stage.started: analyze (Analyst)', stage: 0, minutes: 39 },
           { level: 'debug', message: 'stage.tool: Read app/src/main/search/NoteIndex.kt', stage: 0, minutes: 38 },
           { level: 'info', message: 'stage.completed: analyze', stage: 0, minutes: 36 },
-          { level: 'info', message: 'stage.started: implement (Разработчик)', stage: 1, minutes: 36 },
-          { level: 'warn', message: 'Агент задал вопрос и ждёт ответа человека', stage: 1, minutes: 35 },
+          { level: 'info', message: 'stage.started: implement (Developer)', stage: 1, minutes: 36 },
+          { level: 'warn', message: 'The agent asked a question and is waiting for a person', stage: 1, minutes: 35 },
         ],
       },
     ],
     comments: [
       {
-        id: 'demo-comment-search-1', authorKind: 'human', authorName: 'Ирина, продакт',
-        body: 'Воспроизводится на любой заметке: слово есть в заголовке — поиск пустой.',
+        id: 'demo-comment-search-1', authorKind: 'human', authorName: 'Irene, product',
+        body: 'Reproducible on any note: the word is in the title and the search comes back empty.',
         minutes: hours(5),
       },
     ],
@@ -346,10 +348,10 @@ const TASKS: DemoTask[] = [
   {
     id: 'demo-task-export',
     externalId: 'DEMO-103',
-    title: 'Экспорт заметок в Markdown',
+    title: 'Export notes to Markdown',
     description:
-      'Нужна кнопка «Экспортировать» на экране списка: выбранные заметки сохраняются одним .md файлом,\n' +
-      'заголовок заметки становится заголовком второго уровня.',
+      'Add an "Export" action to the list screen: the selected notes are saved as a single .md\n' +
+      'file, and a note title becomes a second-level heading.',
     status: 'waiting_review',
     priority: 'normal',
     tags: ['feature'],
@@ -363,8 +365,8 @@ const TASKS: DemoTask[] = [
         startedMinutes: hours(6),
         finishedMinutes: hours(5),
         summary:
-          'Экспорт готов: кнопка на списке, выбор заметок, сохранение одного .md через системный ' +
-          'диалог. Заголовок заметки экспортируется как «## ». Добавлены два теста на формат.',
+          'Export is in place: an action on the list, note selection, and saving one .md through ' +
+          'the system dialog. A note title is exported as "## ". Two format tests were added.',
         branch: 'agentiz/demo-markdown-export',
         commitSha: '4b81de77c0a92f5361ac8e3d77b0c245ef91a3d6',
         verdict: 'pass',
@@ -374,31 +376,31 @@ const TASKS: DemoTask[] = [
         stages: [
           {
             index: 0, role: 'analyze', roleId: 'demo-role-analyst', status: 'succeeded',
-            summary: 'Экран списка уже умеет выделять заметки — не хватает только действия и сериализации.',
+            summary: 'The list screen can already select notes — only the action and the serializer are missing.',
             startedMinutes: hours(6), finishedMinutes: hours(6) - 8,
           },
           {
             index: 1, role: 'implement', roleId: 'demo-role-developer', status: 'succeeded',
-            summary: 'Добавлены MarkdownExporter, действие на панели списка и два теста формата.',
+            summary: 'Added MarkdownExporter, the action in the list toolbar and two format tests.',
             startedMinutes: hours(6) - 8, finishedMinutes: hours(6) - 45,
           },
           {
             index: 2, role: 'review', roleId: 'demo-role-reviewer', status: 'succeeded',
-            summary: 'Формат соответствует задаче, экранирование символов на месте. AGENTIZ_VERDICT: pass',
+            summary: 'The format matches the task and character escaping is handled. AGENTIZ_VERDICT: pass',
             startedMinutes: hours(6) - 45, finishedMinutes: hours(5),
           },
         ],
         logs: [
-          { level: 'info', message: 'Run created from spec "Основной пайплайн"', minutes: hours(6) },
+          { level: 'info', message: 'Run created from spec "Main pipeline"', minutes: hours(6) },
           { level: 'info', message: 'Worker job queued', minutes: hours(6) },
           { level: 'info', message: 'Worker job claimed by demo-worker', minutes: hours(6) - 1 },
-          { level: 'info', message: 'stage.started: analyze (Аналитик)', stage: 0, minutes: hours(6) - 1 },
+          { level: 'info', message: 'stage.started: analyze (Analyst)', stage: 0, minutes: hours(6) - 1 },
           { level: 'info', message: 'stage.completed: analyze', stage: 0, minutes: hours(6) - 8 },
-          { level: 'info', message: 'stage.started: implement (Разработчик)', stage: 1, minutes: hours(6) - 8 },
+          { level: 'info', message: 'stage.started: implement (Developer)', stage: 1, minutes: hours(6) - 8 },
           { level: 'debug', message: 'stage.tool: Edit app/src/main/export/MarkdownExporter.kt', stage: 1, minutes: hours(6) - 20 },
           { level: 'debug', message: 'stage.tool: Bash ./gradlew :app:testDebugUnitTest', stage: 1, minutes: hours(6) - 40 },
           { level: 'info', message: 'stage.completed: implement', stage: 1, minutes: hours(6) - 45 },
-          { level: 'info', message: 'stage.started: review (Ревьюер)', stage: 2, minutes: hours(6) - 45 },
+          { level: 'info', message: 'stage.started: review (Reviewer)', stage: 2, minutes: hours(6) - 45 },
           { level: 'info', message: 'stage.verdict: pass', stage: 2, minutes: hours(5) },
           { level: 'info', message: 'Run finished: succeeded', minutes: hours(5) },
         ],
@@ -406,10 +408,10 @@ const TASKS: DemoTask[] = [
     ],
     comments: [
       {
-        id: 'demo-comment-export-1', authorKind: 'agent', authorName: 'Ревьюер',
+        id: 'demo-comment-export-1', authorKind: 'agent', authorName: 'Reviewer',
         body:
-          'Экспорт готов, вердикт — pass. Ветка agentiz/demo-markdown-export. Нужна ваша приёмка: ' +
-          'посмотрите формат файла и примите работу или верните с замечанием.',
+          'Export is ready, verdict is pass. Branch agentiz/demo-markdown-export. Your approval is ' +
+          'needed: look at the file format and either accept the work or send it back with a remark.',
         runId: 'demo-run-export', minutes: hours(5),
       },
     ],
@@ -417,10 +419,10 @@ const TASKS: DemoTask[] = [
   {
     id: 'demo-task-sync',
     externalId: 'DEMO-104',
-    title: 'Синхронизация падает без сети',
+    title: 'Sync fails when the device is offline',
     description:
-      'При выключенной сети приложение показывает «Ошибка синхронизации» и перестаёт открывать заметки\n' +
-      'до перезапуска. Оффлайн должен работать как обычный режим, а не как ошибка.',
+      'With networking off the app shows "Sync error" and stops opening notes until it is\n' +
+      'restarted. Offline has to be an ordinary mode, not an error state.',
     status: 'failed',
     priority: 'urgent',
     tags: ['bug'],
@@ -434,28 +436,28 @@ const TASKS: DemoTask[] = [
         startedMinutes: hours(26),
         finishedMinutes: hours(26) - 6,
         summary: null,
-        error: 'Стадия implement завершилась ошибкой: ./gradlew :app:testDebugUnitTest — 2 теста упали (SyncOfflineTest).',
+        error: 'Stage implement failed: ./gradlew :app:testDebugUnitTest — 2 tests failed (SyncOfflineTest).',
         usage: { input: 72_600, output: 4_400, cacheRead: 41_200, cacheWrite: 6_100, costUsd: 0.19 },
         pipeline: DEFAULT_PIPELINE,
         stages: [
           {
             index: 0, role: 'analyze', roleId: 'demo-role-analyst', status: 'succeeded',
-            summary: 'Ошибка сети поднимается до экрана списка и гасит загрузку локальной базы.',
+            summary: 'The network error bubbles up to the list screen and kills the local database load.',
             startedMinutes: hours(26), finishedMinutes: hours(26) - 2,
           },
           {
             index: 1, role: 'implement', roleId: 'demo-role-developer', status: 'failed',
-            error: 'SyncOfflineTest: 2 упавших теста после правки обработчика ошибок.',
+            error: 'SyncOfflineTest: 2 failing tests after the error-handler change.',
             startedMinutes: hours(26) - 2, finishedMinutes: hours(26) - 6,
           },
           { index: 2, role: 'review', roleId: 'demo-role-reviewer', status: 'pending', startedMinutes: 0, finishedMinutes: null },
         ],
         logs: [
-          { level: 'info', message: 'Run created from spec "Основной пайплайн"', minutes: hours(26) },
+          { level: 'info', message: 'Run created from spec "Main pipeline"', minutes: hours(26) },
           { level: 'info', message: 'Worker job claimed by demo-worker', minutes: hours(26) },
-          { level: 'info', message: 'stage.started: analyze (Аналитик)', stage: 0, minutes: hours(26) },
+          { level: 'info', message: 'stage.started: analyze (Analyst)', stage: 0, minutes: hours(26) },
           { level: 'info', message: 'stage.completed: analyze', stage: 0, minutes: hours(26) - 2 },
-          { level: 'info', message: 'stage.started: implement (Разработчик)', stage: 1, minutes: hours(26) - 2 },
+          { level: 'info', message: 'stage.started: implement (Developer)', stage: 1, minutes: hours(26) - 2 },
           { level: 'debug', message: 'stage.tool: Bash ./gradlew :app:testDebugUnitTest', stage: 1, minutes: hours(26) - 4 },
           { level: 'error', message: 'SyncOfflineTest > opensNotesWithoutNetwork FAILED', stage: 1, minutes: hours(26) - 5 },
           { level: 'error', message: 'Run finished: failed', minutes: hours(26) - 6 },
@@ -467,10 +469,10 @@ const TASKS: DemoTask[] = [
   {
     id: 'demo-task-onboarding',
     externalId: 'DEMO-105',
-    title: 'Онбординг: три экрана при первом запуске',
+    title: 'Onboarding: three screens on first launch',
     description:
-      'Первый запуск сразу открывает пустой список. Хотим три экрана-приветствия: зачем приложение,\n' +
-      'как создать заметку, как включить синхронизацию. Пропускается одной кнопкой.',
+      'The first launch drops straight into an empty list. We want three welcome screens: what the\n' +
+      'app is for, how to create a note, how to turn on sync. Skippable with a single button.',
     status: 'new',
     priority: 'normal',
     tags: ['feature'],
@@ -480,8 +482,8 @@ const TASKS: DemoTask[] = [
     runs: [],
     comments: [
       {
-        id: 'demo-comment-onboarding-1', authorKind: 'human', authorName: 'Ирина, продакт',
-        body: 'Тексты экранов пришлю отдельно, разметку можно делать на заглушках.',
+        id: 'demo-comment-onboarding-1', authorKind: 'human', authorName: 'Irene, product',
+        body: 'I will send the screen copy separately — build the layout against placeholders.',
         minutes: 80,
       },
     ],
@@ -489,10 +491,11 @@ const TASKS: DemoTask[] = [
   {
     id: 'demo-task-a11y',
     externalId: 'DEMO-106',
-    title: 'Проверить озвучку списка заметок',
+    title: 'Audit the note list with a screen reader',
     description:
-      'Пройти список заметок скринридером: у карточек нет подписей, дата читается как набор цифр.\n' +
-      'Нужен отчёт со списком мест, где подпись отсутствует или бессмысленна.',
+      'Walk the note list with a screen reader: the cards have no labels and the date is read out\n' +
+      'as a string of digits. We need a report listing every place where a label is missing or\n' +
+      'meaningless.',
     status: 'new',
     priority: 'low',
     tags: ['qa'],
@@ -511,18 +514,18 @@ const INTERACTION = {
   stageIndex: 1,
   minutes: 35,
   message:
-    'Заголовок добавляю в поисковый индекс. Искать ли ещё и по тегам заметки — это меняет размер ' +
-    'индекса примерно на треть?',
+    'I am adding the title to the search index. Should note tags be searchable too? That grows ' +
+    'the index by roughly a third.',
   requestedSchema: {
     type: 'object',
     required: ['scope'],
     properties: {
       scope: {
         type: 'string',
-        title: 'Что включить в поиск',
-        enum: ['Только заголовок и текст', 'Заголовок, текст и теги'],
+        title: 'What to include in the search',
+        enum: ['Title and body only', 'Title, body and tags'],
       },
-      comment: { type: 'string', title: 'Комментарий (необязательно)' },
+      comment: { type: 'string', title: 'Comment (optional)' },
     },
   },
 };
@@ -533,12 +536,12 @@ const APPROVAL = {
   taskId: 'demo-task-export',
   runId: 'demo-run-export',
   minutes: hours(5),
-  title: 'Принять работу: экспорт в Markdown',
+  title: 'Accept the work: export to Markdown',
   message:
-    'Агент закончил экспорт заметок в Markdown, вердикт проверяющей стадии — pass. ' +
-    'Примите работу или верните с замечанием: текст замечания получит агент как следующее задание.',
+    'The agent finished the Markdown export and the reviewing stage returned pass. Accept the ' +
+    'work, or send it back with a remark — that text becomes the agent\'s next instruction.',
   links: [
-    { label: 'Ветка agentiz/demo-markdown-export', url: 'https://example.com/agentiz-demo/notes-app/tree/agentiz/demo-markdown-export' },
+    { label: 'Branch agentiz/demo-markdown-export', url: 'https://example.com/agentiz-demo/notes-app/tree/agentiz/demo-markdown-export' },
   ],
 };
 
@@ -565,8 +568,8 @@ const ACTIVITIES: DemoActivity[] = [
   {
     id: 'demo-activity-dark-theme-run', type: 'run.succeeded', kind: 'info',
     taskId: 'demo-task-dark-theme', runId: 'demo-run-dark-theme',
-    title: 'Запуск завершён: Тёмная тема на экране заметки',
-    body: 'Три стадии из трёх, замечаний у ревьюера нет.',
+    title: 'Run finished: Dark theme on the note screen',
+    body: 'Three stages out of three, no remarks from the reviewer.',
     minutes: days(2) - 12,
   },
   {
@@ -575,38 +578,38 @@ const ACTIVITIES: DemoActivity[] = [
     // висит на задаче, которая ждёт приёмки, а не на уже завершённой.
     id: 'demo-activity-export-pr', type: 'pr.opened', kind: 'action_required',
     taskId: 'demo-task-export', runId: 'demo-run-export',
-    title: 'Открыт пул-реквест: Экспорт заметок в Markdown',
-    body: 'agentiz/demo-markdown-export → main, 4 файла',
+    title: 'Pull request opened: Export notes to Markdown',
+    body: 'agentiz/demo-markdown-export → main, 4 files',
     data: { prUrl: 'https://example.com/agentiz-demo/notes-app/pull/57', branch: 'agentiz/demo-markdown-export' },
     minutes: hours(5) - 1,
   },
   {
     id: 'demo-activity-sync-failed', type: 'run.failed', kind: 'info',
     taskId: 'demo-task-sync', runId: 'demo-run-sync',
-    title: 'Запуск упал: Синхронизация падает без сети',
-    body: 'Стадия implement: 2 упавших теста (SyncOfflineTest).',
+    title: 'Run failed: Sync fails when the device is offline',
+    body: 'Stage implement: 2 failing tests (SyncOfflineTest).',
     minutes: hours(26) - 6,
   },
   {
     id: 'demo-activity-export-run', type: 'run.succeeded', kind: 'info',
     taskId: 'demo-task-export', runId: 'demo-run-export',
-    title: 'Запуск завершён: Экспорт заметок в Markdown',
-    body: 'Вердикт проверяющей стадии — pass.',
+    title: 'Run finished: Export notes to Markdown',
+    body: 'The reviewing stage returned pass.',
     minutes: hours(5),
   },
   {
     id: 'demo-activity-export-approval', type: 'approval.requested', kind: 'action_required',
     taskId: 'demo-task-export', runId: 'demo-run-export',
-    title: 'Принять работу: экспорт в Markdown',
-    body: 'Агент закончил, нужна приёмка.',
+    title: 'Accept the work: export to Markdown',
+    body: 'The agent is done and the work needs accepting.',
     data: { approvalId: APPROVAL.id },
     minutes: hours(5),
   },
   {
     id: 'demo-activity-search-question', type: 'interaction.created', kind: 'action_required',
     taskId: 'demo-task-search', runId: 'demo-run-search', interactionId: INTERACTION.id,
-    title: 'Агент задал вопрос: Поиск не находит слова из заголовков',
-    body: 'Искать ли по тегам заметки — это меняет размер индекса.',
+    title: 'The agent asked a question: Search misses words that are in a title',
+    body: 'Should note tags be searchable too — it changes the index size.',
     minutes: 35,
   },
 ];
@@ -711,11 +714,11 @@ export async function seedDemoWorkspace(options: DemoSeedOptions): Promise<DemoS
 
   const existing = await AgentProject.findOne({ where: { slug: DEMO_PROJECT_SLUG } });
   const projectAttrs = {
-    name: 'Демо-проект',
+    name: 'Demo project',
     slug: DEMO_PROJECT_SLUG,
     description:
-      'Демонстрационный проект с подготовленными данными: задачи, запуски, лента и приёмка. ' +
-      'Настоящий код здесь не собирается и никуда не выкатывается.',
+      'A demonstration project with prepared data: tasks, runs, an activity feed and an approval. ' +
+      'No real code is built here and nothing is ever deployed from it.',
     repoProvider: 'github' as const,
     repoConfig: { owner: 'agentiz-demo', repo: 'notes-app', defaultBranch: 'main' },
     trackerConfig: {},
@@ -746,11 +749,11 @@ export async function seedDemoWorkspace(options: DemoSeedOptions): Promise<DemoS
   }
 
   await ensure(PipelineSpec, SPEC_DEFAULT_ID, {
-    projectId, name: 'Основной пайплайн', matchTags: null, isDefault: true, isActive: true,
+    projectId, name: 'Main pipeline', matchTags: null, isDefault: true, isActive: true,
     version: 1, spec: DEFAULT_PIPELINE,
   });
   await ensure(PipelineSpec, SPEC_QA_ID, {
-    projectId, name: 'Быстрая проверка (вердикт)', matchTags: ['qa'], isDefault: false, isActive: true,
+    projectId, name: 'Quick check (verdict)', matchTags: ['qa'], isDefault: false, isActive: true,
     version: 1, spec: QA_PIPELINE,
   });
   counts.pipelineSpecs = 2;
@@ -767,7 +770,7 @@ export async function seedDemoWorkspace(options: DemoSeedOptions): Promise<DemoS
       priority: task.priority,
       pipelineSpecId: task.specId,
       sourceType: 'local',
-      sourceName: 'Демо',
+      sourceName: 'Demo',
       createdAt: at(now, task.createdMinutes),
       updatedAt: at(now, task.updatedMinutes),
     });
