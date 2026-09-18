@@ -13,6 +13,24 @@ export class MobileAuthError extends Error {
   }
 }
 
+/**
+ * The languages the mobile client is translated into. Declared here rather than derived from
+ * anything, because it is a fact about the *app* — a tag the app has no table for would leave a
+ * reader with a profile setting that shows them nothing.
+ */
+const SUPPORTED_LOCALES = ['ru', 'en', 'es'] as const;
+
+/**
+ * A stored or submitted locale reduced to one of [SUPPORTED_LOCALES], or null when it is none of
+ * them. Matching is on the primary subtag and case-insensitively: the column can hold `ru-RU` from
+ * adminizer's own form and `es-419` from a phone, and both are answers this app can honour.
+ */
+function normalizeLocale(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const primary = value.trim().split(/[-_]/)[0]?.toLowerCase();
+  return SUPPORTED_LOCALES.find((locale) => locale === primary) ?? null;
+}
+
 /** Reads a Sequelize instance's attribute either from a model instance or a plain object. */
 function attr(record: any, key: string): unknown {
   return typeof record?.get === 'function' ? record.get(key) : record?.[key];
@@ -45,7 +63,30 @@ export class MobileAuthService {
       email: (attr(user, 'email') ?? null) as string | null,
       timezone,
       utcOffsetMinutes: timezone ? timezoneOffsetMinutes(timezone) : null,
+      locale: normalizeLocale(attr(user, 'locale')),
     };
+  }
+
+  /**
+   * Stores the reader's language on their own profile row.
+   *
+   * `UserAP.locale` and not a table of ours, because the panel reads that column too (adminizer's
+   * assistant hands it to the model, and its user form writes it where the deployment enables
+   * translations) — one person saying "я по-русски" has to mean it on both surfaces, and a second
+   * column would be a second answer to one question.
+   *
+   * The tag is validated against what the app actually ships rather than stored as sent: this
+   * writes into a shared column, and an unknown value there would be a setting no surface can honour
+   * while still looking like one somebody chose.
+   */
+  static async setLocale(sequelize: Sequelize, userId: string | number, locale: string): Promise<Model> {
+    const normalized = normalizeLocale(locale);
+    if (!normalized) {
+      throw new MobileAuthError(400, `locale must be one of: ${SUPPORTED_LOCALES.join(', ')}`);
+    }
+    const user = await this.requireUser(sequelize, userId);
+    await user.update({ locale: normalized });
+    return user;
   }
 
   static async login(sequelize: Sequelize, login: string, password: string): Promise<MobileLoginResult> {

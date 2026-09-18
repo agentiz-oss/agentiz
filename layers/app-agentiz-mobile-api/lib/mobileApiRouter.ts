@@ -133,6 +133,29 @@ export function createMobileApiRouter(sequelize: Sequelize): Router {
   });
 
   /**
+   * The reader's language, written to their admin profile.
+   *
+   * A write endpoint on `/auth` rather than a general profile PUT: this is the only field of the
+   * profile the app is allowed to change, and every other one of them belongs to the panel, where
+   * changing a login or a password is a decision with an audit trail behind it.
+   *
+   * The updated user comes back in the same shape `/auth/me` answers, so the client can store a
+   * session that already agrees with the server instead of guessing what it accepted.
+   */
+  router.put('/auth/locale', requireAuth, async (req: AuthedRequest, res) => {
+    try {
+      const user = await MobileAuthService.setLocale(
+        sequelize,
+        String(MobileAuthService.toAuthUser(req.mobileUser).id),
+        String(req.body?.locale ?? ''),
+      );
+      res.json({ user: MobileAuthService.toAuthUser(user), expiresAt: req.mobileSession?.expiresAt });
+    } catch (error) {
+      errorResponse(res, error);
+    }
+  });
+
+  /**
    * Trade a still-valid token for a fresh one, unconditionally. `me` already renews on its own
    * schedule; this exists for a client that wants to ask outright — after a long sleep, or before
    * a background job it does not want to see fail on an expiry it could have avoided.

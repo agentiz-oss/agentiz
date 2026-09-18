@@ -17,6 +17,13 @@ export interface MobileAuthUser {
    * session restore, which keeps DST drift bounded to one app restart.
    */
   utcOffsetMinutes: number | null;
+  /**
+   * The profile's language (`UserAP.locale`) as a bare BCP-47 primary subtag, or null when the
+   * column is empty — which it is on a fresh account, and on a deployment whose panel never offered
+   * the field (`config.translation` unset). Null is "nobody said" and is what makes the client fall
+   * back to the device's own language rather than to a guess.
+   */
+  locale: string | null;
 }
 
 /** Response of POST /auth/login. `expiresAt` lets the client refresh before the token dies. */

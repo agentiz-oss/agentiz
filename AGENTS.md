@@ -364,6 +364,27 @@
   directory is still reserved) and `run_failed` (one row per task, keyed off
   `AgentTask.status = 'failed'`, which a re-run clears by itself). The old
   `interactions`/`proposals`/`heldRuns` arrays stay for builds that predate `items`.
+- The mobile client speaks three languages and **which one is not the device's decision** — it is
+  `UserAP.locale`, the same profile column the panel reads (long form:
+  [`docs/guides/mobile-i18n.md`](docs/guides/mobile-i18n.md)). Resolution is profile → the choice
+  made on this device → the device's own language → English, and an **empty** `locale` means "nobody
+  said" rather than a language: the column is empty on every account here (adminizer only offers the
+  field with `config.translation` set, which it is not), so treating it as English would leave a
+  reader on an English screen with no switch in sight — the same shape of bug as the timezone one.
+  The app writes it back through `PUT /auth/locale`, the one profile field it may change, and the
+  server refuses a tag it has no table for instead of storing a setting no surface can honour. The
+  strings themselves are a Kotlin **interface** with three implementations
+  (`composeApp/.../i18n/`), not `strings.xml` and not Compose Resources: a third of the text is
+  assembled outside composition (an age, a duration, a byte count, the plural of «окно») by
+  functions both screens and tests call directly, and `stringResource` is `@Composable`. The
+  compiler therefore guarantees completeness; what it cannot see —an entry left in Russian, an entry
+  left empty, an interpolated value dropped into a differently-ordered sentence — is what
+  `TranslationTablesTest` walks the interface reflectively for. Counts are **methods**
+  (`taskRunCount(n)`), never a number the call site concatenates, because Russian needs three forms
+  where English needs two. What the **server** writes is deliberately untranslated and stays in its
+  own language: an inbox row's badge and facts, an activity type's label, a run's summary — those
+  words are one source of truth for the panel, the phone and the push text at once, and a fourth
+  copy in the client is a fourth spelling that drifts.
 - **How long a mobile session lasts is current server policy, not a number frozen into the token.**
   `verifyMobileToken` (`layers/app-agentiz-mobile-api/lib/mobileAuth.ts`) checks the signature with
   `ignoreExpiration` and then decides expiry itself, from `iat` + `mobileTokenTtlSeconds()`
