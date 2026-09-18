@@ -368,9 +368,12 @@
   `UserAP.locale`, the same profile column the panel reads (long form:
   [`docs/guides/mobile-i18n.md`](docs/guides/mobile-i18n.md)). Resolution is profile → the choice
   made on this device → the device's own language → English, and an **empty** `locale` means "nobody
-  said" rather than a language: the column is empty on every account here (adminizer only offers the
-  field with `config.translation` set, which it is not), so treating it as English would leave a
-  reader on an English screen with no switch in sight — the same shape of bug as the timezone one.
+  said" rather than a language — treating it as English would leave a reader on an English screen
+  with no switch in sight, the same shape of bug as the timezone one. Empty is *not* the universal
+  state, which is the easy thing to assume and get wrong: the panel's ordinary user form writes the
+  field only with `config.translation` set (it is not), but adminizer's **first-administrator** form
+  asks for a language and stores it — prod's `xziy` carries `en` from the day the panel was set up,
+  so that account opens the app in English until somebody uses the language card.
   The app writes it back through `PUT /auth/locale`, the one profile field it may change, and the
   server refuses a tag it has no table for instead of storing a setting no surface can honour. The
   strings themselves are a Kotlin **interface** with three implementations
