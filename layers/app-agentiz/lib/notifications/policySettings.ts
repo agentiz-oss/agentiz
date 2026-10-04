@@ -257,7 +257,7 @@ export function explainActivityPolicy(
 /** The decision in force right now: `resolveActivityPolicy` against the document actually stored. */
 export function effectiveActivityPolicy(
   type: string,
-  projectId: string,
+  projectId: string | null,
   pipelineSpecId?: string | null,
 ): ActivityChannelPolicy {
   return resolveActivityPolicy(notifyPolicy(), type, projectId, pipelineSpecId);

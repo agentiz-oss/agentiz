@@ -1,4 +1,4 @@
-import { Op } from 'sequelize';
+import { Op, type WhereOptions } from 'sequelize';
 import { AgentActivity } from '../../app-agentiz/models/AgentActivity';
 import { AgentActivitySeen } from '../../app-agentiz/models/AgentActivitySeen';
 import { AgentProject } from '../../app-agentiz/models/AgentProject';
@@ -8,6 +8,7 @@ import { effectiveActivityPolicy } from '../../app-agentiz/lib/notifications/pol
 import { MobileInboxDismissal } from '../models/MobileInboxDismissal';
 import { MobileAuthError } from './MobileAuthService';
 import { visibleProjectIds } from '../lib/mobileScope';
+import { isAdministratorId } from '../../app-agentiz/lib/access/administrators';
 import {
   applyDismissal,
   collectInboxItems,
@@ -58,6 +59,23 @@ export class MobileActivityService {
   }
 
   /**
+   * Which journal rows the caller reads: those of their projects, plus — for an administrator —
+   * the installation rows (`projectId: null`, e.g. a new server version), because the push about
+   * one opens this feed and must find it there. `null` means "nothing to read", never "everything".
+   */
+  private static async feedScope(ownerId: number | string): Promise<WhereOptions | null> {
+    const [projectIds, administrator] = await Promise.all([
+      this.ownedProjectIds(ownerId),
+      isAdministratorId(ownerId),
+    ]);
+    const scopes: WhereOptions[] = [];
+    if (projectIds.length > 0) scopes.push({ projectId: { [Op.in]: projectIds } });
+    if (administrator) scopes.push({ projectId: null });
+    if (scopes.length === 0) return null;
+    return scopes.length === 1 ? scopes[0] : { [Op.or]: scopes };
+  }
+
+  /**
    * One feed page, newest first, keyed by `(createdAt, id)` — the same cursor idea as the run log:
    * a feed only grows, and "the first N" would pin a reader to ever-older rows.
    */
@@ -65,14 +83,14 @@ export class MobileActivityService {
     ownerId: number | string,
     options: { before?: string | null; limit?: number } = {},
   ): Promise<ActivityListPage> {
-    const projectIds = await this.ownedProjectIds(ownerId);
-    if (projectIds.length === 0) return { items: [], nextBefore: null };
+    const scope = await this.feedScope(ownerId);
+    if (!scope) return { items: [], nextBefore: null };
     const limit = Math.min(Math.max(Math.floor(options.limit ?? PAGE_LIMIT_DEFAULT), 1), PAGE_LIMIT_MAX);
 
-    const where: Record<string, unknown> = { projectId: { [Op.in]: projectIds } };
+    const clauses: WhereOptions[] = [scope];
     const cursor = this.parseCursor(options.before);
     if (cursor) {
-      Object.assign(where, {
+      clauses.push({
         [Op.or]: [
           { createdAt: { [Op.lt]: cursor.createdAt } },
           { createdAt: cursor.createdAt, id: { [Op.lt]: cursor.id } },
@@ -81,13 +99,14 @@ export class MobileActivityService {
     }
 
     const rows = await AgentActivity.findAll({
-      where,
+      where: { [Op.and]: clauses },
       order: [['createdAt', 'DESC'], ['id', 'DESC']],
       limit,
     });
 
+    const projectIdsOnPage = [...new Set(rows.map((row) => row.projectId).filter(Boolean))] as string[];
     const [projects, tasks] = await Promise.all([
-      AgentProject.findAll({ where: { id: { [Op.in]: [...new Set(rows.map((row) => row.projectId))] } } }),
+      AgentProject.findAll({ where: { id: { [Op.in]: projectIdsOnPage } } }),
       AgentTask.findAll({ where: { id: { [Op.in]: [...new Set(rows.map((row) => row.taskId).filter(Boolean))] as string[] } } }),
     ]);
     const projectById = new Map(projects.map((project) => [project.id, project]));
@@ -97,8 +116,9 @@ export class MobileActivityService {
       id: row.id,
       type: row.type,
       kind: row.kind,
-      projectId: row.projectId,
-      projectName: projectById.get(row.projectId)?.name ?? null,
+      // Always a string: shipped app builds declare it non-null, and an installation row has none.
+      projectId: row.projectId ?? '',
+      projectName: row.projectId ? projectById.get(row.projectId)?.name ?? null : null,
       runId: row.runId,
       taskId: row.taskId,
       taskTitle: row.taskId ? taskById.get(row.taskId)?.title ?? null : null,
@@ -131,14 +151,11 @@ export class MobileActivityService {
   }
 
   static async unseenCount(ownerId: number | string, userId: number): Promise<number> {
-    const projectIds = await this.ownedProjectIds(ownerId);
-    if (projectIds.length === 0) return 0;
+    const scope = await this.feedScope(ownerId);
+    if (!scope) return 0;
     const seen = await AgentActivitySeen.findByPk(userId);
     return AgentActivity.count({
-      where: {
-        projectId: { [Op.in]: projectIds },
-        ...(seen ? { createdAt: { [Op.gt]: seen.seenAt } } : {}),
-      },
+      where: { [Op.and]: [scope, ...(seen ? [{ createdAt: { [Op.gt]: seen.seenAt } }] : [])] },
     });
   }
 
@@ -156,7 +173,8 @@ export class MobileActivityService {
     if (projectIds.length === 0) {
       return {
         items: [], interactions: [], proposals: [], heldRuns: [],
-        actionableCount: 0, dismissedCount: 0, unseen: 0,
+        // Still counted: an administrator with no project of their own has installation rows.
+        actionableCount: 0, dismissedCount: 0, unseen: await this.unseenCount(ownerId, userId),
         workerAlerts: await workerAlerts(),
       };
     }

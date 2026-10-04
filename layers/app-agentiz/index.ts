@@ -94,6 +94,7 @@ import { runRoutes } from './lib/runRoutes';
 import { viewerRoutes } from './lib/viewerRoutes';
 import { createWorkerApiRouter, WORKER_API_BASE } from './lib/workerApiRouter';
 import { createPrivacyPolicyRouter, PRIVACY_POLICY_PATH } from './lib/privacyPolicyRouter';
+import { scheduleServerVersionAnnouncement } from './lib/serverVersion';
 import { agentizMcpTools } from './mcp/agentizTools';
 import type { IMcpTool } from '@nodeknit/app-mcp';
 import { adminizerModuleStylesheet } from './lib/adminizerModuleUrl';
@@ -107,6 +108,8 @@ export class AppAgentiz extends AbstractApp {
     name: string = 'App Agentiz';
 
     private syncTask: ScheduledTask | null = null;
+    /** Cancels the pending "сервер обновился" check — see lib/serverVersion.ts. */
+    private cancelVersionAnnouncement: (() => void) | null = null;
 
     /**
      * Идентификаторы, которые реестр навигации выдал нашим ссылкам и шаблонам.
@@ -519,6 +522,9 @@ export class AppAgentiz extends AbstractApp {
         AgentJobReaperService.start();
         // Schedule windows, declared subscription resets, provider refresh, sample retention.
         AgentCapacityService.start();
+        // Tells administrators that a new build came up. Delayed, not run here: the phone's
+        // notifier registers when its own layer mounts, after this one.
+        this.cancelVersionAnnouncement = scheduleServerVersionAnnouncement();
 
         if (process.env.AGENTIZ_SYNC_ENABLED === 'true') {
             this.syncTask = cron.schedule(SYNC_CRON, () => {
@@ -657,6 +663,8 @@ export class AppAgentiz extends AbstractApp {
             this.syncTask.stop();
             this.syncTask = null;
         }
+        this.cancelVersionAnnouncement?.();
+        this.cancelVersionAnnouncement = null;
         // Реестр навигации переживает наш аппликейшн: `add()` бросает на повторное имя, поэтому
         // ссылки надо снять, иначе повторный mount() в разработке зальёт консоль предупреждениями
         // и оставит в поиске адреса выключенного приложения. Владелец (`this.appId`) — то, что

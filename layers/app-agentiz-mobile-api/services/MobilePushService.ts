@@ -86,7 +86,9 @@ export class MobilePushService implements ActivityNotifier {
           taskId: activity.taskId ?? '',
           taskTitle: context.taskTitle ?? '',
           proposalId: activity.proposalId ?? '',
-          projectId: activity.projectId,
+          // Empty for an installation event; the app then opens its feed, as for any activity
+          // without a run to land on.
+          projectId: activity.projectId ?? '',
           projectName: context.projectName,
           ...(typeof activity.data?.prUrl === 'string' ? { prUrl: activity.data.prUrl } : {}),
         };
@@ -94,11 +96,18 @@ export class MobilePushService implements ActivityNotifier {
     const message = (badge: number): PushMessage => ({
       // Filled in per device — everything else about the message is the same for all of them.
       token: '',
+      // An installation event has neither a task nor a project to head the card with, so its own
+      // title does that and the body is not prefixed with it a second time.
       notification: {
         title: context.taskTitle
           ? truncate(context.taskTitle, 60)
-          : `${activity.title} · ${context.projectName}`,
-        body: truncate(activity.type === 'interaction.created' ? activity.body : `${activity.title}. ${activity.body}`.trim(), MAX_BODY),
+          : context.projectName ? `${activity.title} · ${context.projectName}` : activity.title,
+        body: truncate(
+          activity.type === 'interaction.created' || !activity.projectId
+            ? activity.body
+            : `${activity.title}. ${activity.body}`.trim(),
+          MAX_BODY,
+        ),
       },
       data,
       android: {

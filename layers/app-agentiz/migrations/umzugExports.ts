@@ -126,6 +126,10 @@ import {
   up as upHarnessAuthState,
   down as downHarnessAuthState,
 } from './umzug/1788001800000_harness_auth_state';
+import {
+  up as upActivityInstallationScope,
+  down as downActivityInstallationScope,
+} from './umzug/1788001900000_activity_installation_scope';
 
 export const umzugExports: Migration[] = [
   {
@@ -368,5 +372,11 @@ export const umzugExports: Migration[] = [
     timestamp: 1788001800000,
     up: upHarnessAuthState,
     down: downHarnessAuthState,
+  },
+  {
+    name: 'activity_installation_scope',
+    timestamp: 1788001900000,
+    up: upActivityInstallationScope,
+    down: downActivityInstallationScope,
   },
 ];

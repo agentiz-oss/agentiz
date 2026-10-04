@@ -33,9 +33,11 @@ export class DashboardActivityNotifier implements ActivityNotifier {
     // One row per person: the bell is addressed, and an unaddressed notification is a different
     // thing (installation-wide news), not a cheaper version of this one.
     for (const userId of context.recipientIds) {
+      const subject = context.taskTitle ?? context.projectName;
       await sendDashboardNotification({
         channel: activity.type,
-        title: `${activity.title} · ${context.taskTitle ?? context.projectName}`,
+        // An installation event names no task and no project — its title stands alone.
+        title: subject ? `${activity.title} · ${subject}` : activity.title,
         message: activity.body,
         userId,
         metadata: {

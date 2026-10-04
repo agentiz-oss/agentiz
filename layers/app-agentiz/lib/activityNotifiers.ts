@@ -24,7 +24,8 @@ export interface ActivityRecord {
   id: string;
   type: string;
   kind: ActivityKind;
-  projectId: string;
+  /** `null` for an installation event — no project, addressed to administrators. */
+  projectId: string | null;
   runId: string | null;
   taskId: string | null;
   proposalId: string | null;
@@ -51,8 +52,12 @@ export interface ActivityContext {
    * contains the owner, and it is the only field that knows about anybody else.
    */
   ownerId: number | null;
-  /** Everyone this event should reach in this project, owner first. */
+  /**
+   * Everyone this event should reach in this project, owner first — or, for an installation event,
+   * the Adminizer administrators (`lib/access/administrators.ts`).
+   */
   recipientIds: number[];
+  /** Empty for an installation event; a notifier must not print it as `· ` then. */
   projectName: string;
   taskTitle: string | null;
   run: AgentRun | null;

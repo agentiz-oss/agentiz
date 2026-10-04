@@ -4,9 +4,10 @@ import { AgentRun } from '../models/AgentRun';
 import { AgentTask } from '../models/AgentTask';
 import { dispatchActivity } from '../lib/activityNotifiers';
 import type { ActivityEvent } from '../lib/activityNotifiers';
-import { activityTypeDef } from '../lib/notifications/activityTypes';
+import { activityScope, activityTypeDef } from '../lib/notifications/activityTypes';
 import { effectiveActivityPolicy } from '../lib/notifications/policySettings';
 import { recipientsForProject } from '../lib/access/projectAccess';
+import { administratorIds } from '../lib/access/administrators';
 
 /** `title` is STRING(255); `body`/`data` errors are cut so a stack trace cannot bloat the feed. */
 const MAX_TITLE = 250;
@@ -40,6 +41,14 @@ export interface RecordActivityInput {
   recipientToken?: string | null;
 }
 
+/** An event about the deployment itself: no project, no run, no task — see `ActivityScope`. */
+export interface RecordInstallationActivityInput {
+  type: string;
+  title: string;
+  body: string;
+  data?: Record<string, unknown> | null;
+}
+
 /**
  * The one dispatcher between "something happened" and everyone who may care.
  *
@@ -57,6 +66,9 @@ export class ActivityService {
   static async record(input: RecordActivityInput): Promise<AgentActivity | null> {
     try {
       const def = activityTypeDef(input.type);
+      if (activityScope(def.type) !== 'project') {
+        throw new Error(`${def.type} is an installation event — record it with recordInstallation()`);
+      }
 
       const project = await AgentProject.findByPk(input.projectId);
       if (!project) {
@@ -112,6 +124,66 @@ export class ActivityService {
         delivery,
       };
       dispatchActivity(event);
+      return activity;
+    } catch (error) {
+      console.warn(
+        `[app-agentiz] activity ${input.type} was not recorded:`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * The same dispatcher for an event that belongs to no project. The row is written with
+   * `projectId: null`, the policy resolves through `defaults` alone (there is no project or
+   * pipeline scope to consult) and the addressees are the administrators — so the feed, the policy
+   * and both channels stay the one path every other event takes, only the "who" differs.
+   */
+  static async recordInstallation(input: RecordInstallationActivityInput): Promise<AgentActivity | null> {
+    try {
+      const def = activityTypeDef(input.type);
+      if (activityScope(def.type) !== 'installation') {
+        throw new Error(`${def.type} belongs to a project — record it with record()`);
+      }
+
+      const activity = await AgentActivity.create({
+        type: def.type,
+        kind: def.kind,
+        projectId: null,
+        runId: null,
+        taskId: null,
+        proposalId: null,
+        interactionId: null,
+        title: truncate(input.title, MAX_TITLE),
+        body: truncate(input.body, MAX_BODY),
+        data: input.data ?? null,
+      });
+
+      dispatchActivity({
+        activity: {
+          id: activity.id,
+          type: activity.type,
+          kind: activity.kind,
+          projectId: null,
+          runId: null,
+          taskId: null,
+          proposalId: null,
+          interactionId: null,
+          title: activity.title,
+          body: activity.body,
+          data: activity.data,
+          createdAt: activity.createdAt,
+        },
+        context: {
+          ownerId: null,
+          recipientIds: await administratorIds(),
+          projectName: '',
+          taskTitle: null,
+          run: null,
+        },
+        delivery: effectiveActivityPolicy(def.type, null),
+      });
       return activity;
     } catch (error) {
       console.warn(

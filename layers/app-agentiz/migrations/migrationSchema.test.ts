@@ -131,6 +131,30 @@ describe('migrations produce a usable schema on sqlite', () => {
     await sequelize.close();
   });
 
+  it('the activity feed takes a row without a project and keeps its indexes through the rebuild', async () => {
+    const sequelize = await applyAll();
+    const now = new Date().toISOString();
+    // An installation event (a new server version) belongs to no project.
+    await sequelize.query(
+      `insert into agentiz_activities (id, type, kind, projectId, title, body, createdAt, updatedAt)`
+      + ` values ('a','server.updated','info',NULL,'T','B','${now}','${now}')`,
+    );
+    const [rows] = await sequelize.query<{ n: number }>(
+      'select count(*) as n from agentiz_activities where projectId is null', { type: 'SELECT' as never },
+    );
+    expect(rows.n).toBe(1);
+
+    // Making the column nullable is a table rebuild on sqlite, and `DROP TABLE` takes the indexes
+    // with it; the migration puts them back.
+    const indexes = await sequelize.query<{ name: string }>(
+      "select name from sqlite_master where type='index' and tbl_name='agentiz_activities'", { type: 'SELECT' as never },
+    );
+    const names = indexes.map((index) => index.name);
+    expect(names).toContain('agentiz_activities_project_created_idx');
+    expect(names).toContain('agentiz_activities_created_idx');
+    await sequelize.close();
+  });
+
   it('DataTypes is importable here — the migrations are typed against sequelize, not the models', () => {
     expect(DataTypes.STRING).toBeDefined();
   });

@@ -316,6 +316,20 @@
   `on` by default — the trigger in front of it already did the filtering, unlike the routine
   `repository.*` facts, which are `silent`), so a graph never talks to a push provider and its
   pushes stay mutable per project in the policy. Deciding *when* belongs to the nodes before it.
+  An event about the **deployment itself** rather than a project — today only `server.updated`,
+  «вышла новая версия сервера» (`lib/serverVersion.ts`) — is marked `scope: 'installation'` in the
+  catalogue and goes through the second door of the same dispatcher,
+  `ActivityService.recordInstallation()`: its feed row has `projectId: null`, its policy resolves
+  through `defaults` alone, and its addressees are the `UserAP.isAdministrator` users
+  (`lib/access/administrators.ts`), never a project's members. Each door refuses the other's types,
+  because a project event missing its project would otherwise land with the admins. Every reader
+  that filters the feed by the caller's projects leaves those rows out by itself; the mobile feed
+  adds them back for an administrator, since the push opens it, and sends `projectId: ''` there —
+  shipped builds declare the field non-null. The version check identifies a build by `GIT_SHA`
+  alone (no sha, or the Dockerfile's `unknown`, means a local run and nothing is said), takes the
+  previous one from the latest `server.updated` row — the journal is the cursor — and runs 60s
+  after mount: the phone's notifier registers when its own layer mounts, later than this one, and
+  a dispatch reaches only the notifiers present at that moment.
 - Everything that waits on a **person** — a question, a review, a failed push or reset, a diff held
   by `requireApproval`, an opened PR, a task whose last run died — is one shape, `InboxItem`, and
   **one** place that builds it: `layers/app-agentiz/lib/inbox/` (`items.ts` turns an entity into

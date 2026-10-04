@@ -196,6 +196,39 @@ describe('MobilePushService', () => {
     expect(message.apns.payload.aps.sound).toBe('default');
   });
 
+  it('sends an installation event with its own title and an empty, not missing, projectId', async () => {
+    await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
+
+    await new MobilePushService().notify({
+      activity: {
+        id: 'act-3',
+        type: 'server.updated',
+        kind: 'info',
+        projectId: null,
+        runId: null,
+        taskId: null,
+        proposalId: null,
+        interactionId: null,
+        title: 'Сервер обновился',
+        body: 'Новая версия: bbbbbbbb',
+        data: { gitSha: 'bbbbbbbb2222' },
+        createdAt: new Date(),
+      },
+      context: { ownerId: null, recipientIds: [OWNER], projectName: '', taskTitle: null, run: null },
+      delivery: { push: 'on', dashboard: 'on' },
+    });
+
+    const message = sendFcmPush.mock.calls[0][0] as any;
+    // No `· ` with nothing after it, and the body is not prefixed with the title a second time.
+    expect(message.notification).toEqual({
+      title: 'Сервер обновился',
+      body: 'Новая версия: bbbbbbbb',
+    });
+    // FCM data values must be strings; the app opens its feed for an activity with no run.
+    expect(message.data).toMatchObject({ type: 'activity', activityType: 'server.updated', projectId: '', runId: '', taskId: '' });
+    expect(message.android.notification.channelId).toBe('agentiz-actions');
+  });
+
   it('delivers silent as quiet, not as absent', async () => {
     await MobileDeviceService.register(OWNER, { token: 'android-token', platform: 'android' });
 

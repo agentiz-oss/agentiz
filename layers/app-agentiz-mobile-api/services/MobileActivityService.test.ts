@@ -3,6 +3,7 @@ vi.mock('@nodeknit/app-adminizer', () => ({
   AdminizerField: (): PropertyDecorator => (_target: object, _key: string | symbol): void => {},
   AdminizerModel: (): ClassDecorator => (_target: Function): void => {},
 }));
+import { DataTypes } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import * as agentizModels from '../../app-agentiz/models';
 import { AgentActivity } from '../../app-agentiz/models/AgentActivity';
@@ -65,6 +66,33 @@ describe('MobileActivityService', () => {
     expect(page.nextBefore).toBeNull();
     expect((await MobileActivityService.list(STRANGER)).items).toHaveLength(1);
     expect((await MobileActivityService.list(99)).items).toHaveLength(0);
+  });
+
+  it('adds the installation rows for an administrator only, with a string projectId', async () => {
+    const User: any = sequelize.models.UserAP ?? sequelize.define('UserAP', {
+      id: { type: DataTypes.INTEGER, primaryKey: true },
+      isAdministrator: { type: DataTypes.BOOLEAN },
+      isDeleted: { type: DataTypes.BOOLEAN },
+    }, { tableName: 'userap', timestamps: false });
+    await User.sync({ force: true });
+    await User.create({ id: OWNER, isAdministrator: true, isDeleted: false });
+    await User.create({ id: STRANGER, isAdministrator: false, isDeleted: false });
+
+    await activity(ownProject.id, { createdAt: new Date(Date.now() - 60_000) } as any);
+    await activity(null as never, { type: 'server.updated', title: 'Сервер обновился' });
+
+    const admin = await MobileActivityService.list(OWNER);
+    expect(admin.items.map((item) => item.type)).toEqual(['server.updated', 'run.failed']);
+    // Shipped app builds declare `projectId` non-null; an installation row must not break the page.
+    expect(admin.items[0]).toMatchObject({ projectId: '', projectName: null });
+    expect(await MobileActivityService.unseenCount(OWNER, OWNER)).toBe(2);
+
+    expect((await MobileActivityService.list(STRANGER)).items).toHaveLength(0);
+    expect(await MobileActivityService.unseenCount(STRANGER, STRANGER)).toBe(0);
+    // An administrator with no project of their own still reads them — and is counted for it.
+    await User.update({ isAdministrator: true }, { where: { id: STRANGER } });
+    expect((await MobileActivityService.list(STRANGER)).items.map((item) => item.type)).toEqual(['server.updated']);
+    expect((await MobileActivityService.summary(STRANGER, STRANGER)).unseen).toBe(1);
   });
 
   it('pages newest-first through the before cursor without losing rows', async () => {

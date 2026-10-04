@@ -90,6 +90,25 @@ describe('DashboardActivityNotifier', () => {
     expect(sent.metadata).toMatchObject({ activityId: 'act-1', interactionId: 'int-1', runId: 'run-1', projectId: 'p1' });
   });
 
+  it('titles an installation event by itself and addresses each administrator', async () => {
+    const adminizer = panel();
+    useAdminizerNotifications(adminizer as any);
+
+    const base = event({
+      type: 'server.updated', kind: 'info', projectId: null, runId: null, taskId: null, interactionId: null,
+      title: 'Сервер обновился', body: 'Новая версия: bbbbbbbb', data: null,
+    });
+    await new DashboardActivityNotifier().notify({
+      ...base,
+      context: { ownerId: null, recipientIds: [1, 2], projectName: '', taskTitle: null, run: null },
+    });
+
+    expect(adminizer.sendNotification).toHaveBeenCalledTimes(2);
+    const sent = adminizer.sendNotification.mock.calls.map((call) => call[0] as any);
+    expect(sent.map((item) => item.userId)).toEqual([1, 2]);
+    expect(sent[0].title).toBe('Сервер обновился');
+  });
+
   it('does nothing at all when the panel has notifications disabled', async () => {
     const adminizer = { sendNotification: vi.fn(async () => true) };
 

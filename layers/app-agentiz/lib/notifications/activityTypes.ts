@@ -15,6 +15,15 @@
 export type ActivityKind = 'action_required' | 'info';
 export type ActivityPushMode = 'on' | 'silent' | 'off';
 export type ActivityDashboardMode = 'on' | 'off';
+/**
+ * Whom an event belongs to. `project` (the default, and every type before `server.updated`) is
+ * news for the people of one project. `installation` is news about the deployment itself — it has
+ * no project, so its feed row carries `projectId: null` and it is addressed to Adminizer
+ * administrators only (`ActivityService.recordInstallation`). The dispatcher refuses to record a
+ * type through the wrong door: a project event with no project would silently reach the admins, and
+ * an installation event pinned to a project would reach that project's members.
+ */
+export type ActivityScope = 'project' | 'installation';
 
 export interface ActivityChannelPolicy {
   push: ActivityPushMode;
@@ -36,6 +45,8 @@ export interface ActivityTypeDef {
    * panel and a future channel spell the same event the same way.
    */
   badge: string;
+  /** Absent = `project`. */
+  scope?: ActivityScope;
 }
 
 /** Android channels, referenced here and registered by the mobile client. */
@@ -225,6 +236,24 @@ const DEFS: ActivityTypeDef[] = [
     label: 'Запуск отменён',
     badge: 'отменён',
   },
+  {
+    /**
+     * The server came up on a build it had not run before (`lib/serverVersion.ts`). The first
+     * installation-scoped type: it belongs to no project and reaches administrators only, because
+     * a deploy is the operator's business, not the business of everybody who has a task somewhere.
+     * Push is `on` on the actions channel for the same reason as `workflow.notify` — a deploy is
+     * rare enough to be worth hearing, and on Android the results channel would deliver it without
+     * a sound; an administrator who disagrees lowers it in the policy's `defaults`, the only scope
+     * an event without a project resolves through.
+     */
+    type: 'server.updated',
+    kind: 'info',
+    defaults: { push: 'on', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_ACTIONS,
+    label: 'Вышла новая версия сервера (только администраторам)',
+    badge: 'новая версия',
+    scope: 'installation',
+  },
 ];
 
 export type ActivityType = typeof DEFS[number]['type'];
@@ -244,6 +273,10 @@ export function activityTypeDef(type: string): ActivityTypeDef {
   const def = BY_TYPE.get(type);
   if (!def) throw new Error(`Unknown activity type "${type}" — add it to lib/notifications/activityTypes.ts first`);
   return def;
+}
+
+export function activityScope(type: string): ActivityScope {
+  return activityTypeDef(type).scope ?? 'project';
 }
 
 /** Built-in delivery defaults per type — the tail of every policy resolution. */

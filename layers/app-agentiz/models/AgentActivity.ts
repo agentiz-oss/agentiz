@@ -38,9 +38,15 @@ export class AgentActivity extends Model<InferAttributes<AgentActivity>, InferCr
   @Column({ type: DataType.STRING, allowNull: false })
   declare kind: ActivityKind;
 
+  /**
+   * `null` only for an **installation** event (`scope: 'installation'` in the catalogue — a new
+   * server version, nothing else today). Every reader that filters by the caller's projects
+   * therefore leaves those rows out by itself, which is the intended default: they are the
+   * administrators' business, and only readers that know the caller is one add them back.
+   */
   @ForeignKey(() => AgentProject)
-  @Column({ type: DataType.STRING, allowNull: false })
-  declare projectId: string;
+  @Column({ type: DataType.STRING, allowNull: true })
+  declare projectId: string | null;
 
   @Column({ type: DataType.STRING, allowNull: true }) declare runId: string | null;
   @Column({ type: DataType.STRING, allowNull: true }) declare taskId: string | null;
