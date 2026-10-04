@@ -4,17 +4,14 @@ import { agentizModelConfig } from '../app-agentiz/lib/panel/modelConfigs';
 import { registerWebhookHost, unregisterWebhookHost } from '../app-agentiz/lib/webhooks';
 import type { WebhookHost } from '../app-agentiz/lib/webhooks';
 import { migrations } from './migrations';
+import { WEBHOOK_API_BASE } from './lib/rawBody';
 import { createWebhookRouter } from './lib/webhookRouter';
 import { AgentWebhookDelivery } from './models/AgentWebhookDelivery';
 import { AgentWebhookEndpoint } from './models/AgentWebhookEndpoint';
 
 const APP_ID = 'app-agentiz-webhooks';
 
-/**
- * Where an external sender reaches us. Versioned in the path, because this URL ends up configured
- * inside somebody else's system and cannot be changed by a deploy.
- */
-export const WEBHOOK_API_BASE = '/api/agentiz/hooks/v1';
+export { WEBHOOK_API_BASE };
 
 /**
  * The receiving half of inbound webhooks.

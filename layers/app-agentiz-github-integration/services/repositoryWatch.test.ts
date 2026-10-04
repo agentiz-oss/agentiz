@@ -94,6 +94,7 @@ import { watchCursorOf } from '../../app-agentiz/lib/workflow/repositoryEvents';
 import { AgentWebhookDelivery } from '../../app-agentiz-webhooks/models/AgentWebhookDelivery';
 import { AgentWebhookEndpoint } from '../../app-agentiz-webhooks/models/AgentWebhookEndpoint';
 import { createWebhookRouter } from '../../app-agentiz-webhooks/lib/webhookRouter';
+import { reserveRawWebhookBody } from '../../app-agentiz-webhooks/lib/rawBody';
 import { GithubRepositoryEventService } from './GithubRepositoryEventService';
 import { githubRepositoryWebhookMapper } from './GithubWebhookService';
 import { githubConnectionAuthority } from './GithubRepositorySyncService';
@@ -512,11 +513,23 @@ describe('watching a GitHub repository', () => {
       endpointId = repository.webhook!.endpointId!;
       secret = repository.webhook!.secret!;
 
-      const app = express();
-      app.use('/api/agentiz/hooks/v1', createWebhookRouter());
-      await new Promise<void>((resolve) => { server = app.listen(0, () => resolve()); });
+      server = await listen(productionShapedApp());
       base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/agentiz/hooks/v1`;
     });
+
+    /** The order the root `index.ts` builds: our reservation, app-manager's global parsers, routes. */
+    function productionShapedApp(options: { reserve?: boolean } = {}): express.Express {
+      const app = express();
+      if (options.reserve !== false) reserveRawWebhookBody(app);
+      app.use(express.json());
+      app.use(express.urlencoded({ extended: true }));
+      app.use('/api/agentiz/hooks/v1', createWebhookRouter());
+      return app;
+    }
+
+    async function listen(app: express.Express): Promise<ReturnType<express.Express['listen']>> {
+      return new Promise((resolve) => { const s = app.listen(0, () => resolve(s)); });
+    }
 
     afterEach(async () => {
       unregisterWebhookMapper(githubRepositoryWebhookMapper.kind);
@@ -592,6 +605,22 @@ describe('watching a GitHub repository', () => {
       // Refused, but still journalled — that journal is the only answer to "мы отправили".
       const delivery = await AgentWebhookDelivery.findOne({ where: { outcome: 'rejected' } });
       expect(delivery?.httpStatus).toBe(401);
+    });
+
+    it('without the raw-body reservation, app-manager\'s global JSON parser makes every signature fail', async () => {
+      // Prod, 2026-10-04: every ping 401 with an empty journal excerpt. Kept as the reason
+      // `reserveRawWebhookBody` sits in the root `index.ts` ahead of `appManager.init()`.
+      const bare = await listen(productionShapedApp({ reserve: false }));
+      try {
+        base = `http://127.0.0.1:${(bare.address() as AddressInfo).port}/api/agentiz/hooks/v1`;
+        const res = await deliver('push', pushBody());
+
+        expect(res.status).toBe(401);
+        const delivery = await AgentWebhookDelivery.findOne({ where: { outcome: 'rejected' } });
+        expect(delivery?.payloadExcerpt).toBe('');
+      } finally {
+        await new Promise<void>((resolve) => bare.close(() => resolve()));
+      }
     });
 
     it('the same delivery id twice is 200 once and 200 again, with one event', async () => {

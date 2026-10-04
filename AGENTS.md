@@ -673,8 +673,14 @@
 - Inbound webhooks are received by `layers/app-agentiz-webhooks` and understood by nobody there:
   the seam is the core's `webhookMappers` collection plus the `WebhookHost` registry
   (`lib/webhooks/`), and **both sides are optional**. The body is taken **raw** (a signature is
-  computed over the bytes that arrived; `JSON.parse` + `JSON.stringify` does not reproduce them)
-  and the router is mounted on `appManager.app`, never through `adminizerMiddlewares` — that
+  computed over the bytes that arrived; `JSON.parse` + `JSON.stringify` does not reproduce them),
+  and the router's own `express.raw` cannot do that alone: `appManager.init()` puts a global
+  `express.json()` ahead of every route, so the raw read is reserved for the webhook path in the
+  root `index.ts` **before** `init()` (`reserveRawWebhookBody`, `lib/rawBody.ts`). Without that
+  line every signed delivery is 401 with an empty `payloadExcerpt` in the journal — which is how
+  prod failed on the first repository ever linked (2026-10-04), while the tests, mounting the
+  router on a bare express app, stayed green. The router is mounted on `appManager.app`, never
+  through `adminizerMiddlewares` — that
   dispatcher prefixes everything with `/dashboard` and an integrator would be posting into the
   admin panel. `endpointId` in the path is not a secret in a URL: it is what says, before the body
   is parsed, which mapper this is and whose secret to check. `AgentWebhookDelivery` is written for

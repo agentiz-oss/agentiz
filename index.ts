@@ -4,6 +4,7 @@ import { adminizerConfig } from "./config/adminizer";
 import { runSeeds } from "./seeds/index";
 import { setDevENV } from "./devtools/environments";
 import { createSequelize } from "./config/sequelize.js";
+import { reserveRawWebhookBody } from "./layers/app-agentiz-webhooks/lib/rawBody";
 // Apps are discovered from layers/ and the dependency graph. Both sources are
 // started when their id is listed in INIT_APPS_TO_ENABLE.
 
@@ -41,6 +42,9 @@ try {
 
   // Initializing App Manager
   const appManager = new AppManager(sequelize);
+
+  // init() installs a global JSON parser; signed webhooks need their bytes read before it.
+  reserveRawWebhookBody(appManager.app);
 
   await appManager.init({
     // Discovery uses both this local layer directory and the dependency graph

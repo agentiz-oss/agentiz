@@ -5,6 +5,7 @@ import { getWebhookMapper } from '../../app-agentiz/lib/webhooks';
 import type { WebhookDeliveryContext, WebhookMapResult } from '../../app-agentiz/lib/webhooks';
 import { AgentWebhookDelivery } from '../models/AgentWebhookDelivery';
 import { AgentWebhookEndpoint } from '../models/AgentWebhookEndpoint';
+import { rawWebhookBody } from './rawBody';
 
 /**
  * The public face of inbound webhooks: one POST per delivery, journalled whatever happens to it.
@@ -16,11 +17,11 @@ import { AgentWebhookEndpoint } from '../models/AgentWebhookEndpoint';
  * The body is taken **raw** and parsed here. A signature is computed over the bytes that arrived,
  * and `JSON.parse` + `JSON.stringify` does not reproduce them — every sender that signs (GitHub,
  * Stripe, Sentry) signs the body as sent, so a global JSON parser upstream of this router would
- * make every signature fail with no way to tell why.
+ * make every signature fail with no way to tell why. app-manager installs exactly such a parser,
+ * which is why the raw read is reserved ahead of it (`reserveRawWebhookBody`, `lib/rawBody.ts`);
+ * the parser here only covers an app without that global one.
  */
 
-/** Ceiling on one delivery. GitHub's own limit is 25 MB but its push payloads are far under this. */
-const MAX_BODY = Number(process.env.AGENTIZ_WEBHOOK_MAX_BODY ?? 1024 * 1024);
 /** How much of a body the journal keeps, so an unreadable payload can still be read back. */
 const EXCERPT = Number(process.env.AGENTIZ_WEBHOOK_PAYLOAD_EXCERPT ?? 8 * 1024);
 
@@ -77,9 +78,7 @@ async function journal(input: {
 
 export function createWebhookRouter(): Router {
   const router = express.Router();
-  // `type: () => true` rather than a content-type list: a sender that labels JSON as
-  // `application/x-www-form-urlencoded` (some do) must still reach the mapper with its bytes intact.
-  router.use(express.raw({ limit: MAX_BODY, type: () => true }));
+  router.use(rawWebhookBody());
 
   /** Without a secret: is the receiving layer up at all. Answers nothing about any endpoint. */
   router.get('/healthz', (_req, res) => {
