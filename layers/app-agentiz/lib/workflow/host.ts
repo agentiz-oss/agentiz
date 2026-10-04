@@ -15,10 +15,11 @@ import type { WorkflowHost } from '@nodeknit/app-workflow';
  *   is the global half, and it does — the previous unconditional `true` would have handed the
  *   whole engine to anybody the moment enforcement landed.
  * - `resolveSecret` — `process.env`, the same source every other credential in this layer reads.
- * - `notify` — the run log. It deliberately does **not** call `ActivityService.record()` yet: that
+ * - `notify` — the run log. It deliberately does **not** call `ActivityService.record()`: that
  *   dispatcher's event types are a closed catalogue (`lib/notifications/activityTypes.ts`) which
- *   the policy schema and the UI hints are generated from, so `workflow.*` events are a change to
- *   make there, once, rather than a string smuggled in from here.
+ *   the policy schema and the UI hints are generated from, and this method is the engine talking
+ *   about itself. A graph that wants to reach a person says so with the `agentiz.notify` node,
+ *   whose `workflow.notify` type is in that catalogue.
  */
 export class AgentizWorkflowHost implements WorkflowHost {
   async checkPermission(userId: string | number | null, token: string): Promise<boolean> {

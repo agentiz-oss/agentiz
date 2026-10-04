@@ -311,7 +311,11 @@
   is never born; proposal events are explicit calls at their four sites instead, because
   auto-approve passes `waiting_review` only in transit and a hook would announce a review that no
   longer exists. `interaction.created` keeps its legacy push payload (`type=interaction`) for
-  older app builds; every other type travels as `type=activity`.
+  older app builds; every other type travels as `type=activity`. A **workflow** reaches a person
+  the same way and no other: the `agentiz.notify` node records a `workflow.notify` activity (push
+  `on` by default — the trigger in front of it already did the filtering, unlike the routine
+  `repository.*` facts, which are `silent`), so a graph never talks to a push provider and its
+  pushes stay mutable per project in the policy. Deciding *when* belongs to the nodes before it.
 - Everything that waits on a **person** — a question, a review, a failed push or reset, a diff held
   by `requireApproval`, an opened PR, a task whose last run died — is one shape, `InboxItem`, and
   **one** place that builds it: `layers/app-agentiz/lib/inbox/` (`items.ts` turns an entity into

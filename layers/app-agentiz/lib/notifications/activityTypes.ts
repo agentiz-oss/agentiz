@@ -202,6 +202,22 @@ const DEFS: ActivityTypeDef[] = [
     badge: 'пакет',
   },
   {
+    /**
+     * What a graph's `agentiz.notify` node says — the one event whose text is written by a person
+     * rather than by Agentiz. Push is `on` by default, unlike the repository facts above, because
+     * this one is never routine: somebody put the node in the graph after a trigger that already
+     * filtered down to the case they care about («вышел next», not «что-то опубликовали»). The
+     * actions channel, not the results one: on Android the results channel is low-importance, so
+     * an `on` push there would arrive without a sound — the opposite of what the node was put for.
+     */
+    type: 'workflow.notify',
+    kind: 'info',
+    defaults: { push: 'on', dashboard: 'on' },
+    androidChannel: ANDROID_CHANNEL_ACTIONS,
+    label: 'Уведомление из воркфлоу',
+    badge: 'воркфлоу',
+  },
+  {
     type: 'run.cancelled',
     kind: 'info',
     defaults: { push: 'off', dashboard: 'off' },

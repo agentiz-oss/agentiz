@@ -12,6 +12,7 @@ import { AgentTaskComment } from '../../models/AgentTaskComment';
 import { AgentWorkflowRun } from '../../models/AgentWorkflowRun';
 import { AgentPipelineService } from '../../services/AgentPipelineService';
 import { AgentTaskService } from '../../services/AgentTaskService';
+import { ActivityService } from '../../services/ActivityService';
 import { ApprovalService } from '../../services/ApprovalService';
 import { PROJECT_TOKENS } from '../access/tokens';
 import { trackDetachedWork } from '../detachedWork';
@@ -32,6 +33,7 @@ import {
 import { approvalRef, pipelineRunRef } from './engineBridge';
 import {
   approvalDocs,
+  notifyDocs,
   pipelineDocs,
   taskCommentDocs,
   repositoryTriggerDocs,
@@ -1133,6 +1135,69 @@ export const taskCreateNode: NodeTypeDefinition = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// server: tell the people of a project that something happened
+// ---------------------------------------------------------------------------
+
+export const notifyNode: NodeTypeDefinition = {
+  type: 'agentiz.notify',
+  name: 'Уведомление',
+  description: 'Шлёт участникам проекта пуш и пишет строку в ленту событий — «вышел новый образ next»',
+  docs: notifyDocs,
+  category: 'Agentiz',
+  kind: 'server',
+  ports: { inputs: 1, outputs: ['out'] },
+  configSchema: {
+    type: 'object',
+    properties: {
+      projectId: {
+        type: 'string',
+        title: 'Проект (id)',
+        description: 'Пусто = проект из msg.payload.projectId',
+      },
+      title: {
+        type: 'string',
+        title: 'Заголовок',
+        description: 'Шаблон, обязателен. Подстановки: {{payload.packageName}}, {{payload.tag}}, {{payload.title}}',
+      },
+      body: {
+        type: 'string',
+        title: 'Текст',
+        description: 'Шаблон, можно оставить пустым. Например: {{payload.htmlUrl}}',
+      },
+    },
+  },
+  executor: {
+    async execute(ctx: NodeContext): Promise<NodeResult> {
+      const previous = (ctx.msg.payload as Record<string, unknown> | undefined) ?? {};
+      const projectId = String(ctx.config.projectId || previous.projectId || '').trim();
+      if (!projectId) throw new Error('agentiz.notify: не указан проект');
+      const title = renderTemplate(ctx.config.title, ctx.msg).trim();
+      if (!title) throw new Error('agentiz.notify: заголовок пуст');
+
+      // Through the one dispatcher and never to a push provider directly: the feed row is what
+      // answers "почему пришло / почему не пришло", and the project's policy can still mute this
+      // type like any other. Who receives it is the project's people, resolved there.
+      const activity = await ActivityService.record({
+        type: 'workflow.notify',
+        projectId,
+        // The task the flow is about, when it has one — the push then opens it on the phone.
+        taskId: typeof previous.taskId === 'string' && previous.taskId ? previous.taskId : null,
+        runId: null,
+        title,
+        body: renderTemplate(ctx.config.body, ctx.msg).trim(),
+        data: { workflowSpecId: ctx.specId, workflowRunId: ctx.runId, nodeId: ctx.nodeId },
+      });
+      // record() never throws and has already logged why; a null here would otherwise leave the
+      // flow's trace green on a notification that was never born.
+      if (!activity) throw new Error('agentiz.notify: событие не записано — причина в логе сервера');
+
+      ctx.logger.info(`[agentiz.notify] проект ${projectId}: «${title}» (событие ${activity.id})`);
+      return { msg: { ...ctx.msg, payload: { ...previous, activityId: activity.id } } };
+    },
+  },
+};
+
 export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   taskEventTriggerNode,
   repositoryEventTriggerNode,
@@ -1144,4 +1209,5 @@ export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   approvalNode,
   tasksQueryNode,
   taskCreateNode,
+  notifyNode,
 ];
