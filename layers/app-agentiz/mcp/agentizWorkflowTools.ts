@@ -141,7 +141,7 @@ const workflowSchemaTool: IMcpTool = {
         },
         rules: [
           'Ports are named: `fromPort` must be one of the source type\'s outputs; omitted means its first one.',
-          'A trigger node takes no incoming edges, every other node takes at most one (no fan-in).',
+          'A trigger node takes no incoming edges. Fan-in is allowed: two branches (two trigger inputs, two failure paths) may converge on one node. Fan-out is not: two edges out of the *same* port are refused — two edges out of *different* ports of one node (`succeeded` vs `failed`) are normal and are not fan-out.',
           'The graph must be acyclic.',
           'ui.x/ui.y are optional — the canvas lays a graph out on its own.',
           'Saving is deploying: the triggers of an active workflow are rearmed immediately, running instances keep their version.',
