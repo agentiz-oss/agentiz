@@ -314,8 +314,12 @@
   older app builds; every other type travels as `type=activity`. A **workflow** reaches a person
   the same way and no other: the `agentiz.notify` node records a `workflow.notify` activity (push
   `on` by default — the trigger in front of it already did the filtering, unlike the routine
-  `repository.*` facts, which are `silent`), so a graph never talks to a push provider and its
+  `repository.*` facts, whose push is `off`), so a graph never talks to a push provider and its
   pushes stay mutable per project in the policy. Deciding *when* belongs to the nodes before it.
+  `silent` is **not** a quiet way to deliver something frequent: it only takes the sound away, and
+  the card still lands in iOS Notification Center and in the Android shade — which is how one
+  image build (a push, a CI run, one `repository.package` per tag) used to leave six cards beside
+  the one `workflow.notify` somebody actually asked for. A type that is routine gets `off`.
   An event about the **deployment itself** rather than a project — today only `server.updated`,
   «вышла новая версия сервера» (`lib/serverVersion.ts`) — is marked `scope: 'installation'` in the
   catalogue and goes through the second door of the same dispatcher,

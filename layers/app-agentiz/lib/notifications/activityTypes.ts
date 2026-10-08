@@ -173,14 +173,17 @@ const DEFS: ActivityTypeDef[] = [
   {
     /**
      * A repository fact, journalled for the same reason every other event is: without a feed row
-     * "в репозитории запушили, а флоу не стартовал" has no evidence on either side. Delivery is
-     * `silent` by default — a push happens whenever somebody else feels like it, and a repository
-     * that is merely busy must not wake a phone; a project that wants to be woken raises it in the
-     * policy.
+     * "в репозитории запушили, а флоу не стартовал" has no evidence on either side. Push is `off`
+     * by default for all three repository facts, and `silent` is not a softer version of that:
+     * it only drops the sound — iOS still files a card in Notification Center and Android still
+     * puts one in the shade. One merge of a repository that tags its image four ways is a push, a
+     * CI run and four packages, six cards for a routine nobody asked about. A person who wants
+     * to hear about one of these puts `agentiz.notify` after a trigger that filtered down to it
+     * («вышел next»), or raises the type in the policy.
      */
     type: 'repository.pushed',
     kind: 'info',
-    defaults: { push: 'silent', dashboard: 'on' },
+    defaults: { push: 'off', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_RESULTS,
     label: 'В репозиторий пришли коммиты',
     badge: 'коммиты',
@@ -193,7 +196,7 @@ const DEFS: ActivityTypeDef[] = [
      */
     type: 'repository.ci_run',
     kind: 'info',
-    defaults: { push: 'silent', dashboard: 'on' },
+    defaults: { push: 'off', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_RESULTS,
     label: 'Завершился CI-прогон',
     badge: 'CI',
@@ -202,12 +205,11 @@ const DEFS: ActivityTypeDef[] = [
     /**
      * One type for every package ecosystem and both actions (`published`/`updated`), same rule as
      * the CI one above: *what* was published is in the row's title and `data.tag`/`data.digest`.
-     * Silent by default because a repository that builds an image on every merge would otherwise
-     * buzz a phone for its own routine.
+     * GitHub sends one delivery per tag, so a single build arrives as several of these.
      */
     type: 'repository.package',
     kind: 'info',
-    defaults: { push: 'silent', dashboard: 'on' },
+    defaults: { push: 'off', dashboard: 'on' },
     androidChannel: ANDROID_CHANNEL_RESULTS,
     label: 'Опубликован пакет репозитория',
     badge: 'пакет',

@@ -46,6 +46,13 @@ describe('policySettings', () => {
     expect(notifyPolicySource()).toBe('unset');
   });
 
+  // `silent` still files a card on the phone; one image build used to leave six of them.
+  it('keeps routine repository facts in the feed and off the phone', () => {
+    for (const type of ['repository.pushed', 'repository.ci_run', 'repository.package']) {
+      expect(effectiveActivityPolicy(type, 'p1')).toEqual({ push: 'off', dashboard: 'on' });
+    }
+  });
+
   it('resolves scopes from specific to general, per channel', () => {
     useNotifySettingStorage(storageWith({
       defaults: { 'run.failed': { push: 'silent', dashboard: 'off' } },
