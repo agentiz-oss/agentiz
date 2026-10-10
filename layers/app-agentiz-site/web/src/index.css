@@ -23,7 +23,9 @@ body {
 a { color: inherit; text-underline-offset: 3px; }
 a:hover { text-decoration-thickness: 2px; }
 
-img { max-width: 100%; display: block; }
+/* height: auto, or the width/height attributes (there to reserve space while loading) pin the
+   height while max-width shrinks the width, and every screenshot comes out stretched. */
+img { max-width: 100%; height: auto; display: block; }
 
 code, pre, kbd { font-family: var(--mono); font-size: 0.9em; }
 
