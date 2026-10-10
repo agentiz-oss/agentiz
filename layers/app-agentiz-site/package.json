@@ -1,0 +1,14 @@
+{
+  "name": "@agentiz/app-agentiz-site",
+  "version": "0.1.0",
+  "description": "Public project site (React + Inertia SSR): landing page and user documentation",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "build:client": "vite build --config ./web/vite.config.ts",
+    "build:ssr": "vite build --config ./web/vite.config.ts --ssr ./src/ssr.tsx",
+    "build": "npm run build:client && npm run build:ssr"
+  },
+  "appId": "app-agentiz-site",
+  "appName": "Agentiz Site"
+}

@@ -24,7 +24,8 @@
 - Run the server with `npm run dev` (TSX).
 - Run `npm run build` after TypeScript changes.
 - Local application layers: `layers/app-agentiz` (core), `layers/app-agentiz-gitlab-integration`,
-  `layers/app-agentiz-github-integration`, `layers/app-agentiz-mobile-api`.
+  `layers/app-agentiz-github-integration`, `layers/app-agentiz-mobile-api`, `layers/app-agentiz-site`
+  (the public site).
 - Repositories are a **core** concept: `AgentGitConnection` / `AgentRepository` /
   `AgentProjectRepository` live in `app-agentiz`, and a provider layer supplies only the OAuth
   dialect plus a `GitConnectionAuthority` (token renewal + repository mirroring). Do not add
@@ -896,6 +897,21 @@
   второй правдой о паролях. На нашем проде её заводят **формой панели** (`Админ → System → Users`),
   потому что `adminizer.user` отказывается хэшировать без `AP_PASSWORD_SALT`, а он там не задан —
   вход считает хэш с литералом `"undefined"` на конце, и форма такой проверки не делает.
+- The public project site — landing page at `/` plus the **English user documentation** under
+  `/docs` — is the layer `layers/app-agentiz-site`, built the way restoapp-marketplace builds its
+  storefront: React pages rendered by `@nodeknit/app-inertiajs` (SSR + hydration, bundled by
+  Vite from the layer's own `web/`), served by this same server. Docs are markdown in
+  `content/docs/`, rendered on the server (`lib/docs.ts`, raw HTML off). Three things bite:
+  `web/dist` is gitignored and **must** be built (`npm run build:site`, done in the Dockerfile) or
+  every site page answers 500 while the rest of the server is fine; locally `setDevENV` defaults
+  `VITE_ENV=dev`, so the root `index.ts` attaches a Vite dev server after `lift()` instead; and
+  `app-inertiajs` reaches tsx as a yarn **copy** in `node_modules`, outside every tsconfig, so
+  without its built `dist/` + `index.js` shim the `@Collection` decorators arrive in the TC39
+  protocol and the layer fails with a bare `TypeError` (same trap as `app-adminizer`, see its
+  `index.js`). Links on the site are plain `<a>` — `app-inertiajs` does not speak the Inertia XHR
+  protocol. The pages describe what a user sees and configures, not internals: a change to
+  user-facing behaviour (spec fields, worker commands, env variables, node types) should be
+  checked against the matching page. Rules for screenshots are in the layer's `README.md`.
 - Keep documentation specific to Agentiz in `notes/` (a local symlink, not tracked).
 - Do not commit or publish changes unless explicitly requested.
 

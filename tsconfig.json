@@ -52,6 +52,8 @@
     "layers/app-agentiz-webhooks/**/*.ts",
     "layers/app-agentiz-claude-limits/**/*.ts",
     "layers/app-agentiz-codex-limits/**/*.ts",
+    "layers/app-agentiz-site/**/*.ts",
+    "layers/app-agentiz-site/**/*.tsx",
     "vite.config.ts"
   ]
 }

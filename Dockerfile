@@ -57,6 +57,13 @@ COPY --from=deps /app/.yarnrc.yml ./.yarnrc.yml
 RUN npm run build:vite \
     && test -f /app/dist/modules/AgentizApp.js
 
+# The public site (layers/app-agentiz-site) is a separate Vite build: a client bundle plus the SSR
+# renderer. web/dist is gitignored and excluded from the context, so it is produced here — without
+# it the image boots fine and every page of the site answers 500.
+RUN npm run build:site \
+    && test -f /app/layers/app-agentiz-site/web/dist/server/ssr.js \
+    && test -f /app/layers/app-agentiz-site/web/dist/client/manifest.json
+
 
 # Stage 3: Only prod modules
 FROM deps AS focus_production
@@ -93,6 +100,7 @@ ENV BUILD_TIME=${BUILD_TIME}
 # from builder. The final image therefore receives exactly one dependency graph, below.
 COPY . .
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/layers/app-agentiz-site/web/dist ./layers/app-agentiz-site/web/dist
 COPY --from=focus_production /app/node_modules ./node_modules
 
 # Fail the build, not the dashboard, if that ever happens again. The entry name is

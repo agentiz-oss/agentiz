@@ -11,7 +11,7 @@ import { reserveRawWebhookBody } from "./layers/app-agentiz-webhooks/lib/rawBody
 process.env.SECRET ??= "secret";
 // Apps started on boot. Everything else found in appsPaths is loaded but stays stopped.
 // Mount order is derived from appDependencies, not from this list.
-process.env.INIT_APPS_TO_ENABLE ??= "app-adminizer;app-mcp;app-workflow;app-agentiz;app-agentiz-gitlab-integration;app-agentiz-github-integration;app-agentiz-webhooks;app-agentiz-mobile-api;app-agentiz-claude-limits;app-agentiz-codex-limits";
+process.env.INIT_APPS_TO_ENABLE ??= "app-adminizer;app-mcp;app-workflow;app-agentiz;app-agentiz-gitlab-integration;app-agentiz-github-integration;app-agentiz-webhooks;app-agentiz-mobile-api;app-agentiz-claude-limits;app-agentiz-codex-limits;app-agentiz-site";
 // For local SQLite development, prefer migrations and disable alter-sync.
 // This avoids unstable Sequelize alter behavior on SQLite.
 if (!process.env.DATABASE_URL) {
@@ -84,6 +84,16 @@ try {
   }
   const PORT = Number(process.env.PORT ?? 17280);
   appManager.lift(PORT)
+
+  // The public site (layers/app-agentiz-site) renders through Vite. In development it needs a
+  // Vite dev server, and that needs the HTTP server for HMR — which exists only after lift(), so
+  // it is attached here rather than in the app's mount(). In production (VITE_ENV unset) the
+  // site serves its built web/dist instead.
+  if (process.env.VITE_ENV === 'dev') {
+    const site = appManager.appStorage.get('app-agentiz-site')?.appInstance as
+      { setupViteDevServer?: (server: unknown) => Promise<void> } | undefined;
+    await site?.setupViteDevServer?.(appManager.server);
+  }
 
 } catch (err) {
   AppManager.log.error("Error starting App Manager:", err, err.stack);

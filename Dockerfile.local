@@ -39,6 +39,8 @@ COPY --from=deps /app/.yarnrc.yml ./.yarnrc.yml
 # Build adminizer UI modules consumed from /dashboard/modules/*
 RUN npm run build:vite \
     && test -f /app/dist/modules/IntegrationList.js \
+    && npm run build:site \
+    && test -f /app/layers/app-agentiz-site/web/dist/server/ssr.js \
     && rm -rf /app/node_modules
 
 

@@ -72,6 +72,7 @@ jobs:
           declare -A base=(
             [app-adminizer]=1.0.0
             [app-graphql]=1.0.0
+            [app-inertiajs]=0.1.0
             [app-manager]=1.0.0
             [app-mcp]=1.0.0
             [app-telegram-bot]=1.0.0

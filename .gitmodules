@@ -24,3 +24,6 @@
 [submodule "local_modules/app-workflow"]
 	path = local_modules/app-workflow
 	url = git@github.com:nodeknit/app-workflow.git
+[submodule "local_modules/app-inertiajs"]
+	path = local_modules/app-inertiajs
+	url = git@github.com:nodeknit/app-inertiajs.git
