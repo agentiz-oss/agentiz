@@ -99,6 +99,12 @@
   behaviour, not an oversight. The reason it matters is the reservation: a workspace proposal is keyed
   by worker+path and knows nothing about projects, so one project's `waiting_review` used to block
   every run of the other project pointed at the same directory.
+- Linking a repository to a project goes through `lib/git/projectRepositoryLinks.ts`, shared by
+  the panel's repositories screen and MCP `agentiz.manageRepositories` (long form:
+  [`docs/guides/project-bootstrap-mcp.md`](docs/guides/project-bootstrap-mcp.md)). Creating a
+  repository on the platform is deliberately absent from the server: an agent on the worker does
+  it with `gh` from the directory it already works in, and the server then syncs the connection
+  and links by `owner/name`.
 - Two separate collections own the two halves of "external system": `gitProviders` (where code
   lives) and `taskManagers` (where tasks come from). A project can mix them freely.
 - Shared mutable registries must live on a `Symbol.for` global: under tsx a module can be

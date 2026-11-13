@@ -3,7 +3,7 @@ import { AgentProject } from '../models/AgentProject';
 import { AgentGitConnection } from '../models/AgentGitConnection';
 import { AgentProjectRepository } from '../models/AgentProjectRepository';
 import { AgentRepository } from '../models/AgentRepository';
-import { getGitConnectionAuthority, listGitProviderPanels, requireGitConnectionAuthority } from './git';
+import { getGitConnectionAuthority, listGitProviderPanels } from './git';
 import { maskConnectionForUI } from './secrets';
 import { maskRepositoryWebhook } from './webhooks';
 import type { GitProviderType } from '../types/agentiz';
@@ -12,6 +12,9 @@ import { projectIdsForUser } from './access/projectAccess';
 import { GLOBAL_TOKENS, PROJECT_TOKENS } from './access/tokens';
 import { legacyRedirect } from './panel/legacyRedirect';
 import { projectRepositoryRows } from './panel/repositoriesPanel';
+import {
+  linkRepositoryToProject, RepositoryLinkError, syncConnectionRepositories, updateProjectRepositoryLink,
+} from './git/projectRepositoryLinks';
 
 /**
  * The shared repositories screen: connections, their mirrored repositories and the links to
@@ -172,16 +175,7 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
 
         if (method === 'syncConnectionRepositories') {
           if (!mayManageConnections(req, res)) return undefined;
-          const connectionId = str(req.body?.connectionId);
-          const connections = connectionId
-            ? [await AgentGitConnection.findByPk(connectionId)]
-            : await AgentGitConnection.findAll({ where: { status: 'active' } });
-          const results = [];
-          for (const connection of connections) {
-            if (!connection) return res.status(404).json({ message: 'Connection not found' });
-            const authority = requireGitConnectionAuthority(connection.provider);
-            results.push(await authority.syncRepositories(connection));
-          }
+          const results = await syncConnectionRepositories(str(req.body?.connectionId) || undefined);
           return res.json({ data: results });
         }
 
@@ -213,28 +207,14 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
             return res.status(400).json({ message: 'projectId and repositoryId are required' });
           }
           if (!await guardProject(req, res, projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
-          const [project, repository] = await Promise.all([
-            AgentProject.findByPk(projectId),
-            AgentRepository.findByPk(repositoryId),
-          ]);
-          if (!project) return res.status(404).json({ message: 'Agentiz project not found' });
-          if (!repository) return res.status(404).json({ message: 'Repository not found' });
-
-          const existing = await AgentProjectRepository.findOne({ where: { projectId, repositoryId } });
-          if (existing) return res.status(409).json({ message: 'This repository is already linked' });
-
-          const link = await AgentProjectRepository.create({
+          const link = await linkRepositoryToProject({
             projectId,
-            provider: repository.provider,
-            connectionId: repository.connectionId,
             repositoryId,
-            role: req.body?.role ?? 'both',
-            isPrimary: Boolean(req.body?.isPrimary),
-            syncIssues: req.body?.syncIssues !== false,
-            isActive: true,
-            config: req.body?.config ?? null,
+            role: req.body?.role,
+            isPrimary: req.body?.isPrimary,
+            syncIssues: req.body?.syncIssues,
+            config: req.body?.config,
           });
-          if (link.isPrimary) await AgentProjectRepository.demoteOtherPrimaries(link);
           return res.json({ data: link.toJSON() });
         }
 
@@ -242,14 +222,13 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
           const link = await AgentProjectRepository.findByPk(str(req.body?.linkId));
           if (!link) return res.status(404).json({ message: 'Link not found' });
           if (!await guardProject(req, res, link.projectId, PROJECT_TOKENS.projectConfigure)) return undefined;
-          await link.update({
-            role: req.body?.role ?? link.role,
-            isPrimary: req.body?.isPrimary !== undefined ? Boolean(req.body.isPrimary) : link.isPrimary,
-            syncIssues: req.body?.syncIssues !== undefined ? Boolean(req.body.syncIssues) : link.syncIssues,
-            isActive: req.body?.isActive !== undefined ? Boolean(req.body.isActive) : link.isActive,
-            config: req.body?.config !== undefined ? req.body.config : link.config,
+          await updateProjectRepositoryLink(link, {
+            role: req.body?.role ?? undefined,
+            isPrimary: req.body?.isPrimary,
+            syncIssues: req.body?.syncIssues,
+            isActive: req.body?.isActive,
+            config: req.body?.config,
           });
-          if (link.isPrimary) await AgentProjectRepository.demoteOtherPrimaries(link);
           return res.json({ data: link.toJSON() });
         }
 
@@ -263,6 +242,10 @@ export const repositoryRoutes: AdminizerRouteMiddleware[] = [
 
         return res.status(400).json({ message: `Unknown _method: ${method || '(none)'}` });
       } catch (error: any) {
+        if (error instanceof RepositoryLinkError) {
+          const status = error.kind === 'not_found' ? 404 : error.kind === 'conflict' ? 409 : 400;
+          return res.status(status).json({ message: error.message });
+        }
         return res.status(400).json({ message: error?.message ?? String(error) });
       }
     },

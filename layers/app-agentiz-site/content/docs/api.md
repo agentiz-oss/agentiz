@@ -48,12 +48,12 @@ curl -s -H "X-Mcp-Key: $KEY" -H 'Content-Type: application/json' \
 
 Safe to call as often as you like: `overview`, `projects`, `tasks`, `runs`, `runDetails`,
 `configuration`, `pipelineSpecSchema`, `workers`, `workerDetails`, `jobs`, `proposals`,
-`approvals`, `workflows`, `workflowDetails`, `workflowSchema`.
+`approvals`, `repositories`, `workflows`, `workflowDetails`, `workflowSchema`.
 
 ### `agentiz-actions` — changes state
 
 `sync`, `runTask`, `cancelRun`, `manage` (projects, roles, pipeline specs…), `manageWorker`,
-`manageProposal`, `manageWorkflow`, `fireWorkflowTrigger`, `cancelWorkflowRun`, `decideApproval`
+`manageProposal`, `manageRepositories`, `manageWorkflow`, `fireWorkflowTrigger`, `cancelWorkflowRun`, `decideApproval`
 and others.
 
 ### `general`
@@ -65,6 +65,32 @@ Infrastructure: `health` (public), user management, listing and toggling applica
 Read the shape first: `agentiz.pipelineSpecSchema` returns the JSON Schema together with the
 project's role keys and the workers' declared workspaces. A rejected write lists the failing
 fields in `error.message`.
+
+## Starting a project from scratch
+
+Everything a project needs can be set up through the API, including a repository that does not
+exist yet:
+
+1. `manage` — create the project, its roles and two pipelines, both with
+   `source.kind: "worker_workspace"` and an absolute `path` on the worker:
+   a *bootstrap* pipeline with `createIfMissing: true` and `finalAction: none`, and the working
+   pipeline with `finalAction: commit`.
+2. `manageWorker` — `setAllowedProjects`, then `setWorkspaces` (bind the directory to the project)
+   and `setGitPushRoots` (allow pushing from it).
+3. `manage` — create a task for the bootstrap pipeline that asks the agent to initialise the
+   repository and publish it with the GitHub CLI (`gh repo create <owner>/<name> --source . --push`),
+   then `runTask`. This needs `gh` installed and logged in on the worker, under the same account
+   (or an organisation it can see) as Agentiz's GitHub connection. Ask the agent to commit
+   everything, stay on the default branch and run `gh auth setup-git`: the working pipeline starts
+   only from a clean checkout whose branch matches the remote, and the worker's own `git` needs
+   credentials to check that.
+4. `manageRepositories` — `link` with `pathWithNamespace: "<owner>/<name>"`. A repository Agentiz
+   has not seen yet is picked up by syncing the connections first.
+5. Ordinary tasks now run on the working pipeline.
+
+`repositories` lists the git connections, mirrored repositories and a project's links.
+`manageRepositories` also has `sync`, `updateLink` and `unlink`; it never creates or deletes
+repositories on the platform itself.
 
 ## Other APIs
 

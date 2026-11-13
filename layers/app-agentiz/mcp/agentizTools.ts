@@ -20,6 +20,7 @@ import { AgentCapacityService } from '../services/AgentCapacityService';
 import { capacityOverview, usageHistory, workerHarnessView } from '../lib/capacityViews';
 import { manageBusinessDataTool, manageWorkerTool } from './agentizManagementTools';
 import { agentizProposalMcpTools } from './agentizProposalTools';
+import { agentizRepositoryMcpTools } from './agentizRepositoryTools';
 import { agentizCapacityActionTools } from './agentizCapacityTools';
 import { notificationPolicyMcpTools } from './notificationPolicyTools';
 import { agentizWorkflowMcpTools } from './agentizWorkflowTools';
@@ -561,6 +562,7 @@ export const agentizMcpTools: IMcpTool[] = [
   capacityTool, capacityHistoryTool,
   syncTool, runTaskTool, cancelRunTool, manageBusinessDataTool, manageWorkerTool,
   ...agentizProposalMcpTools,
+  ...agentizRepositoryMcpTools,
   ...agentizCapacityActionTools,
   ...notificationPolicyMcpTools,
   ...agentizWorkflowMcpTools,
