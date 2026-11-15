@@ -677,6 +677,9 @@ export class AgentWorkerApiService {
           body: `Коммит ${payload.commitSha.slice(0, 12)}${proposal.targetBranch ? ` в ${proposal.targetBranch}` : ''}`,
           data: { commitSha: payload.commitSha, targetBranch: proposal.targetBranch, revision: proposal.revision },
         });
+        // Only now is the branch in the remote. A no-op unless the spec asked for it, and it never
+        // throws: a PR the platform refuses must not turn a successful push into a failed job.
+        await AgentPipelineService.openWorkspacePullRequest(proposal);
       } else {
         await proposal.update({
           status: 'rejected', rejectedAt: new Date(), reservationKey: null, lastError: null,

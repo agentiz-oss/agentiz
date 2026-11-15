@@ -273,6 +273,10 @@
         "pullRequestTitleTemplate": {
           "type": "string",
           "description": "Supports {{taskId}}, {{externalId}}, {{title}}, {{summary}}."
+        },
+        "openPullRequest": {
+          "type": "boolean",
+          "description": "worker_workspace + commit + targetBranch.mode \"new\" only, and requires source.repositoryId: after the worker pushed the branch, the server opens a pull request from it against the base. When the task came from an issue of that same repository the body says \"Closes #N\", so merging the PR closes the issue. Absent = the branch is only pushed."
         }
       }
     }

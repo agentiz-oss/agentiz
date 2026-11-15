@@ -39,6 +39,7 @@ export const PIPELINE_SPEC_RULES: readonly string[] = [
   'A pipeline spec is an entity of its project and never moves to another one: changing PipelineSpec.projectId is refused. A worker directory can be bound the same way (projectId on the declared workspace, via agentiz.manageWorker {operation:"setWorkspaces"}), and then only that project\'s specs may name it — by workspaceKey or by its path — checked both when the spec is saved and when a run is queued. An unbound directory stays shared.',
   'source.workspace.createIfMissing only applies alongside path: the worker creates the directory if it does not exist yet, instead of failing. It is rejected alongside workspaceKey — a declared directory is expected to already exist.',
   'source.kind "worker_workspace" allows comment_only, none, or commit through the local workspace Git engine; commit_and_pr remains provider-only.',
+  'finalAction.openPullRequest (worker_workspace only) needs finalAction.type "commit", targetBranch.mode "new" and source.repositoryId: after the worker pushed the branch, the server opens a pull request through that repository, with "Closes #N" in the body when the task is an issue of that repository. Absent means the branch is only pushed, as before the field existed.',
   'source.kind "worker_workspace" requires runtime.mode "host" on every stage; a docker container cannot see the worker\'s directory.',
   `hooks.before/after scripts must be non-empty, must not start with a shebang, and must stay under ${MAX_HOOK_SCRIPT_BYTES} bytes.`,
   'constraints.activeHours.timezone must be an IANA zone this server knows (checked with Intl.DateTimeFormat). Window end earlier than start is legal and means an overnight window; start equal to end is rejected as an empty window.',
@@ -160,7 +161,12 @@ function assertHooksAreRunnable(spec: PipelineSpecDef): void {
  * than as `if/then` branches, and both are about a combination that would only fail at run time.
  */
 function assertSourceIsConsistent(spec: PipelineSpecDef): void {
-  if (!isWorkspaceSource(spec.source)) return;
+  if (!isWorkspaceSource(spec.source)) {
+    if (spec.finalAction.openPullRequest === true) {
+      throw specError('finalAction.openPullRequest is for source.kind "worker_workspace"; a repository-source pipeline opens its pull request with finalAction.type "commit_and_pr"');
+    }
+    return;
+  }
 
   const workspaceGit = spec.finalAction.type === 'commit';
   // `source.repositoryId` is optional here: a worker directory pushes through the remote configured in
@@ -194,6 +200,14 @@ function assertSourceIsConsistent(spec: PipelineSpecDef): void {
   }
   if (workspaceGit && !spec.finalAction.targetBranch?.mode) {
     throw specError('worker_workspace finalAction.type "commit" requires finalAction.targetBranch.mode "current" or "new"');
+  }
+  if (spec.finalAction.openPullRequest === true) {
+    if (!workspaceGit || spec.finalAction.targetBranch?.mode !== 'new') {
+      throw specError('finalAction.openPullRequest needs finalAction.type "commit" with targetBranch.mode "new": a pull request compares a branch of its own against the base');
+    }
+    if (!spec.source?.repositoryId) {
+      throw specError('finalAction.openPullRequest needs source.repositoryId: the pull request is opened through that repository\'s connection');
+    }
   }
   // docker starts a fresh container, so the host directory this pipeline is about would not be in it.
   const dockerStage = spec.stages.find((stage) => stage.runtime?.mode === 'docker');

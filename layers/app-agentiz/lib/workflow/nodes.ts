@@ -12,6 +12,7 @@ import { AgentTaskComment } from '../../models/AgentTaskComment';
 import { AgentWorkflowRun } from '../../models/AgentWorkflowRun';
 import { AgentPipelineService } from '../../services/AgentPipelineService';
 import { AgentTaskService } from '../../services/AgentTaskService';
+import { GitSyncService } from '../../services/GitSyncService';
 import { ActivityService } from '../../services/ActivityService';
 import { ApprovalService } from '../../services/ApprovalService';
 import { PROJECT_TOKENS } from '../access/tokens';
@@ -29,6 +30,7 @@ import {
   type AgentizRepositoryPushedPayload,
   type AgentizTaskCommentedPayload,
   type AgentizTaskEventPayload,
+  taskEventPayload,
 } from './events';
 import { approvalRef, pipelineRunRef } from './engineBridge';
 import {
@@ -42,6 +44,7 @@ import {
   taskRunDocs,
   taskStatusDocs,
   tasksQueryDocs,
+  taskNextDocs,
   taskTriggerDocs,
 } from './nodeDocs';
 
@@ -1136,6 +1139,150 @@ export const taskCreateNode: NodeTypeDefinition = {
 };
 
 // ---------------------------------------------------------------------------
+// server: one task at a time, the next only once the tracker closed the previous one
+// ---------------------------------------------------------------------------
+
+const DEFAULT_IN_PROGRESS_TEXT = 'в работе';
+const DEFAULT_CLOSED_TEXT = 'закрыта';
+
+/** Upstream states that mean "done" across GitHub (`closed`) and the trackers shaped like it. */
+const CLOSED_UPSTREAM = new Set(['closed', 'done', 'resolved']);
+/** For a task with no tracker behind it, the local lifecycle is all there is. */
+const CLOSED_LOCALLY = new Set<AgentTaskStatus>(['done', 'cancelled', 'ignored']);
+/** A run of the project is somewhere in flight; every run works in the same directory. */
+const ACTIVE_TASK_STATUSES: AgentTaskStatus[] = ['queued', 'running', 'waiting_review'];
+
+/**
+ * "Done" is the tracker's word when there is a tracker: a run that pushed its branch leaves the
+ * local task `done` while the issue is still open and under review, and that is exactly the state
+ * in which the next task must **not** start.
+ */
+export function taskClosed(task: Pick<AgentTask, 'externalStatus' | 'status'>): boolean {
+  const upstream = task.externalStatus?.trim().toLowerCase();
+  if (upstream) return CLOSED_UPSTREAM.has(upstream);
+  return CLOSED_LOCALLY.has(task.status);
+}
+
+/** When the tracker created it — the order a person wrote the backlog in — else when we saw it. */
+function trackerCreatedAt(task: AgentTask): number {
+  const raw = task.raw as Record<string, unknown> | null | undefined;
+  const upstream = Date.parse(String(raw?.created_at ?? ''));
+  return Number.isFinite(upstream) ? upstream : new Date(task.createdAt).getTime();
+}
+
+export const taskNextNode: NodeTypeDefinition = {
+  type: 'agentiz.task.next',
+  name: 'Следующая задача из трекера',
+  description: 'По одной задаче: берёт следующую открытую, только когда предыдущая закрыта в трекере',
+  docs: taskNextDocs,
+  category: 'Agentiz',
+  kind: 'server',
+  ports: { inputs: 1, outputs: ['picked', 'busy', 'empty'] },
+  configSchema: {
+    type: 'object',
+    properties: {
+      projectId: {
+        type: 'string',
+        title: 'Проект (id)',
+        description: 'Пусто = проект из msg.payload.projectId',
+      },
+      tags: {
+        type: 'string',
+        title: 'Только с метками',
+        description: 'Через запятую. Пусто = любые задачи',
+      },
+      skipTags: {
+        type: 'string',
+        title: 'Пропускать с метками',
+        description: 'Через запятую, например: hold, discussion',
+      },
+      inProgressText: {
+        type: 'string',
+        title: 'Текст «в работе»',
+        description: `По нему узел узнаёт взятые им задачи. По умолчанию «${DEFAULT_IN_PROGRESS_TEXT}»`,
+      },
+      closedText: {
+        type: 'string',
+        title: 'Текст «закрыта»',
+        description: `Ставится взятой задаче, когда её закрыли в трекере. По умолчанию «${DEFAULT_CLOSED_TEXT}»`,
+      },
+      syncFirst: {
+        type: 'boolean',
+        title: 'Сначала синхронизировать трекер',
+        description: 'Подтянуть задачи проекта перед решением. По умолчанию включено',
+        default: true,
+      },
+    },
+  },
+  executor: {
+    async execute(ctx: NodeContext): Promise<NodeResult> {
+      const previous = (ctx.msg.payload as Record<string, unknown> | undefined) ?? {};
+      const projectId = String(ctx.config.projectId ?? previous.projectId ?? '').trim();
+      if (!projectId) throw new Error('agentiz.task.next: не указан проект');
+      const inProgressText = String(ctx.config.inProgressText ?? '').trim() || DEFAULT_IN_PROGRESS_TEXT;
+      const closedText = String(ctx.config.closedText ?? '').trim() || DEFAULT_CLOSED_TEXT;
+      const onlyTags = stringList(ctx.config.tags);
+      const skipTags = stringList(ctx.config.skipTags);
+
+      const busy = (reason: string, task?: AgentTask | null): NodeResult => {
+        ctx.logger.info(`[agentiz.task.next] проект ${projectId}: ждём (${reason}${task ? `, ${task.id}` : ''})`);
+        return {
+          msg: {
+            ...ctx.msg,
+            payload: { ...previous, projectId, reason, busyTaskId: task?.id ?? null, busyTitle: task?.title ?? null },
+          },
+          output: 'busy',
+        };
+      };
+
+      if (ctx.config.syncFirst !== false) {
+        // Deciding on stale data either restarts a task somebody already closed or misses a close;
+        // waiting one more tick costs nothing.
+        const sync = await GitSyncService.syncProject(projectId);
+        if (sync.errors.length) {
+          ctx.logger.warn(`[agentiz.task.next] проект ${projectId}: синхронизация с ошибкой: ${sync.errors[0]}`);
+          return busy('sync_failed');
+        }
+      }
+
+      const mine = await AgentTask.findAll({ where: { projectId, workflowStatus: inProgressText } });
+      for (const task of mine) {
+        if (taskClosed(task)) await task.update({ workflowStatus: closedText, workflowStatusAt: new Date() });
+      }
+      const holding = mine.find((task) => !taskClosed(task));
+      if (holding) return busy('in_progress', holding);
+
+      const active = await AgentTask.findOne({ where: { projectId, status: ACTIVE_TASK_STATUSES } });
+      if (active) return busy('run_active', active);
+
+      const candidates = (await AgentTask.findAll({ where: { projectId, status: 'new', workflowStatus: null } }))
+        .filter((task) => !taskClosed(task))
+        .filter((task) => !onlyTags.length || (task.tags ?? []).some((tag) => onlyTags.includes(tag)))
+        .filter((task) => !(task.tags ?? []).some((tag) => skipTags.includes(tag)))
+        .sort((a, b) => trackerCreatedAt(a) - trackerCreatedAt(b));
+
+      for (const candidate of candidates) {
+        // Conditional on the column still being empty: two ticks racing must not both take it.
+        const [taken] = await AgentTask.update(
+          { workflowStatus: inProgressText, workflowStatusAt: new Date() },
+          { where: { id: candidate.id, workflowStatus: null } },
+        );
+        if (!taken) continue;
+        await candidate.reload();
+        ctx.logger.info(`[agentiz.task.next] проект ${projectId}: взята задача ${candidate.id} «${candidate.title}»`);
+        return {
+          msg: { ...ctx.msg, payload: { ...taskEventPayload(candidate), workflowStatus: inProgressText } },
+          output: 'picked',
+        };
+      }
+
+      ctx.logger.info(`[agentiz.task.next] проект ${projectId}: бэклог пуст`);
+      return { msg: { ...ctx.msg, payload: { ...previous, projectId } }, output: 'empty' };
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // server: tell the people of a project that something happened
 // ---------------------------------------------------------------------------
 
@@ -1209,5 +1356,6 @@ export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   approvalNode,
   tasksQueryNode,
   taskCreateNode,
+  taskNextNode,
   notifyNode,
 ];

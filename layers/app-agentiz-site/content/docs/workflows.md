@@ -30,6 +30,7 @@ validates it.
 | `agentiz.pipeline` | Starts a pipeline and waits for it; exits through `succeeded`, `failed` or, with a verdict stage, `pass` / `fail`. The run's facts — branch, commit, PR, diff size — travel on in the payload. |
 | `agentiz.approval` | Waits for a person to approve or reject. A rejection must carry a text, which becomes the agent's next instruction. |
 | `agentiz.task.create` | Creates a task. |
+| `agentiz.task.next` | One task at a time: takes the oldest open task from the tracker, but only once the previous one it took is closed **in the tracker**. Exits through `picked`, `busy` or `empty`. |
 | `agentiz.task.comment` | Writes into a task's thread. |
 | `agentiz.task.status` | Sets the task's human-readable workflow status (“waiting for QA”). |
 | `agentiz.notify` | Sends a notification through the project's notification policy. |
@@ -50,6 +51,23 @@ message, for example `{{payload.branch}}` after a pipeline node.
 3. Configure the trigger for *created*, the match for the words or tags you want, and pick the
    pipeline.
 4. Mark the workflow active and save. The next matching task starts a run.
+
+## Recipe: work through a GitHub backlog one issue at a time
+
+People write issues in GitHub; Agentiz takes them one by one. Link the repository to the project
+with issue import on, then draw:
+
+```
+trigger.cron (every 10 minutes) → agentiz.task.next ─picked→ agentiz.pipeline ─failed→ agentiz.notify
+```
+
+On every tick `agentiz.task.next` pulls the project's issues itself, so it does not depend on the
+server's periodic sync. It takes the oldest open issue and marks it `в работе`. Until that issue
+is **closed on GitHub** every later tick answers `busy`, even when the run has already pushed its
+branch or has failed: a failed task waits for a person to re-run it or close the issue, and the
+queue does not skip it. With `finalAction.openPullRequest` on the pipeline the pull request says
+`Closes #N`, so merging it is what moves the queue on. Labels can filter the queue (`tags`,
+`skipTags`); the order is the order the issues were created in.
 
 ## The round with a human
 

@@ -384,6 +384,13 @@ export interface PipelineFinalActionDef {
     mode: 'current' | 'new';
     prefix?: string;
   };
+  /**
+   * worker_workspace + commit + `targetBranch.mode: "new"` only: once the worker has pushed the
+   * branch, the server opens a pull request from it against the base, through the repository the
+   * spec pins in `source.repositoryId`. Absent = the branch is pushed and nothing else happens,
+   * exactly as before the field existed.
+   */
+  openPullRequest?: boolean;
 }
 
 /**

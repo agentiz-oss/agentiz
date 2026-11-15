@@ -13,7 +13,7 @@ import { AgentGitConnection } from '../models/AgentGitConnection';
 import { AgentProjectRepository } from '../models/AgentProjectRepository';
 import { AgentRepository } from '../models/AgentRepository';
 import { AgentWorkspaceProposal } from '../models/AgentWorkspaceProposal';
-import { RepositoryResolverService } from './RepositoryResolverService';
+import { RepositoryResolverService, readTaskRepositoryMarker } from './RepositoryResolverService';
 import { ActivityService } from './ActivityService';
 import { branchFromTags, createGitProviderForTask, mergeFileOps, normalizeFileChanges, resolveTaskRepository } from '../lib/git';
 import type { FileChange, FileOp } from '../lib/git';
@@ -87,6 +87,30 @@ export interface RunConversation {
 
 function renderTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => values[key] ?? '');
+}
+
+/**
+ * The body of a pull request opened from a worker directory.
+ *
+ * `Closes #N` only when the task is an issue **of the repository the PR is opened in**: GitHub
+ * and GitLab both read that line as "merging closes the issue", and a number taken from another
+ * repository's tracker would close an unrelated issue here.
+ */
+export function workspacePullRequestBody(
+  task: Pick<AgentTask, 'id' | 'raw'>,
+  repositoryId: string,
+  runId: string,
+  summary: string,
+): string {
+  const marker = readTaskRepositoryMarker(task.raw);
+  const issue = marker && marker.repositoryId === repositoryId
+    ? Number(marker.issueNumber ?? marker.issueIid)
+    : NaN;
+  return [
+    Number.isInteger(issue) && issue > 0 ? `Closes #${issue}` : null,
+    summary.trim() || null,
+    `Automated by agentiz run \`${runId}\` for task \`${task.id}\`.`,
+  ].filter(Boolean).join('\n\n');
 }
 
 async function writeLog(
@@ -645,6 +669,66 @@ export class AgentPipelineService {
    * place while the code being changed lives in another, which is exactly what pinning is for.
    * Comments go to the task's provider, not to this one.
    */
+  /**
+   * `finalAction.openPullRequest` for a worker directory: called once the worker reported the
+   * branch pushed, never earlier — a PR against a branch that is not in the remote yet is refused
+   * by the platform, and for a workspace run delivery is a separate job that starts after the run
+   * is already terminal.
+   *
+   * Never throws. The push itself succeeded and is already recorded; a PR the platform refused
+   * (no permission, a PR for that branch already open) is a line in the run log, not a failed
+   * delivery. Returns the PR url when one was opened.
+   */
+  static async openWorkspacePullRequest(proposal: AgentWorkspaceProposal): Promise<string | null> {
+    const run = proposal.latestRunId ? await AgentRun.findByPk(proposal.latestRunId) : null;
+    const action = run?.pipelineSnapshot?.finalAction;
+    if (!run || action?.openPullRequest !== true) return null;
+
+    const branch = proposal.targetBranch?.trim();
+    if (!branch || branch === proposal.baseBranch) {
+      await writeLog(run.id, run.projectId, null, 'warn',
+        'Pull request не открыт: изменения ушли не в отдельную ветку (targetBranch.mode должен быть "new")');
+      return null;
+    }
+    try {
+      const [task, project] = await Promise.all([
+        AgentTask.findByPk(proposal.taskId),
+        AgentProject.findByPk(proposal.projectId),
+      ]);
+      if (!task || !project) throw new Error('задача или проект запуска не найдены');
+      const pinned = await this.pinnedRepository(run.pipelineSnapshot, project);
+      if (!pinned) throw new Error('у пайплайна не указан source.repositoryId');
+
+      const summary = run.resultSummary ?? '';
+      const values = { taskId: task.id, externalId: task.externalId, title: task.title, summary };
+      const provider = await RepositoryResolverService.providerFor(
+        pinned.repository, pinned.connection, proposal.baseBranch ?? pinned.link.config?.defaultBranch,
+      );
+      const pr = await provider.openPullRequest({
+        branch,
+        baseBranch: proposal.baseBranch ?? undefined,
+        title: renderTemplate(action.pullRequestTitleTemplate ?? '{{title}}', values).slice(0, 250),
+        body: workspacePullRequestBody(task, pinned.repository.id, run.id, summary),
+      });
+      await run.update({ responseUrl: pr.url });
+      await writeLog(run.id, run.projectId, null, 'info', `Opened pull request ${pr.url}`);
+      await ActivityService.record({
+        type: 'pr.opened',
+        projectId: run.projectId,
+        runId: run.id,
+        taskId: task.id,
+        title: 'Открыт pull request',
+        body: pr.url,
+        data: { prUrl: pr.url, branch, commitSha: proposal.pushedCommitSha ?? run.commitSha },
+      });
+      return pr.url;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeLog(run.id, run.projectId, null, 'warn', `Pull request не открыт: ${message}`, { branch });
+      return null;
+    }
+  }
+
   static async providerForRunCode(run: AgentRun, task: AgentTask, project: AgentProject) {
     const pinned = await this.pinnedRepository(run.pipelineSnapshot, project);
     if (!pinned) return createGitProviderForTask(task, project);

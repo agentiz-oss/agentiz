@@ -108,6 +108,12 @@ refuse to start instead.
 Templates understand `{{taskId}}`, `{{externalId}}`, `{{title}}` and `{{summary}}`.
 `requireApproval: true` holds the change in Agentiz until a person applies it.
 
+In a worker's directory, `openPullRequest: true` (with `type: "commit"`, `targetBranch.mode: "new"`
+and `source.repositoryId`) opens a pull request from the pushed branch against its base. The PR is
+opened by the server after the worker reports the push. When the task is an issue of that same
+repository, the body starts with `Closes #N`, so merging the PR closes the issue. If the platform
+refuses the PR, the push still counts as done and the reason goes to the run log.
+
 Whether a run may commit or push from a worker's directory is **not** a property of the spec. The
 grant lives on the worker record and is checked when the run is queued, so it can be withdrawn at
 any time. See [Workers](/docs/workers#push-rights).

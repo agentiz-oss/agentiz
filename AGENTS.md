@@ -292,6 +292,16 @@
   is a separate job that starts after the run is already `succeeded`, so a template may name the
   branch and build a preview host from it (`branchToHostLabel` — refuses rather than truncates, or
   two branches would map onto one host) and must not claim the branch is in the remote yet.
+- A project whose backlog people keep **in a tracker** is walked one task at a time by
+  `agentiz.task.next` (long form: [`docs/guides/tracker-backlog-queue.md`](docs/guides/tracker-backlog-queue.md)).
+  "Closed" there is the **tracker's** word: with `externalStatus` set it alone decides (`taskClosed`),
+  because a run that pushed leaves the task `done` locally while its issue is open under review —
+  exactly when the next task must wait. The node recognises the tasks it took by their
+  `workflowStatus` text (default «в работе»), syncs the project itself every tick and answers `busy`
+  on a sync error rather than deciding on stale data. A worker directory cannot open a PR, so
+  `finalAction.openPullRequest` makes the **server** open one from `AgentWorkerApiService`'s push
+  result — never earlier, the branch is not in the remote before that — with `Closes #N` only for an
+  issue of that same repository, and never fails the push it follows.
 - `AgentTask.workflowStatus` is free text written by a **workflow** in the customer's language
   («ждём тестировщика»), deliberately beside `AgentTask.status` and never instead of it: that ENUM
   belongs to the pipeline and moves on every run. It must stay out of `WORKFLOW_WATCHED_FIELDS`, or
