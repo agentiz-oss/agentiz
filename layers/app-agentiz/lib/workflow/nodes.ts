@@ -45,6 +45,7 @@ import {
   taskStatusDocs,
   tasksQueryDocs,
   taskNextDocs,
+  tasksOpenDocs,
   taskTriggerDocs,
 } from './nodeDocs';
 
@@ -1283,6 +1284,119 @@ export const taskNextNode: NodeTypeDefinition = {
 };
 
 // ---------------------------------------------------------------------------
+// server: keep a stock of open tasks of one kind — top it up when people close them
+// ---------------------------------------------------------------------------
+
+const DEFAULT_OPEN_MAX = 5;
+
+export const tasksOpenNode: NodeTypeDefinition = {
+  type: 'agentiz.tasks.open',
+  name: 'Сколько задач открыто',
+  description: 'Держит запас открытых задач с меткой: есть место — дальше, полно или идёт подготовка — ждём',
+  docs: tasksOpenDocs,
+  category: 'Agentiz',
+  kind: 'server',
+  ports: { inputs: 1, outputs: ['room', 'full', 'busy'] },
+  configSchema: {
+    type: 'object',
+    properties: {
+      projectId: {
+        type: 'string',
+        title: 'Проект (id)',
+        description: 'Пусто = проект из msg.payload.projectId',
+      },
+      tags: {
+        type: 'string',
+        title: 'Какие задачи считать (метки)',
+        description: 'Через запятую, обязательно. Например: publication',
+      },
+      max: {
+        type: 'number',
+        title: 'Сколько держать открытыми',
+        description: `По умолчанию ${DEFAULT_OPEN_MAX}`,
+      },
+      prepTags: {
+        type: 'string',
+        title: 'Метка задачи-подготовки',
+        description:
+          'Через запятую. Пока такая задача не закрыта — ждём: запас уже пополняется.'
+          + ' Это метка задачи, которую заводит следующий узел «Создать задачу»',
+      },
+      minIntervalHours: {
+        type: 'number',
+        title: 'Не чаще чем раз в (часов)',
+        description: 'Считается от создания последней задачи-подготовки. Пусто = без ограничения',
+      },
+      syncFirst: {
+        type: 'boolean',
+        title: 'Сначала синхронизировать трекер',
+        description: 'Подтянуть задачи проекта перед решением. По умолчанию включено',
+        default: true,
+      },
+    },
+  },
+  executor: {
+    async execute(ctx: NodeContext): Promise<NodeResult> {
+      const previous = (ctx.msg.payload as Record<string, unknown> | undefined) ?? {};
+      const projectId = String(ctx.config.projectId ?? previous.projectId ?? '').trim();
+      if (!projectId) throw new Error('agentiz.tasks.open: не указан проект');
+      const tags = stringList(ctx.config.tags);
+      if (!tags.length) throw new Error('agentiz.tasks.open: не указаны метки');
+      const prepTags = stringList(ctx.config.prepTags);
+      const configuredMax = Number(ctx.config.max ?? NaN);
+      const max = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.floor(configuredMax) : DEFAULT_OPEN_MAX;
+      const intervalHours = Number(ctx.config.minIntervalHours ?? NaN);
+
+      const busy = (reason: string, task?: AgentTask | null): NodeResult => {
+        ctx.logger.info(`[agentiz.tasks.open] проект ${projectId}: ждём (${reason}${task ? `, ${task.id}` : ''})`);
+        return {
+          msg: { ...ctx.msg, payload: { ...previous, projectId, reason, busyTaskId: task?.id ?? null, busyTitle: task?.title ?? null } },
+          output: 'busy',
+        };
+      };
+
+      if (ctx.config.syncFirst !== false) {
+        const sync = await GitSyncService.syncProject(projectId);
+        if (sync.errors.length) {
+          ctx.logger.warn(`[agentiz.tasks.open] проект ${projectId}: синхронизация с ошибкой: ${sync.errors[0]}`);
+          return busy('sync_failed');
+        }
+      }
+
+      const all = await AgentTask.findAll({ where: { projectId } });
+      const hasTag = (task: AgentTask, list: string[]): boolean => (task.tags ?? []).some((tag) => list.includes(tag));
+
+      // A run of the project works in the same worker directory as every other one; starting a
+      // second beside it fails on the reservation and leaves a failed task holding this stock.
+      const active = all.find((task) => ACTIVE_TASK_STATUSES.includes(task.status));
+      if (active) return busy('run_active', active);
+
+      const prep = all.filter((task) => prepTags.length > 0 && hasTag(task, prepTags));
+      const preparing = prep.find((task) => !taskClosed(task));
+      if (preparing) return busy('preparing', preparing);
+      if (Number.isFinite(intervalHours) && intervalHours > 0 && prep.length) {
+        const latest = Math.max(...prep.map((task) => new Date(task.createdAt).getTime()));
+        if (Date.now() - latest < intervalHours * 3600_000) return busy('too_soon');
+      }
+
+      const open = all
+        .filter((task) => hasTag(task, tags) && !taskClosed(task))
+        .sort((a, b) => trackerCreatedAt(a) - trackerCreatedAt(b));
+      const payload = {
+        ...previous,
+        projectId,
+        max,
+        openCount: open.length,
+        room: Math.max(0, max - open.length),
+        openTitles: open.map((task) => task.title),
+      };
+      ctx.logger.info(`[agentiz.tasks.open] проект ${projectId}: открыто ${open.length} из ${max}`);
+      return { msg: { ...ctx.msg, payload }, output: open.length < max ? 'room' : 'full' };
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // server: tell the people of a project that something happened
 // ---------------------------------------------------------------------------
 
@@ -1357,5 +1471,6 @@ export const agentizWorkflowNodes: NodeTypeDefinition[] = [
   tasksQueryNode,
   taskCreateNode,
   taskNextNode,
+  tasksOpenNode,
   notifyNode,
 ];

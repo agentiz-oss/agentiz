@@ -301,7 +301,10 @@
   on a sync error rather than deciding on stale data. A worker directory cannot open a PR, so
   `finalAction.openPullRequest` makes the **server** open one from `AgentWorkerApiService`'s push
   result — never earlier, the branch is not in the remote before that — with `Closes #N` only for an
-  issue of that same repository, and never fails the push it follows.
+  issue of that same repository, and never fails the push it follows. The reverse direction — the
+  agent writes tasks, people close them — is `agentiz.tasks.open`: it keeps a stock of open tasks
+  with a label (`room`/`full`/`busy`), and the agent itself opens the issues with `gh`; both labels
+  belong in the queue's `skipTags`, or the development queue takes them.
 - `AgentTask.workflowStatus` is free text written by a **workflow** in the customer's language
   («ждём тестировщика»), deliberately beside `AgentTask.status` and never instead of it: that ENUM
   belongs to the pipeline and moves on every run. It must stay out of `WORKFLOW_WATCHED_FIELDS`, or

@@ -31,6 +31,7 @@ validates it.
 | `agentiz.approval` | Waits for a person to approve or reject. A rejection must carry a text, which becomes the agent's next instruction. |
 | `agentiz.task.create` | Creates a task. |
 | `agentiz.task.next` | One task at a time: takes the oldest open task from the tracker, but only once the previous one it took is closed **in the tracker**. Exits through `picked`, `busy` or `empty`. |
+| `agentiz.tasks.open` | Keeps a stock of open tasks with a label (for example, up to five publication tasks): exits through `room` when people have closed some, `full`, or `busy` while a top-up is already running. |
 | `agentiz.task.comment` | Writes into a task's thread. |
 | `agentiz.task.status` | Sets the task's human-readable workflow status (“waiting for QA”). |
 | `agentiz.notify` | Sends a notification through the project's notification policy. |
@@ -68,6 +69,22 @@ branch or has failed: a failed task waits for a person to re-run it or close the
 queue does not skip it. With `finalAction.openPullRequest` on the pipeline the pull request says
 `Closes #N`, so merging it is what moves the queue on. Labels can filter the queue (`tags`,
 `skipTags`); the order is the order the issues were created in.
+
+## Recipe: keep a stock of tasks the agent prepares for people
+
+The agent can also be the one who writes tasks. For example, it prepares publications (what to post
+and where) and people publish them by hand or reject them:
+
+```
+trigger.cron (hourly) → agentiz.tasks.open ─room→ agentiz.task.create → agentiz.pipeline
+```
+
+`agentiz.tasks.open` counts open issues with a label, say `publication`. While there are fewer than
+`max`, it lets the flow go on. The created task (tagged, say, `publication-prep`) asks the agent to
+record what happened to the closed issues and open new ones up to the limit; the agent creates them
+itself with `gh issue create`. `minIntervalHours: 23` turns the hourly trigger into "at most once a
+day" without losing a day when the worker happens to be busy. Put both labels into the `skipTags` of
+the project's `agentiz.task.next`, or the development queue takes these tasks as its own.
 
 ## The round with a human
 
