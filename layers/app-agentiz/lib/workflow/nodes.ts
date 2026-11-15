@@ -1310,6 +1310,14 @@ export const tasksOpenNode: NodeTypeDefinition = {
         title: 'Какие задачи считать (метки)',
         description: 'Через запятую, обязательно. Например: publication',
       },
+      matchAll: {
+        type: 'boolean',
+        title: 'Нужны все метки сразу',
+        description:
+          'Выключено (по умолчанию) — считается задача с любой из меток. Включено — только с каждой:'
+          + ' «publication, market:ru» = публикации одного рынка',
+        default: false,
+      },
       max: {
         type: 'number',
         title: 'Сколько держать открытыми',
@@ -1379,8 +1387,13 @@ export const tasksOpenNode: NodeTypeDefinition = {
         if (Date.now() - latest < intervalHours * 3600_000) return busy('too_soon');
       }
 
+      // `matchAll` absent = "any of the tags", which is what every graph saved before the option
+      // existed asked for.
+      const counted = (task: AgentTask): boolean => (ctx.config.matchAll === true
+        ? tags.every((tag) => (task.tags ?? []).includes(tag))
+        : hasTag(task, tags));
       const open = all
-        .filter((task) => hasTag(task, tags) && !taskClosed(task))
+        .filter((task) => counted(task) && !taskClosed(task))
         .sort((a, b) => trackerCreatedAt(a) - trackerCreatedAt(b));
       const payload = {
         ...previous,

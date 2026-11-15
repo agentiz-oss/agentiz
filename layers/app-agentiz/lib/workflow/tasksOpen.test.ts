@@ -80,6 +80,17 @@ describe('agentiz.tasks.open', () => {
     expect(result.msg.payload).toMatchObject({ openCount: 2, max: 5, room: 3, openTitles: ['Task 1', 'Task 2'] });
   });
 
+  it('with matchAll counts only tasks carrying every label — one stock per market', async () => {
+    await task(['publication', 'market:ru']);
+    await task(['publication', 'market:global']);
+    await task(['market:global']);
+
+    const global = await tick({ tags: 'publication, market:global', matchAll: true });
+    expect(global.msg.payload).toMatchObject({ openCount: 1, room: 4 });
+    // Absent = any of the labels: the reading every graph saved before the option had.
+    expect((await tick({ tags: 'publication, market:global' })).msg.payload).toMatchObject({ openCount: 3 });
+  });
+
   it('is full at the limit', async () => {
     for (let i = 0; i < 5; i += 1) await task(['publication']);
     expect((await tick()).output).toBe('full');

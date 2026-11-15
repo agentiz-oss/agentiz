@@ -85,6 +85,8 @@ record what happened to the closed issues and open new ones up to the limit; the
 itself with `gh issue create`. `minIntervalHours: 23` turns the hourly trigger into "at most once a
 day" without losing a day when the worker happens to be busy. Put both labels into the `skipTags` of
 the project's `agentiz.task.next`, or the development queue takes these tasks as its own.
+With `matchAll: true` a task must carry every label, which gives one stock per region:
+`publication, market:ru` and `publication, market:global` in two flows, each with its own top-up label.
 
 ## The round with a human
 
