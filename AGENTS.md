@@ -721,7 +721,13 @@
   root `index.ts` **before** `init()` (`reserveRawWebhookBody`, `lib/rawBody.ts`). Without that
   line every signed delivery is 401 with an empty `payloadExcerpt` in the journal — which is how
   prod failed on the first repository ever linked (2026-10-04), while the tests, mounting the
-  router on a bare express app, stayed green. The router is mounted on `appManager.app`, never
+  router on a bare express app, stayed green. The Worker API has the same trap the other way round:
+  a pipeline result carries the run's whole diff, and app-manager's global parser (`BODY_LIMIT`,
+  1mb) answered 413 before the router's 25mb was read, so `reserveWorkerApiBody`
+  (`lib/workerApiBody.ts`) parses that path in `index.ts` before `init()` too. The symptom is not a
+  413 anywhere a person looks: the worker cannot report its own failure (the report carries the
+  same diff), restarts, re-runs the agent on the same job and the run ends as "lease expired too
+  many times", with the work stashed in the directory. The router is mounted on `appManager.app`, never
   through `adminizerMiddlewares` — that
   dispatcher prefixes everything with `/dashboard` and an integrator would be posting into the
   admin panel. `endpointId` in the path is not a secret in a URL: it is what says, before the body

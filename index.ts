@@ -5,6 +5,7 @@ import { runSeeds } from "./seeds/index";
 import { setDevENV } from "./devtools/environments";
 import { createSequelize } from "./config/sequelize.js";
 import { reserveRawWebhookBody } from "./layers/app-agentiz-webhooks/lib/rawBody";
+import { reserveWorkerApiBody } from "./layers/app-agentiz/lib/workerApiBody";
 // Apps are discovered from layers/ and the dependency graph. Both sources are
 // started when their id is listed in INIT_APPS_TO_ENABLE.
 
@@ -45,6 +46,9 @@ try {
 
   // init() installs a global JSON parser; signed webhooks need their bytes read before it.
   reserveRawWebhookBody(appManager.app);
+  // Same trap, the other way round: a worker's result carries the whole diff and outgrows the
+  // global parser's limit, which answers 413 before the Worker API router's own limit is read.
+  reserveWorkerApiBody(appManager.app);
 
   await appManager.init({
     // Discovery uses both this local layer directory and the dependency graph

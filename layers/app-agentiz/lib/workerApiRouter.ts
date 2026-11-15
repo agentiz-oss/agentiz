@@ -4,7 +4,9 @@ import { AgentWorkerApiService, WorkerApiError } from '../services/AgentWorkerAp
 import { AgentWorkerRegistryService, WorkerRegistryError } from '../services/AgentWorkerRegistryService';
 
 /** Public base path of the machine-facing Worker API. */
-export const WORKER_API_BASE = '/api/agentiz/worker/v1';
+import { workerApiJsonBody } from './workerApiBody';
+
+export { WORKER_API_BASE } from './workerApiBody';
 
 /** Worker API errors carry their own HTTP status; anything else is a 500 without internals. */
 function workerErrorResponse(res: express.Response, error: unknown) {
@@ -29,7 +31,9 @@ function workerErrorResponse(res: express.Response, error: unknown) {
 export function createWorkerApiRouter(): Router {
   const router = express.Router();
   // Workspace Git uploads a complete binary patch; the server applies its own stricter hard limit.
-  router.use(express.json({ limit: '25mb' }));
+  // In production the root `index.ts` has already parsed the body (`reserveWorkerApiBody`); this
+  // one serves an app built without that reservation, such as a test's.
+  router.use(workerApiJsonBody());
 
   router.get(['/healthz', '/readyz'], (_req, res) => {
     res.json({ ok: true, workerApiEnabled: AgentWorkerApiService.isEnabled() });
