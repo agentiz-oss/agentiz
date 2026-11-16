@@ -29,7 +29,18 @@ RUN set -eu; \
 # however green the build looks. The workflow passes the versions it just tagged; a local build
 # without it keeps the old behaviour.
 ARG NODEKNIT_COMMIT_VERSIONS=unpinned
-RUN echo "$NODEKNIT_COMMIT_VERSIONS" > .nodeknit-commit-versions
+# Install exactly those versions, not whatever "commit" points at. The tag is moved by every
+# submodule's own CI and only *re*-pointed by ours, and that re-point is allowed to fail
+# (`|| true` — three of the packages answer 403 to this repository's token): on 2026-11-16 the
+# image installed app-adminizer b6af263 (adminizer 5.2) while this repo pinned 1dda46b (5.1), and
+# prod answered 502. A cached layer had hidden it until a pin change rebuilt the install.
+RUN set -eu; echo "$NODEKNIT_COMMIT_VERSIONS" > .nodeknit-commit-versions; \
+    for spec in $NODEKNIT_COMMIT_VERSIONS; do \
+        case "$spec" in @nodeknit/*@*) ;; *) continue ;; esac; \
+        name="${spec%@*}"; version="${spec##*@}"; \
+        sed -i "s#\"$name\": \"commit\"#\"$name\": \"$version\"#" package.json; \
+    done; \
+    grep -o '"@nodeknit/[^"]*": "[^"]*"' package.json
 
 # The auth token is appended for the duration of the install only, so it never
 # lands in an image layer.

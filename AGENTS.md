@@ -823,7 +823,10 @@
   `node_modules` and the bump never reached prod — with a green build and no error anywhere. The
   tagged versions are therefore passed in as `NODEKNIT_COMMIT_VERSIONS` and are part of that
   layer's cache key; a new local module needs an entry in the workflow's `base` map or it inherits
-  the same silent staleness. When prod runs code that does not match the submodule, check the
+  the same silent staleness. The Dockerfile installs **exactly** those versions rather than the
+  tag: the re-point is `|| true` and three packages answer it 403, so "commit" can sit on whatever
+  a submodule's own CI published last — on 2026-11-16 that put adminizer 5.2 under a repo pinned
+  to 5.1 and prod answered 502 the first time a pin change rebuilt the install layer. When prod runs code that does not match the submodule, check the
   installed package version (`window.adminizerVersion` on any panel page) before reading anything
   else. The lockfile that install reads is `yarn.lock` in **berry** format (`__metadata: version 9`)
   — the image runs `corepack prepare yarn@4.14.1`, and `packageManager` in `package.json` says the
