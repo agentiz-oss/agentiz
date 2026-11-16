@@ -23,7 +23,7 @@ validates it.
 | --- | --- |
 | `agentiz.task.trigger` | Fires when a task is created, updated (title, description, tags) or commented. |
 | `agentiz.repository.trigger` | Fires on commits pushed to a branch, a finished CI run, or a published package. |
-| `trigger.cron` | Fires on a schedule. |
+| `trigger.cron` | Fires on a schedule: every N minutes, or daily at a time (server clock), optionally only on some weekdays (`wed`, `mon, fri`). |
 | `agentiz.task.match` | Checks a task against words, tags or other conditions and routes it. |
 | `agentiz.tasks.query` | Finds tasks, e.g. for a scheduled release round. |
 | `agentiz.task.run` | Starts a pipeline and moves on immediately. |
